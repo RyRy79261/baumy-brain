@@ -133,6 +133,27 @@ describe('memory store → recall (PGlite + pgvector)', () => {
     expect(id3).not.toBe(id1)
   })
 
+  it('consolidation never lets a quarantined item swallow a trusted restatement', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 100)
+    // a forwarded/planted note captured first — quarantined, never grounds a reply.
+    await captureMemory(
+      { groupId: GROUP, content: 'the spare key is under the mat', memoryType: 'fact', authoredBy: null, trustLevel: 'quarantined' },
+      { db, embed },
+    )
+    // a housemate says the same thing — the real restatement must be stored fresh,
+    // not consolidated onto (and bumping) the quarantined row.
+    const id2 = await captureMemory(
+      { groupId: GROUP, content: 'the spare key is under the mat', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
+      { db, embed },
+    )
+    // retrieval filters quarantined out, so the fact is recallable ONLY if the trusted
+    // restatement was actually stored (i.e. dedup did not suppress it).
+    const res = await retrieve('where is the spare key', { groupId: GROUP, floor: 0 }, { db, embed })
+    const hit = res.find((r) => r.content.includes('spare key'))
+    expect(hit?.id).toBe(id2)
+  })
+
   it('a similarity floor filters out unrelated items (honest miss)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, 100)
