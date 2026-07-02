@@ -6,10 +6,12 @@ import { decide } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
 import { captureMemory, claimReply, ensureRegistered } from '@/lib/memory/write'
-import { retrieve } from '@/lib/memory/retrieve'
+import { retrieve, retrieveExpanded, type RetrievedMemory } from '@/lib/memory/retrieve'
 import { extractFacts } from '@/lib/ai/extract'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
 import { answer } from '@/lib/ai/reply'
+import { expandQuery } from '@/lib/ai/expand'
+import { rerank } from '@/lib/ai/rerank'
 import { extractReminder } from '@/lib/ai/reminder-extract'
 import { parseWhen } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
@@ -135,7 +137,27 @@ export const handleTelegramMessage = inngest.createFunction(
         // Deep (broad history search) only for real questions; clamp a stray 'deep'.
         const startTier = verdict.intent === 'question' ? verdict.tier : verdict.tier === 'deep' ? 'think' : verdict.tier
         const deep = startTier === 'deep'
-        const memories = await retrieve(text ?? '', { groupId: chatId, k: deep ? 30 : 8, floor: deep ? 0.05 : 0.2 }, { db })
+        // Deep tier earns query expansion (wider recall) + a Haiku re-rank (precision);
+        // both best-effort, degrading to plain hybrid retrieval on any hiccup.
+        let memories: RetrievedMemory[]
+        if (deep) {
+          let expansions: string[] = []
+          try {
+            expansions = await expandQuery(text ?? '')
+          } catch {
+            /* fall back to the raw query */
+          }
+          memories = expansions.length
+            ? await retrieveExpanded(text ?? '', expansions, { groupId: chatId, k: 30, floor: 0.05 }, { db })
+            : await retrieve(text ?? '', { groupId: chatId, k: 30, floor: 0.05 }, { db })
+          try {
+            memories = await rerank(text ?? '', memories)
+          } catch {
+            /* keep the fusion order */
+          }
+        } else {
+          memories = await retrieve(text ?? '', { groupId: chatId, k: 8, floor: 0.2 }, { db })
+        }
         const factHits = await currentFactsForQuery(db, chatId, text ?? '', deep ? 15 : 5)
         const combined = [
           ...factHits.map((f, i) => ({ id: `fact:${i}`, memoryType: 'fact', authoredBy: null, similarity: 1, ...f })),
