@@ -1,4 +1,5 @@
 import { Api } from 'grammy'
+import type { ReactionTypeEmoji } from 'grammy/types'
 
 // grammY typed Bot API client (transport layer). grammY owns the Bot API surface
 // — methods, params, error handling, the bot's own identity — so we don't
@@ -53,6 +54,16 @@ export async function answerCallback(callbackId: string, text?: string): Promise
 // Rewrite a card after a decision, dropping the keyboard (no reply_markup).
 export async function editMessageText(chatId: string, messageId: number, text: string): Promise<void> {
   await api().editMessageText(chatId, messageId, text, NO_PREVIEW)
+}
+
+// Best-effort emoji reaction — Baumy's lightweight "noted 👍" on a message,
+// instead of always sending a full line. Never breaks the pipeline on failure.
+export async function reactToMessage(chatId: string, messageId: number, emoji: ReactionTypeEmoji['emoji']): Promise<void> {
+  try {
+    await api().setMessageReaction(chatId, messageId, [{ type: 'emoji', emoji }])
+  } catch {
+    // reactions are cosmetic; a failure (perms, unsupported emoji) must not throw
+  }
 }
 
 export async function getMe() {

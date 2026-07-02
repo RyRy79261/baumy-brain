@@ -7,6 +7,7 @@ type Events = {
   'telegram/message.received': {
     data: {
       updateId: number
+      messageId: number
       chatId: string
       chatType: string
       fromId: number | null
