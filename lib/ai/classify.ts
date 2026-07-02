@@ -13,7 +13,7 @@ export const classifierVerdict = z.object({
   needsReply: z.boolean(),
   confidence: z.number().min(0).max(1),
   respond: z.enum(['ignore', 'react', 'answer']),
-  reaction: z.enum(['👀', '👍', '🔥', '🎉', '🤯']).nullable(),
+  reaction: z.enum(['👍', '🔥', '🎉', '🤯']).nullable(),
   tier: z.enum(['quick', 'think', 'deep']),
 })
 export type ClassifierVerdict = z.infer<typeof classifierVerdict>
