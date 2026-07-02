@@ -77,3 +77,17 @@ export async function getMe(): Promise<{
 }> {
   return call('getMe', {})
 }
+
+// Baumy's own @username, fetched once from Telegram (getMe) and cached for the
+// process — so "directed at Baumy" detection uses the bot's REAL name, never a
+// hardcoded guess.
+let cachedUsername: string | null = null
+export async function getBotUsername(): Promise<string> {
+  if (cachedUsername !== null) return cachedUsername
+  try {
+    cachedUsername = ((await getMe()).username ?? '').toLowerCase()
+  } catch {
+    cachedUsername = ''
+  }
+  return cachedUsername
+}
