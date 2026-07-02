@@ -15,6 +15,10 @@ export function createHttpDb() {
   return drizzleHttp(neon(url()), { schema })
 }
 
+// Shared db type for the memory/retrieval helpers (tests inject a PGlite-backed
+// instance cast to this — the drizzle query surface is structurally compatible).
+export type Database = ReturnType<typeof createHttpDb>
+
 // Pooled (WebSocket) driver: transactions + row locking — memory supersede,
 // reminder claims (FOR UPDATE SKIP LOCKED), multi-row writes.
 export function createPooledDb() {
