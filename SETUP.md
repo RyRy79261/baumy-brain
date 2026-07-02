@@ -12,17 +12,15 @@ Everything below runs on **free tiers**. The only ongoing cost is LLM tokens (si
 
 ---
 
-## 1. Create the bot + grab the IDs
+## 1. Create the bot
 1. In **@BotFather**: `/newbot` → get the **bot token**.
 2. **Disable privacy mode** (so Baumy sees all group messages): `/mybots` → your bot → *Bot Settings* → *Group Privacy* → **Turn off**.
-3. Create your **house Telegram group**, add the bot, and **send one message** in it.
-4. Get the chat + your user id (works only *before* a webhook is set):
-   ```bash
-   curl -s "https://api.telegram.org/bot<BOT_TOKEN>/getUpdates" \
-     | jq '.result[].message | {chat: .chat.id, from: .from.id, name: .from.first_name}'
-   ```
-   - The negative `chat` id → **`BAUMY_HOUSE_CHAT_ID`** (e.g. `-1001234567890`)
-   - Your `from` id → **`BAUMY_OWNER_ID`**
+3. Create your **house Telegram group** — but **don't add the bot yet**. You add it in step 9, *after* the webhook is live, so the "you're the owner" capture reaches Baumy.
+
+> You do **not** look up any chat id or your user id. When you add the bot to the
+> group (step 9), it captures **that group as the house** and **whoever added it as
+> the owner** — automatically, from the Telegram-authenticated event. The env vars
+> `BAUMY_HOUSE_CHAT_ID` / `BAUMY_OWNER_ID` exist only as optional pins/overrides.
 
 ## 2. Neon
 1. Create a project. Copy **both** connection strings from the dashboard:
@@ -36,11 +34,13 @@ Everything below runs on **free tiers**. The only ongoing cost is LLM tokens (si
 
 ## 4. Generate the app secrets
 ```bash
-openssl rand -base64 32   # BAUMY_ENCRYPTION_KEY   (>=32 chars)
 openssl rand -hex 24      # TELEGRAM_WEBHOOK_SECRET
 openssl rand -hex 24      # BAUMY_SESSION_SECRET
-openssl rand -hex 24      # BETTER_AUTH_SECRET
 ```
+> Login is **Telegram magic-link** (`/dashboard` → one-time link → a signed session
+> cookie). There is **no Better Auth / Neon Auth** — the only session secret is
+> `BAUMY_SESSION_SECRET`. (`BAUMY_ENCRYPTION_KEY` is only needed once the deferred
+> secure-value encryption helper is wired.)
 
 ## 5. Environment variables
 Put these in **Vercel → Project → Settings → Environment Variables** (mark secrets *Sensitive*), and in a local **`.env.local`** for dev. See `.env.example`.
@@ -51,16 +51,16 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 | `DATABASE_URL_UNPOOLED` | Neon direct URL |
 | `TELEGRAM_BOT_TOKEN` | from BotFather |
 | `TELEGRAM_WEBHOOK_SECRET` | generated (step 4) |
-| `BAUMY_HOUSE_CHAT_ID` | group chat id (step 1) |
-| `BAUMY_OWNER_ID` | your user id (step 1) |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM keys |
-| `BAUMY_ENCRYPTION_KEY` | generated |
-| `BAUMY_SESSION_SECRET` | generated |
-| `BETTER_AUTH_SECRET` / `BETTER_AUTH_URL` | generated / your deployed URL *(required by the boot check; placeholders for the deferred Better Auth swap)* |
+| `BAUMY_SESSION_SECRET` | generated — signs the dashboard session cookie |
 | `BAUMY_PUBLIC_URL` | your deployed URL (e.g. `https://baumy.vercel.app`) |
 | `BAUMY_TIMEZONE` | `Europe/Berlin` (default) |
 | `BAUMY_DAILY_SPEND_CAP` | `0.5` (default) |
 | `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` | **auto-injected** by the Vercel↔Inngest integration |
+
+> **Optional overrides — you normally set neither:** `BAUMY_HOUSE_CHAT_ID` pins the
+> house group (otherwise it's captured on bot-add) and `BAUMY_OWNER_ID` pins the
+> owner (otherwise it's whoever adds the bot). Leave both unset for the automatic flow.
 
 > ⚠️ **Verify at build:** the default model ids in `lib/ai/models.ts` are placeholders — confirm the current Anthropic/OpenAI ids and set the `BAUMY_*_MODEL` overrides if needed.
 
@@ -75,7 +75,7 @@ DATABASE_URL_UNPOOLED='<neon-direct-url>' pnpm db:migrate
 1. Import the GitHub repo (`RyRy79261/baumy-brain`) into Vercel.
 2. Add the env vars from step 5.
 3. Add the **Inngest integration** (Vercel Marketplace) → it injects the Inngest keys and auto-syncs functions on deploy. *(Optionally add the Neon integration to auto-inject the DB URLs + get branch-per-preview.)*
-4. Deploy. Note your production URL → set `BAUMY_PUBLIC_URL` / `BETTER_AUTH_URL` to it and redeploy.
+4. Deploy. Note your production URL → set `BAUMY_PUBLIC_URL` to it and redeploy.
 
 ## 8. Register the Telegram webhook
 ```bash
@@ -86,7 +86,15 @@ node --experimental-strip-types scripts/set-webhook.ts
 ```
 It sets the webhook + `allowed_updates`, drops pending updates, and **warns if privacy mode is still on**.
 
-## 9. Go live
+## 9. Add the bot → you become the owner
+Now that the webhook is live, **add your bot to the house group.** That single act:
+- captures **that group as the house** (into `house_config`), and
+- makes **you (the account that added it) the owner** — from the Telegram-authenticated
+  `my_chat_member` event, never from chat text.
+
+No ids to copy anywhere. (First invite wins — adding the bot to a *different* group later can't hijack the house.)
+
+## 10. Go live
 - Say something house-relevant in the group ("rent's due friday") → it's captured.
 - Ask a question ("@Baumy when's rent due?") → grounded answer.
 - "remind us to pay rent friday" → confirmed + fires exactly once.

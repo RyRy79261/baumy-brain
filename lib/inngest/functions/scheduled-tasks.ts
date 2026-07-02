@@ -23,7 +23,7 @@ export const scheduledTaskDispatch = inngest.createFunction(
           t.isSystem && t.prompt === 'digest'
             ? await buildDigest(db, t.groupId)
             : await deliberate(t.prompt, resolveModel(t.modelTier === 'advisor' ? 'advisor' : 'assess'))
-        await sendToHouse(text)
+        await sendToHouse(t.groupId, text)
         const next = computeNextRun(t.cadence, DateTime.now())
         await recordRun(db, t.id, next, (t.untilExpiry as Date | null) ?? null)
       }

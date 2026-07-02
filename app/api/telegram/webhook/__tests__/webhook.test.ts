@@ -58,12 +58,15 @@ describe('telegram webhook — the fast-ack spine', () => {
     expect(send).toHaveBeenCalledOnce()
   })
 
-  it('ignores an out-of-scope chat with 200 and no enqueue', async () => {
+  it('forwards any in-shape message and lets the pipeline resolve scope', async () => {
+    // The webhook no longer knows the house group id (it is auto-captured on
+    // bot-add). Scope (house vs known-member DM vs ignore) is decided downstream
+    // from house_config, so the ack path just verifies + enqueues.
     const res = await POST(
       req({ update_id: 3, message: { message_id: 3, date: 0, chat: { id: -999, type: 'group' }, from: { id: 7 }, text: 'hi' } }),
     )
     expect(res.status).toBe(200)
-    expect(send).not.toHaveBeenCalled()
+    expect(send).toHaveBeenCalledOnce()
   })
 
   it('absorbs unparseable input with 200 and no enqueue', async () => {

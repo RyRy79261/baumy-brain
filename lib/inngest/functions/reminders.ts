@@ -48,7 +48,7 @@ export const reminderDeliver = inngest.createFunction(
     await step.run('deliver', async () => {
       const db = createHttpDb()
       if (!(await claimReminder(db, reminderId))) return // another path already claimed it
-      await sendToHouse(`⏰ ${row.content}`)
+      await sendToHouse(row.deliverChatId, `⏰ ${row.content}`)
       await markSent(db, reminderId)
     })
     return { delivered: reminderId }
@@ -67,7 +67,7 @@ export const reminderSweeper = inngest.createFunction(
       let count = 0
       for (const r of overdue) {
         if (await claimReminder(db, r.id)) {
-          await sendToHouse(`⏰ ${r.content}`)
+          await sendToHouse(r.deliverChatId, `⏰ ${r.content}`)
           await markSent(db, r.id)
           count++
         }

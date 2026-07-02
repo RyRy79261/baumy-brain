@@ -17,11 +17,11 @@ async function call<T = unknown>(method: string, params: Record<string, unknown>
   return json.result as T
 }
 
-// Fixed-destination send (architecture D9): the ONLY house-content destination
-// is BAUMY_HOUSE_CHAT_ID. The classifier/LLM can never choose a recipient.
-export async function sendToHouse(text: string, opts?: { silent?: boolean }): Promise<void> {
-  const chatId = process.env.BAUMY_HOUSE_CHAT_ID
-  if (!chatId) throw new Error('[baumy/telegram] BAUMY_HOUSE_CHAT_ID not set')
+// Fixed-destination send (architecture D9): the caller resolves the destination
+// deterministically (the house group id from house_config, a reminder's stored
+// deliver_chat_id, or a task's group_id). The classifier/LLM can NEVER choose it.
+export async function sendToHouse(chatId: string, text: string, opts?: { silent?: boolean }): Promise<void> {
+  if (!chatId) throw new Error('[baumy/telegram] no house chat id resolved (bot not added to a group yet?)')
   await call('sendMessage', {
     chat_id: chatId,
     text,

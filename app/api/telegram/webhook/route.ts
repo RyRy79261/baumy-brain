@@ -37,15 +37,12 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ ok: true })
   }
 
-  // 3. Structural scope gate: house group, or a private DM (member identity is
-  //    checked downstream in the pipeline). Out-of-scope → 200 to drain queue.
+  // 3. In-shape message? Forward it. Scope (house group vs known-member DM vs
+  //    ignore) is resolved DOWNSTREAM in the pipeline from house_config — the
+  //    house group is auto-captured on bot-add, so the webhook needs no chat id.
   const msg = update.message ?? update.edited_message
-  const chatId = msg ? String(msg.chat.id) : ''
-  const inHouse = chatId === (process.env.BAUMY_HOUSE_CHAT_ID ?? '')
-  const isPrivate = msg?.chat.type === 'private'
-  if (!msg || (!inHouse && !isPrivate)) {
-    return Response.json({ ok: true, ignored: 'out-of-scope' })
-  }
+  if (!msg) return Response.json({ ok: true, ignored: 'no-message' })
+  const chatId = String(msg.chat.id)
 
   // 4. Defer to Inngest, event id keyed on update_id (24h idempotency); 200 fast.
   //    If the hand-off throws, 503 → Telegram retries (dedup makes it a no-op).
