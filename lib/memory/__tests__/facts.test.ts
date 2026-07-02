@@ -22,6 +22,33 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
     expect(hits.some((h) => h.content.includes('friday'))).toBe(false) // superseded → not current
   })
 
+  it('resolves surface variants to ONE entity (no fragmentation)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const t = 'untrusted' as const
+    await reconcileFact(db, { groupId: GROUP, fact: F('the kitchen sink', 'status', 'leaking'), authoredBy: null, trustLevel: t })
+    // "the sink" (article stripped → trigram-merged onto "kitchen sink") is the SAME
+    // subject+predicate, so this supersedes rather than forking a second entity.
+    expect(
+      await reconcileFact(db, { groupId: GROUP, fact: F('the sink', 'status', 'fixed'), authoredBy: null, trustLevel: t }),
+    ).toBe('update')
+    // recall works from either surface form; the superseded value is gone.
+    const hits = await currentFactsForQuery(db, GROUP, 'is the sink fixed?')
+    expect(hits.some((h) => h.content.includes('fixed'))).toBe(true)
+    expect(hits.some((h) => h.content.includes('leaking'))).toBe(false)
+  })
+
+  it('does NOT merge distinct entities (precision on write)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const t = 'untrusted' as const
+    await reconcileFact(db, { groupId: GROUP, fact: F('marta', 'arrives_on', 'friday'), authoredBy: null, trustLevel: t })
+    // a different housemate must NOT collapse into marta — this is an ADD, not an update.
+    expect(
+      await reconcileFact(db, { groupId: GROUP, fact: F('marco', 'arrives_on', 'sunday'), authoredBy: null, trustLevel: t }),
+    ).toBe('add')
+  })
+
   it('a LOWER-trust fact can NEVER overwrite a higher-trust one (poisoning defense)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
