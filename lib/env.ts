@@ -15,8 +15,9 @@ const REQUIRED: EnvSpec[] = [
   // NOT BAUMY_HOUSE_CHAT_ID — the house group is auto-captured when the bot is
   // added (my_chat_member → house_config). The env var is an optional override.
   { key: 'ANTHROPIC_API_KEY' },
-  // No OPENAI_API_KEY — the classifier runs on Anthropic Haiku and embeddings are
-  // local + in-process (lib/ai/embed.ts). Anthropic is the only AI vendor.
+  // Semantic embeddings: Voyage 3.5-lite (Anthropic's recommended embedding
+  // partner). No OpenAI. https://voyageai.com — free tier covers house scale.
+  { key: 'VOYAGE_API_KEY' },
   // Session signing for the Telegram magic-link dashboard (lib/auth/session.ts).
   { key: 'BAUMY_SESSION_SECRET', minLen: 32 },
   // App-side AES-256-GCM key for secure values (lib/core/crypto.ts); base64 of 32

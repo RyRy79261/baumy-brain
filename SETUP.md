@@ -27,13 +27,13 @@ Everything below runs on **free tiers**. The only ongoing cost is LLM tokens (si
    - direct/unpooled → **`DATABASE_URL_UNPOOLED`**  *(migrations need the direct one)*
 2. pgvector needs no setup — migration `0000` runs `CREATE EXTENSION vector`.
 
-## 3. LLM key
-- Anthropic → **`ANTHROPIC_API_KEY`**  *(the only AI vendor)*
+## 3. AI keys
+- **Anthropic** → **`ANTHROPIC_API_KEY`** — language models (Haiku → Sonnet → Opus by role)
+- **Voyage** → **`VOYAGE_API_KEY`** — semantic memory embeddings (`voyage-3.5-lite`), from voyageai.com
 
-> Baumy uses **only Anthropic**. Replies/classification run on Claude (Haiku →
-> Sonnet → Opus by role); **embeddings are computed locally in-process** (no
-> OpenAI, no second key, no model download). If you ever want deeper semantic
-> recall, the `lib/ai/embed.ts` seam can be swapped for a local transformer model.
+> Anthropic ships no embedding model and recommends **Voyage**; its free tier
+> (200M tokens) covers house scale for years. Embeddings are a plain API call —
+> nothing to bundle, no OpenAI.
 
 ## 4. Generate the app secrets
 ```bash
@@ -57,7 +57,8 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 | `DATABASE_URL_UNPOOLED` | Neon direct URL |
 | `TELEGRAM_BOT_TOKEN` | from BotFather |
 | `TELEGRAM_WEBHOOK_SECRET` | generated (step 4) |
-| `ANTHROPIC_API_KEY` | your Anthropic key (the only AI vendor) |
+| `ANTHROPIC_API_KEY` | your Anthropic key (language models) |
+| `VOYAGE_API_KEY` | your Voyage key (memory embeddings; free tier covers house scale) |
 | `BAUMY_SESSION_SECRET` | generated — signs the dashboard session cookie |
 | `BAUMY_ENCRYPTION_KEY` | generated — any random ≥32-char value (`openssl rand -hex 24`); SHA-256-derived to a 32-byte AES-256 key for secure values (wifi/door/bank). A DB dump is useless without it; losing it makes existing secrets undecryptable. |
 | `BAUMY_PUBLIC_URL` | your deployed URL (e.g. `https://baumy.vercel.app`) |
