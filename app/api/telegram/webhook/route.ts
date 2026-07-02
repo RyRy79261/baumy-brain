@@ -61,6 +61,7 @@ export async function POST(req: Request): Promise<Response> {
       name: 'telegram/message.received',
       data: {
         updateId: update.update_id,
+        messageId: msg.message_id,
         chatId: String(msg.chat.id),
         chatType: msg.chat.type,
         fromId: msg.from?.id ?? null,

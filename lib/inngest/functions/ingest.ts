@@ -10,16 +10,17 @@ import { retrieve } from '@/lib/memory/retrieve'
 import { extractFacts } from '@/lib/ai/extract'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
 import { groundedReply } from '@/lib/ai/reply'
+import { baumyLine } from '@/lib/ai/voice'
 import { extractReminder } from '@/lib/ai/reminder-extract'
 import { parseWhen } from '@/lib/reminders/parse'
-import { createPendingAction } from '@/lib/confirm/store'
+import { createReminder } from '@/lib/reminders/store'
 import { loadRoster } from '@/lib/identity/roster'
 import { getHouseChatId } from '@/lib/identity/house'
 import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
 import { loadResponsePolicy, replyAllowed } from '@/lib/policy'
 import { isDirectedAtBaumy } from '@/lib/pipeline/directed'
-import { sendToHouse, sendConfirmCard, getBotUsername } from '@/lib/telegram/client'
+import { sendToHouse, getBotUsername, reactToMessage } from '@/lib/telegram/client'
 
 // The reactive ingest pipeline (architecture D10): record-inbound → pre-filter →
 // origin (real roster) → member-DM commands OR classify → write-gate → act.
@@ -27,7 +28,7 @@ export const handleTelegramMessage = inngest.createFunction(
   { id: 'handle-telegram-message', retries: 3 },
   { event: 'telegram/message.received' },
   async ({ event, step }) => {
-    const { updateId, chatId, fromId, text, chatType, isBot, isForwarded, replyToBot } = event.data
+    const { updateId, messageId, chatId, fromId, text, chatType, isBot, isForwarded, replyToBot } = event.data
     // House group id from house_config (captured on bot-add); env override wins.
     const houseChatId = await getHouseChatId(createHttpDb())
     // Owner-configurable response policy (kill-switch / confidence floor / mutes).
@@ -85,35 +86,41 @@ export const handleTelegramMessage = inngest.createFunction(
             await reconcileFact(db, { groupId: chatId, fact: f, authoredBy, trustLevel: origin.memoryTrust })
           }
         }
+        // A subtle "noted 👍" — Baumy observes without always talking (best-effort).
+        if (origin.lane === 'house') await reactToMessage(chatId, messageId, '👍')
       })
     }
 
-    // Reminder proposal: the confirm card IS the response (return after posting it).
+    // Reminder: AUTO-COMMIT. Baumy reads the message and just sets the reminder,
+    // then says so — no click-to-confirm (owner decision: it's a secretary, not a
+    // calendar UI). Safe because a reminder only ever posts TEXT to the fixed house
+    // group; it can't do anything privileged. (Genuinely privileged/config actions
+    // still go through the confirm wall.)
     if (decision === 'reminder') {
       if (!policy.global_enabled) return { updateId, decision: 'drop' as const, reason: 'paused' }
-      await step.run('reminder-propose', async () => {
+      await step.run('reminder', async () => {
         const db = createHttpDb()
         const ex = await extractReminder(text ?? '')
         if (!ex.isReminder) return
         const parsed = parseWhen(ex.whenText)
         if (!parsed) return
-        // Privileged action (security gate): a reminder is a PRIVILEGED effect, so
-        // group text can only PROPOSE it. Post a confirm card; the reminder is
-        // created only when a member taps ✅ (handled in functions/callback.ts).
-        const actionId = await createPendingAction(db, {
+        if (!(await claimReply(db, updateId))) return // one action per inbound (retry-safe)
+        const id = await createReminder(db, {
           groupId: chatId,
-          actionType: 'reminder.create',
-          payload: {
-            deliverChatId: houseChatId, // fixed destination, resolved in code (never LLM)
-            content: ex.content,
-            fireAt: parsed.fireAt.toISOString(),
-            createdBy: fromId != null ? String(fromId) : null,
-            resolvedLocal: parsed.resolvedLocal,
-          },
-          requestedBy: fromId != null ? String(fromId) : null,
-          ttlSec: 3600,
+          deliverChatId: houseChatId, // fixed destination, resolved in code (never LLM)
+          content: ex.content,
+          fireAt: parsed.fireAt,
+          createdBy: fromId != null ? String(fromId) : null,
         })
-        await sendConfirmCard(chatId, `Set a reminder — "${ex.content}" on ${parsed.resolvedLocal}? Tap to confirm.`, actionId)
+        await inngest.send({ id: `reminder-arm:${id}`, name: 'reminder/arm.due', data: { reminderId: id } })
+        // The acknowledgment is written by the model, not a template — natural,
+        // its own words, no robotic date restatement.
+        await sendToHouse(
+          chatId,
+          await baumyLine(
+            `A housemate just said: "${text ?? ''}". You quietly set a reminder so the house gets nudged about "${ex.content}" around ${parsed.resolvedLocal}. Let them know you've got it — one short, natural line; you can lightly check it's right.`,
+          ),
+        )
       })
       return { updateId, decision, directed, intent: verdict.intent, confidence: verdict.confidence, source: origin.source }
     }
