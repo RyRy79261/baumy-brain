@@ -42,6 +42,7 @@ export async function POST(req: Request): Promise<Response> {
       data: {
         updateId: update.update_id,
         chatId,
+        chatType: msg.chat.type,
         fromId: msg.from?.id ?? null,
         text: msg.text ?? null,
       },
