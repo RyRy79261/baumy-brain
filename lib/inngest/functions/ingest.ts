@@ -7,6 +7,8 @@ import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify } from '@/lib/ai/classify'
 import { captureMemory, claimReply, ensureRegistered } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
+import { extractFacts } from '@/lib/ai/extract'
+import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
 import { groundedReply } from '@/lib/ai/reply'
 import { extractReminder } from '@/lib/ai/reminder-extract'
 import { parseWhen } from '@/lib/reminders/parse'
@@ -63,17 +65,21 @@ export const handleTelegramMessage = inngest.createFunction(
 
     if (decision === 'capture') {
       await step.run('capture', async () => {
+        const db = createHttpDb()
+        // Never attribute quarantined (forwarded/bot) content to a housemate.
+        const authoredBy = origin.memoryTrust === 'quarantined' || fromId == null ? null : String(fromId)
         await captureMemory(
-          {
-            groupId: chatId,
-            content: text ?? '',
-            memoryType: verdict.intent,
-            // Never attribute quarantined (forwarded/bot) content to a housemate.
-            authoredBy: origin.memoryTrust === 'quarantined' || fromId == null ? null : String(fromId),
-            trustLevel: origin.memoryTrust,
-          },
-          { db: createHttpDb() },
+          { groupId: chatId, content: text ?? '', memoryType: verdict.intent, authoredBy, trustLevel: origin.memoryTrust },
+          { db },
         )
+        // M2: distil structured facts + trust-gated reconcile into the knowledge
+        // graph. Quarantined content never writes a fact (injection wall).
+        if (origin.memoryTrust !== 'quarantined') {
+          const { facts } = await extractFacts(text ?? '')
+          for (const f of facts) {
+            await reconcileFact(db, { groupId: chatId, fact: f, authoredBy, trustLevel: origin.memoryTrust })
+          }
+        }
       })
     } else if (decision === 'reply' && origin.lane === 'house') {
       // Owner response-policy gate: kill-switch / confidence floor / muted topics.
@@ -86,10 +92,17 @@ export const handleTelegramMessage = inngest.createFunction(
         if (chatId !== houseChatId) return // belt-and-suspenders: house group only (E2)
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
         const memories = await retrieve(text ?? '', { groupId: chatId }, { db })
+        // Union the structured knowledge graph (current facts naming the query's
+        // subject) with semantic recall.
+        const factHits = await currentFactsForQuery(db, chatId, text ?? '')
+        const combined = [
+          ...factHits.map((f, i) => ({ id: `fact:${i}`, memoryType: 'fact', authoredBy: null, similarity: 1, ...f })),
+          ...memories,
+        ]
         // Disclosure discretion (memory-core #15): a secure value is decrypted
         // ONLY here, to answer a member's direct question — never volunteered
         // elsewhere and never in digests/broadcasts.
-        const grounding = memories.map((m) =>
+        const grounding = combined.map((m) =>
           m.isSecure && m.contentEncrypted ? { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` } : m,
         )
         await sendToHouse(chatId, await groundedReply(text ?? '', grounding))
