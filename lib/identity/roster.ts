@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { members } from '@/db/schema'
 import type { Roster } from '@/lib/core/origin'
@@ -57,7 +57,13 @@ export async function upsertMember(
 }
 
 export async function deactivateMember(db: Database, userId: string): Promise<void> {
-  await db.update(members).set({ isActive: false, deactivatedAt: new Date() }).where(eq(members.telegramUserId, userId))
+  // Clear the dashboard grant too — leaving/being removed from the house must
+  // DURABLY revoke access, so a later rejoin (upsertMember reactivation) can never
+  // silently restore a high-privilege grant without fresh owner authorization.
+  await db
+    .update(members)
+    .set({ isActive: false, deactivatedAt: new Date(), canAccessDashboard: false })
+    .where(eq(members.telegramUserId, userId))
 }
 
 // Capture a member's private-chat id (on /start) so Baumy can DM them later —
@@ -66,12 +72,13 @@ export async function setDmChatId(db: Database, userId: string, dmChatId: string
   await db.update(members).set({ dmChatId }).where(eq(members.telegramUserId, userId))
 }
 
-// Owner-gated dashboard grant/revoke (returns false if no such member row).
+// Owner-gated dashboard grant/revoke. Only ACTIVE members — never (re-)grant a slot
+// to someone who has left the house (returns false: no active member row).
 export async function setDashboardAccess(db: Database, userId: string, allow: boolean): Promise<boolean> {
   const rows = await db
     .update(members)
     .set({ canAccessDashboard: allow })
-    .where(eq(members.telegramUserId, userId))
+    .where(and(eq(members.telegramUserId, userId), eq(members.isActive, true)))
     .returning({ id: members.telegramUserId })
   return rows.length > 0
 }
