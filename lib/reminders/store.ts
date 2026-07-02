@@ -42,6 +42,25 @@ export async function markSent(db: Database, id: string): Promise<void> {
   await db.update(reminders).set({ status: 'sent' }).where(eq(reminders.id, id))
 }
 
+// Return a claimed row to 'scheduled' when its send FAILS, so a retry/sweeper
+// re-attempts it — closes the "fires zero times" hole (audit #10) without
+// re-sending a delivered reminder (markSent only runs on success).
+export async function releaseReminder(db: Database, id: string): Promise<void> {
+  await db.update(reminders).set({ status: 'scheduled' }).where(and(eq(reminders.id, id), eq(reminders.status, 'firing')))
+}
+
+// Backstop: reset reminders orphaned in 'firing' (process died mid-send) whose
+// fire time is well past, so the sweeper re-delivers them. The margin makes a
+// double-send against an in-flight delivery negligible.
+export async function reapStaleFiring(db: Database, olderThan: Date): Promise<number> {
+  const rows = await db
+    .update(reminders)
+    .set({ status: 'scheduled' })
+    .where(and(eq(reminders.status, 'firing'), lte(reminders.fireAt, olderThan)))
+    .returning({ id: reminders.id })
+  return rows.length
+}
+
 export async function cancelReminder(db: Database, id: string): Promise<boolean> {
   const rows = await db
     .update(reminders)

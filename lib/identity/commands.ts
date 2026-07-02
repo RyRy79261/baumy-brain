@@ -2,6 +2,8 @@ import { createHttpDb } from '@/db/client'
 import { loadRoster, listActiveMembers } from '@/lib/identity/roster'
 import { issueLoginToken } from '@/lib/auth/tokens'
 import { createPendingAction } from '@/lib/confirm/store'
+import { setGlobalEnabled } from '@/lib/policy'
+import { writeAudit } from '@/lib/audit'
 import { sendDmLoginResponse, sendConfirmCard } from '@/lib/telegram/client'
 import type { Origin } from '@/lib/core/origin'
 
@@ -75,6 +77,25 @@ export async function handleCommand(origin: Origin, text: string): Promise<void>
     return
   }
 
-  // /start (binding), /pause, /resume land in a follow-up.
+  if (cmd === '/pause' || cmd === '/resume') {
+    const roster = await loadRoster(db)
+    if (origin.fromId == null || !roster.isOwner(origin.fromId)) {
+      await sendDmLoginResponse(origin.chatId, 'Only the house owner can pause or resume Baumy.')
+      return
+    }
+    // Kill-switch: applied immediately (a "go quiet" control should not itself
+    // need a second tap). Owner-authenticated + audited; untrusted text can never
+    // reach this. Always reversible with the opposite command / the dashboard.
+    const enable = cmd === '/resume'
+    await setGlobalEnabled(db, enable)
+    await writeAudit(db, enable ? 'policy.resume' : 'policy.pause', String(origin.fromId), null, null)
+    await sendDmLoginResponse(
+      origin.chatId,
+      enable ? '▶️ Baumy resumed — replies and reminders are back on.' : '⏸️ Baumy paused — it will stay quiet (still captures memory) until /resume.',
+    )
+    return
+  }
+
+  // /start (binding) lands in a follow-up.
   await sendDmLoginResponse(origin.chatId, 'Unknown command.')
 }
