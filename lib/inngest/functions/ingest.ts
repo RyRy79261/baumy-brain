@@ -88,20 +88,17 @@ export const handleTelegramMessage = inngest.createFunction(
       })
     }
 
-    // Reminder: AUTO-COMMIT. Baumy reads the message and just sets the reminder,
-    // then says so — no click-to-confirm (owner decision: it's a secretary, not a
-    // calendar UI). Safe because a reminder only ever posts TEXT to the fixed house
-    // group; it can't do anything privileged. (Genuinely privileged/config actions
-    // still go through the confirm wall.)
-    if (decision === 'reminder') {
-      if (!policy.global_enabled) return { updateId, decision: 'drop' as const, reason: 'paused' }
-      await step.run('reminder', async () => {
+    // Reminder: AUTO-COMMIT the ACTION (no click-to-confirm — safe, a reminder only
+    // posts TEXT to the fixed house group). The acknowledgement is the unified voice
+    // below (usually just a 👍).
+    let reminderSet = false
+    if (decision === 'reminder' && policy.global_enabled) {
+      reminderSet = await step.run('reminder', async () => {
         const db = createHttpDb()
         const ex = await extractReminder(text ?? '')
-        if (!ex.isReminder) return
+        if (!ex.isReminder) return false
         const parsed = parseWhen(ex.whenText)
-        if (!parsed) return
-        if (!(await claimReply(db, updateId))) return // one action per inbound (retry-safe)
+        if (!parsed) return false
         const id = await createReminder(db, {
           groupId: chatId,
           deliverChatId: houseChatId, // fixed destination, resolved in code (never LLM)
@@ -109,30 +106,33 @@ export const handleTelegramMessage = inngest.createFunction(
           fireAt: parsed.fireAt,
           createdBy: fromId != null ? String(fromId) : null,
         })
-        await inngest.send({ id: `reminder-arm:${id}`, name: 'reminder/arm.due', data: { reminderId: id } })
-        // Minimal ack: a 👍 says "noted, reminder set" without polluting the chat.
-        // (No "okay cool, scheduled you in" wall of text.)
-        await reactToMessage(chatId, messageId, '👍')
+        // Best-effort arm; the sweeper backstops delivery, so a hand-off failure
+        // here never retries the step into a duplicate reminder.
+        try {
+          await inngest.send({ id: `reminder-arm:${id}`, name: 'reminder/arm.due', data: { reminderId: id } })
+        } catch {
+          /* sweeper still delivers */
+        }
+        return true
       })
-      return { updateId, decision, directed, intent: verdict.intent, confidence: verdict.confidence, source: origin.source }
     }
 
-    // Reply: a DIRECTED message (@mention / by name / reply-to-Baumy) is always
-    // answered; otherwise the triage decides (respond === 'answer'). The model TIER
-    // comes from the triage — quick=Haiku, think=Sonnet, deep=Opus. Baumy shows 👀
-    // while thinking, then swaps it for the words. Kill-switch silences both.
-    const wantReply =
-      origin.lane === 'house' &&
-      policy.global_enabled &&
-      (directed || (verdict.respond === 'answer' && replyAllowed(policy, verdict.confidence, text ?? '')))
-    if (wantReply) {
+    // ── VOICE: ONE decision, made by the model — nothing, an emoji, or words.
+    // Rule: emoji by DEFAULT; words ONLY when they carry info an emoji can't (a real
+    // question, or banter aimed at Baumy). A directed message always gets a reply;
+    // the model picks the tier and self-escalates. 👀 while thinking, swapped for the
+    // words. A set reminder gets at least a 👍. Kill-switch silences everything.
+    const canSpeak = origin.lane === 'house' && policy.global_enabled
+    const wantAnswer =
+      canSpeak && (directed || (verdict.respond === 'answer' && replyAllowed(policy, verdict.confidence, text ?? '')))
+
+    if (wantAnswer) {
       await step.run('reply', async () => {
         const db = createHttpDb()
         if (chatId !== houseChatId) return // belt-and-suspenders: house group only (E2)
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
         await reactToMessage(chatId, messageId, '👀') // seen — thinking
-        // Deep (broad history search) is reserved for real questions; other intents
-        // can't trigger the broad/expensive path — clamp a stray 'deep' to 'think'.
+        // Deep (broad history search) only for real questions; clamp a stray 'deep'.
         const startTier = verdict.intent === 'question' ? verdict.tier : verdict.tier === 'deep' ? 'think' : verdict.tier
         const deep = startTier === 'deep'
         const memories = await retrieve(text ?? '', { groupId: chatId, k: deep ? 30 : 8, floor: deep ? 0.05 : 0.2 }, { db })
@@ -146,21 +146,16 @@ export const handleTelegramMessage = inngest.createFunction(
         const grounding = combined.map((m) =>
           m.isSecure && m.contentEncrypted ? { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` } : m,
         )
-        // Start at the tier the triage picked; the model self-escalates (→ Sonnet →
-        // Opus) only if it decides it needs more brainpower.
+        // Start at the triage tier; the model self-escalates only if it needs to.
         const { text: reply } = await answer(text ?? '', grounding, startTier)
         await sendToHouse(chatId, reply)
         await reactToMessage(chatId, messageId, null) // swap the 👀 out — the words are the reply
       })
-      return { updateId, decision, directed, tier: verdict.tier, source: origin.source }
-    }
-
-    // React-only: a light emoji ack when the triage says a reaction is enough (a
-    // noted agreement, a "seen") — no words.
-    if (origin.lane === 'house' && policy.global_enabled && verdict.respond === 'react') {
+    } else if (canSpeak && (verdict.respond === 'react' || reminderSet)) {
+      // Emoji is plenty; a set reminder gets at least a 👍 so it's confirmed.
       await reactToMessage(chatId, messageId, verdict.reaction ?? '👍')
     }
 
-    return { updateId, decision, directed, respond: verdict.respond, source: origin.source }
+    return { updateId, decision, directed, respond: verdict.respond, reminderSet, source: origin.source }
   },
 )
