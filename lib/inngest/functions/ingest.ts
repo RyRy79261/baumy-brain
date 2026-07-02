@@ -63,6 +63,9 @@ export const handleTelegramMessage = inngest.createFunction(
     const verdict = (await step.run('classify', async () => classify(text ?? ''))) as Verdict
     const decision = decide(origin, verdict)
 
+    const directed = event.data.directed === true
+
+    // Capture (evidence + facts) — independent of whether we also reply.
     if (decision === 'capture') {
       await step.run('capture', async () => {
         const db = createHttpDb()
@@ -81,33 +84,10 @@ export const handleTelegramMessage = inngest.createFunction(
           }
         }
       })
-    } else if (decision === 'reply' && origin.lane === 'house') {
-      // Owner response-policy gate: kill-switch / confidence floor / muted topics.
-      if (!replyAllowed(policy, verdict.confidence, text ?? '')) {
-        return { updateId, decision: 'drop' as const, reason: 'response-policy' }
-      }
-      // Retrieval-grounded replies only ever go INTO the house group.
-      await step.run('reply', async () => {
-        const db = createHttpDb()
-        if (chatId !== houseChatId) return // belt-and-suspenders: house group only (E2)
-        if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
-        const memories = await retrieve(text ?? '', { groupId: chatId }, { db })
-        // Union the structured knowledge graph (current facts naming the query's
-        // subject) with semantic recall.
-        const factHits = await currentFactsForQuery(db, chatId, text ?? '')
-        const combined = [
-          ...factHits.map((f, i) => ({ id: `fact:${i}`, memoryType: 'fact', authoredBy: null, similarity: 1, ...f })),
-          ...memories,
-        ]
-        // Disclosure discretion (memory-core #15): a secure value is decrypted
-        // ONLY here, to answer a member's direct question — never volunteered
-        // elsewhere and never in digests/broadcasts.
-        const grounding = combined.map((m) =>
-          m.isSecure && m.contentEncrypted ? { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` } : m,
-        )
-        await sendToHouse(chatId, await groundedReply(text ?? '', grounding))
-      })
-    } else if (decision === 'reminder') {
+    }
+
+    // Reminder proposal: the confirm card IS the response (return after posting it).
+    if (decision === 'reminder') {
       if (!policy.global_enabled) return { updateId, decision: 'drop' as const, reason: 'paused' }
       await step.run('reminder-propose', async () => {
         const db = createHttpDb()
@@ -133,8 +113,38 @@ export const handleTelegramMessage = inngest.createFunction(
         })
         await sendConfirmCard(chatId, `Set a reminder — "${ex.content}" on ${parsed.resolvedLocal}? Tap to confirm.`, actionId)
       })
+      return { updateId, decision, directed, intent: verdict.intent, confidence: verdict.confidence, source: origin.source }
     }
 
-    return { updateId, decision, intent: verdict.intent, confidence: verdict.confidence, source: origin.source }
+    // Reply: a message DIRECTED at Baumy (@mention / by name / reply-to-Baumy) is
+    // ALWAYS answered; an undirected groundable question is answered when policy
+    // allows. The kill-switch silences both. Replies converse but never fabricate
+    // house facts (reply.ts) and only ever go INTO the house group.
+    const wantReply =
+      origin.lane === 'house' &&
+      ((directed && policy.global_enabled) || (decision === 'reply' && replyAllowed(policy, verdict.confidence, text ?? '')))
+    if (wantReply) {
+      await step.run('reply', async () => {
+        const db = createHttpDb()
+        if (chatId !== houseChatId) return // belt-and-suspenders: house group only (E2)
+        if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
+        const memories = await retrieve(text ?? '', { groupId: chatId }, { db })
+        // Union the structured knowledge graph (current facts naming the query's
+        // subject) with semantic recall.
+        const factHits = await currentFactsForQuery(db, chatId, text ?? '')
+        const combined = [
+          ...factHits.map((f, i) => ({ id: `fact:${i}`, memoryType: 'fact', authoredBy: null, similarity: 1, ...f })),
+          ...memories,
+        ]
+        // Disclosure discretion (memory-core #15): a secure value is decrypted
+        // ONLY here, to answer a direct question — never volunteered / in digests.
+        const grounding = combined.map((m) =>
+          m.isSecure && m.contentEncrypted ? { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` } : m,
+        )
+        await sendToHouse(chatId, await groundedReply(text ?? '', grounding))
+      })
+    }
+
+    return { updateId, decision, directed, intent: verdict.intent, confidence: verdict.confidence, source: origin.source }
   },
 )

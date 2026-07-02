@@ -13,6 +13,7 @@ type Events = {
       text: string | null
       isBot: boolean
       isForwarded: boolean
+      directed: boolean
     }
   }
   'telegram/callback.received': {

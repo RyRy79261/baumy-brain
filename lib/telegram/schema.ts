@@ -29,6 +29,8 @@ const tgMessage = z
     // sends forward_origin (Bot API 7+) and/or the legacy forward_date.
     forward_origin: z.unknown().optional(),
     forward_date: z.number().optional(),
+    // Reply target — used to detect a message directed at Baumy (reply-to-bot).
+    reply_to_message: z.object({ from: tgUser.optional() }).passthrough().optional(),
   })
   .passthrough()
 
