@@ -5,9 +5,17 @@ const gen = vi.fn(async (args: { prompt?: string; system?: string }) => {
   captured = args
   return { object: { reply: 'MOCK REPLY', needsStrongerModel: false } }
 })
+const genText = vi.fn(async (args: { prompt?: string; system?: string }) => {
+  captured = args
+  return { text: 'PLAIN FALLBACK' }
+})
 vi.mock('ai', async (importOriginal) => {
   const actual = await importOriginal<typeof import('ai')>()
-  return { ...actual, generateObject: (...a: unknown[]) => gen(a[0] as { prompt?: string; system?: string }) }
+  return {
+    ...actual,
+    generateObject: (...a: unknown[]) => gen(a[0] as { prompt?: string; system?: string }),
+    generateText: (...a: unknown[]) => genText(a[0] as { prompt?: string; system?: string }),
+  }
 })
 
 const { groundedReply, answer } = await import('@/lib/ai/reply')
@@ -35,6 +43,16 @@ describe('groundedReply — retrieval-grounded, tool-less, self-assessing', () =
   it('honest-miss: empty memory yields an explicit no-memory block', async () => {
     await groundedReply('anything on the landlord?', [])
     expect(captured.prompt).toContain('(no relevant memory found)')
+  })
+
+  it('never drops the reply: malformed object → plain-text fallback', async () => {
+    // the exact prod failure — the model wraps the object, so schema validation throws.
+    gen.mockRejectedValueOnce(new Error('No object generated: response did not match schema'))
+    const out = await groundedReply('who is coming to visit', [mem('jessie oct 13-20', '100')])
+    expect(out.text).toBe('PLAIN FALLBACK')
+    expect(out.escalate).toBe(false)
+    expect(genText).toHaveBeenCalled()
+    expect(captured.system).not.toContain('"reply"') // text-mode system, no object fields
   })
 })
 
