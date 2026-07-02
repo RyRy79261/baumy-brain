@@ -14,6 +14,7 @@ import { createReminder } from '@/lib/reminders/store'
 import { loadRoster } from '@/lib/identity/roster'
 import { getHouseChatId } from '@/lib/identity/house'
 import { handleCommand } from '@/lib/identity/commands'
+import { decryptSecret } from '@/lib/core/crypto'
 import { sendToHouse } from '@/lib/telegram/client'
 
 // The reactive ingest pipeline (architecture D10): record-inbound → pre-filter →
@@ -77,7 +78,13 @@ export const handleTelegramMessage = inngest.createFunction(
         const db = createHttpDb()
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
         const memories = await retrieve(text ?? '', { groupId: chatId }, { db })
-        await sendToHouse(chatId, await groundedReply(text ?? '', memories))
+        // Disclosure discretion (memory-core #15): a secure value is decrypted
+        // ONLY here, to answer a member's direct question — never volunteered
+        // elsewhere and never in digests/broadcasts.
+        const grounding = memories.map((m) =>
+          m.isSecure && m.contentEncrypted ? { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` } : m,
+        )
+        await sendToHouse(chatId, await groundedReply(text ?? '', grounding))
       })
     } else if (decision === 'reminder') {
       await step.run('reminder', async () => {

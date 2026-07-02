@@ -1,6 +1,8 @@
 import { createHttpDb, type Database } from '@/db/client'
 import { telegramChats, members, memoryItems, memoryEmbeddings, replies } from '@/db/schema'
 import { embed } from '@/lib/ai/embed'
+import { scanSensitivity } from '@/lib/core/sensitivity'
+import { encryptSecret } from '@/lib/core/crypto'
 import type { Trust } from '@/lib/core/origin'
 
 const EMBED_MODEL = 'text-embedding-3-small'
@@ -33,7 +35,14 @@ export interface MemoryDeps {
 export async function captureMemory(input: CaptureInput, deps?: Partial<MemoryDeps>): Promise<string> {
   const db = deps?.db ?? createHttpDb()
   const embedFn = deps?.embed ?? embed
-  const vector = await embedFn(input.content)
+
+  // Secure values (memory-core #15 / security C8): encrypt the literal app-side,
+  // store ONLY a non-secret descriptor as content, and embed the DESCRIPTOR — the
+  // plaintext secret never lands in the content column or the vector store.
+  const sens = scanSensitivity(input.content)
+  const storedContent = sens.isSecure ? sens.descriptor : input.content
+  const contentEncrypted = sens.isSecure ? encryptSecret(input.content) : null
+  const vector = await embedFn(storedContent)
 
   const [item] = await db
     .insert(memoryItems)
@@ -41,9 +50,11 @@ export async function captureMemory(input: CaptureInput, deps?: Partial<MemoryDe
       groupId: input.groupId,
       sourceKind: 'message',
       memoryType: input.memoryType,
-      content: input.content,
+      content: storedContent,
       authoredBy: input.authoredBy,
       trustLevel: input.trustLevel,
+      isSecure: sens.isSecure,
+      contentEncrypted,
     })
     .returning({ id: memoryItems.id })
 

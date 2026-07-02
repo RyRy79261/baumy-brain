@@ -11,16 +11,30 @@ const PATTERNS: RegExp[] = [
   /\b\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}\b/, // 16-digit card number
 ]
 
+// Non-secret descriptors, parallel to PATTERNS. Stored as the memory item's
+// content + embedded in place of the plaintext secret, so recall can still find
+// "what's the wifi password?" without the value ever touching the vector store.
+const DESCRIPTORS: string[] = [
+  'the wifi password',
+  'an entry/door code',
+  'a saved password',
+  'a PIN/passcode',
+  'bank/account details',
+  'a card number',
+]
+
 export interface SensitivityResult {
   isSecure: boolean
   /** Index of the matching pattern, or -1. */
   matched: number
+  /** Non-secret descriptor for a secure hit (e.g. "the wifi password"), else ''. */
+  descriptor: string
 }
 
 export function scanSensitivity(text: string | null | undefined): SensitivityResult {
-  if (!text) return { isSecure: false, matched: -1 }
+  if (!text) return { isSecure: false, matched: -1, descriptor: '' }
   for (let i = 0; i < PATTERNS.length; i++) {
-    if (PATTERNS[i].test(text)) return { isSecure: true, matched: i }
+    if (PATTERNS[i].test(text)) return { isSecure: true, matched: i, descriptor: DESCRIPTORS[i] }
   }
-  return { isSecure: false, matched: -1 }
+  return { isSecure: false, matched: -1, descriptor: '' }
 }

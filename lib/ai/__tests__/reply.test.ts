@@ -17,7 +17,7 @@ const { groundedReply } = await import('@/lib/ai/reply')
 describe('groundedReply — retrieval-grounded, tool-less', () => {
   it('feeds retrieved memory into the prompt', async () => {
     const out = await groundedReply('when is rent due', [
-      { id: '1', content: 'rent is due friday', memoryType: 'fact', authoredBy: '100', similarity: 0.9 },
+      { id: '1', content: 'rent is due friday', memoryType: 'fact', authoredBy: '100', similarity: 0.9, isSecure: false, contentEncrypted: null },
     ])
     expect(out).toBe('MOCK REPLY')
     expect(captured.prompt).toContain('rent is due friday')

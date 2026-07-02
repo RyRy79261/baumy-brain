@@ -35,7 +35,8 @@ Everything below runs on **free tiers**. The only ongoing cost is LLM tokens (si
 ## 4. Generate the app secrets
 ```bash
 openssl rand -hex 24      # TELEGRAM_WEBHOOK_SECRET
-openssl rand -hex 24      # BAUMY_SESSION_SECRET
+openssl rand -base64 32   # BAUMY_SESSION_SECRET     (>=32 chars)
+openssl rand -base64 32   # BAUMY_ENCRYPTION_KEY     (32-byte base64; AES-256-GCM for secure values)
 ```
 > Login is **Telegram magic-link** (`/dashboard` → one-time link → a signed session
 > cookie). There is **no Better Auth / Neon Auth** — the only session secret is
@@ -53,6 +54,7 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 | `TELEGRAM_WEBHOOK_SECRET` | generated (step 4) |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM keys |
 | `BAUMY_SESSION_SECRET` | generated — signs the dashboard session cookie |
+| `BAUMY_ENCRYPTION_KEY` | generated — `openssl rand -base64 32`; AES-256-GCM for secure values (wifi/door/bank). A DB dump is useless without it; losing it makes existing secrets undecryptable. |
 | `BAUMY_PUBLIC_URL` | your deployed URL (e.g. `https://baumy.vercel.app`) |
 | `BAUMY_TIMEZONE` | `Europe/Berlin` (default) |
 | `BAUMY_DAILY_SPEND_CAP` | `0.5` (default) |

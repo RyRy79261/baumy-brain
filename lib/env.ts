@@ -18,8 +18,9 @@ const REQUIRED: EnvSpec[] = [
   { key: 'OPENAI_API_KEY' },
   // Session signing for the Telegram magic-link dashboard (lib/auth/session.ts).
   { key: 'BAUMY_SESSION_SECRET', minLen: 32 },
-  // NOTE: no Better Auth / Neon Auth — login is Telegram magic-link only.
-  // BAUMY_ENCRYPTION_KEY becomes required once the secure-value AES helper is wired.
+  // App-side AES-256-GCM key for secure values (lib/core/crypto.ts); base64 of 32
+  // bytes: `openssl rand -base64 32`. Login is Telegram magic-link (no Better/Neon Auth).
+  { key: 'BAUMY_ENCRYPTION_KEY', minLen: 32 },
 ]
 
 export interface EnvReport {

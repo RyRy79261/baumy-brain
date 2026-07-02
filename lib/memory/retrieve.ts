@@ -11,6 +11,9 @@ export interface RetrievedMemory {
   memoryType: string
   authoredBy: string | null
   similarity: number
+  isSecure: boolean
+  /** AES-GCM blob for a secure value; decrypt ONLY to answer a direct request. */
+  contentEncrypted: string | null
 }
 
 export interface RetrieveOpts {
@@ -36,6 +39,8 @@ export async function retrieve(
       memoryType: memoryItems.memoryType,
       authoredBy: memoryItems.authoredBy,
       similarity,
+      isSecure: memoryItems.isSecure,
+      contentEncrypted: memoryItems.contentEncrypted,
     })
     .from(memoryItems)
     .innerJoin(memoryEmbeddings, eq(memoryEmbeddings.memoryItemId, memoryItems.id))
