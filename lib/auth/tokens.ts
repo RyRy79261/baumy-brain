@@ -10,7 +10,7 @@ function hash(raw: string): string {
   return createHash('sha256').update(raw).digest('hex')
 }
 
-export async function issueLoginToken(db: Database, userId: string, ttlSec = 600): Promise<string> {
+export async function issueLoginToken(db: Database, userId: string, ttlSec = 300): Promise<string> {
   const raw = randomBytes(32).toString('base64url')
   await db.insert(dashboardLoginTokens).values({
     tokenHash: hash(raw),

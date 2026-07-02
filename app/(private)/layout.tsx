@@ -1,12 +1,11 @@
-import { cookies } from 'next/headers'
-import { verifySession, SESSION_COOKIE } from '@/lib/auth/session'
+import { requireAdmin } from '@/lib/auth/require-admin'
 
-// Session gate for the whole /admin surface (architecture D3). Machine endpoints
-// (/api/telegram, /api/inngest, /api/auth) live outside this group and keep their
-// own verification, so they're never gated here.
+// Authorization gate for the whole /admin surface (architecture D3, spec D2/D8).
+// requireAdmin re-checks the LIVE grant against the DB on every request — the
+// cookie alone never admits. Machine endpoints (/api/telegram, /api/inngest,
+// /api/auth) live outside this group and keep their own verification.
 export default async function PrivateLayout({ children }: { children: React.ReactNode }) {
-  const jar = await cookies()
-  const session = verifySession(jar.get(SESSION_COOKIE)?.value)
+  const session = await requireAdmin()
 
   if (!session) {
     return (

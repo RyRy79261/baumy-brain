@@ -17,7 +17,7 @@ const REQUIRED: EnvSpec[] = [
   { key: 'ANTHROPIC_API_KEY' },
   { key: 'OPENAI_API_KEY' },
   // Session signing for the Telegram magic-link dashboard (lib/auth/session.ts).
-  { key: 'BAUMY_SESSION_SECRET', minLen: 16 },
+  { key: 'BAUMY_SESSION_SECRET', minLen: 32 },
   // NOTE: no Better Auth / Neon Auth — login is Telegram magic-link only.
   // BAUMY_ENCRYPTION_KEY becomes required once the secure-value AES helper is wired.
 ]
