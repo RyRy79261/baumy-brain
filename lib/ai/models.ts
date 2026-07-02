@@ -7,11 +7,11 @@ export type Role = 'classify' | 'reply' | 'assess' | 'advisor'
 export const MODELS: Record<Role, { provider: 'anthropic'; id: string }> = {
   // Reactive path — cheap, capped, memory-only, tool-less, NEVER Opus. The
   // classifier moved OpenAI-nano → Haiku so there is no second vendor.
-  classify: { provider: 'anthropic', id: process.env.BAUMY_CLASSIFY_MODEL ?? 'claude-haiku-4-5' },
-  reply: { provider: 'anthropic', id: process.env.BAUMY_REPLY_MODEL ?? 'claude-haiku-4-5' },
+  classify: { provider: 'anthropic', id: process.env.BAUMY_CLASSIFY_MODEL ?? 'claude-haiku-4-5-20251001' },
+  reply: { provider: 'anthropic', id: process.env.BAUMY_REPLY_MODEL ?? 'claude-haiku-4-5-20251001' },
   // Deliberative path — reached ONLY by explicit trusted intent + scheduled tasks.
-  assess: { provider: 'anthropic', id: process.env.BAUMY_ASSESS_MODEL ?? 'claude-sonnet-4-5' },
-  advisor: { provider: 'anthropic', id: process.env.BAUMY_ADVISOR_MODEL ?? 'claude-opus-4-1' },
+  assess: { provider: 'anthropic', id: process.env.BAUMY_ASSESS_MODEL ?? 'claude-sonnet-5' },
+  advisor: { provider: 'anthropic', id: process.env.BAUMY_ADVISOR_MODEL ?? 'claude-opus-4-8' },
 }
 
 // Anthropic reasoning models reject temperature/top_p/top_k (HTTP 400).
