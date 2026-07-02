@@ -3,12 +3,13 @@ import { DateTime } from 'luxon'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { createReminder } from '@/lib/reminders/store'
+import { EMBED_DIM } from '@/lib/ai/embed'
 import { createScheduledTask, dueTasks, recordRun, cancelScheduledTask } from '@/lib/scheduled-tasks/store'
 import { computeNextRun } from '@/lib/scheduled-tasks/cadence'
 import { buildDigest } from '@/lib/scheduled-tasks/digest'
 
 const GROUP = '-100st'
-const zeroEmbed = async () => new Array<number>(1536).fill(0)
+const zeroEmbed = async () => new Array<number>(EMBED_DIM).fill(0)
 
 describe('scheduled tasks store + dispatch semantics', () => {
   it('due → run → advance next_run_at (recurring task stays active but not re-due)', async () => {

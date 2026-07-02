@@ -7,7 +7,6 @@ Everything below runs on **free tiers**. The only ongoing cost is LLM tokens (si
 - **Neon** (Postgres + pgvector) — neon.tech
 - **Vercel** (hosting) — vercel.com
 - **Anthropic** (replies/digests) — console.anthropic.com
-- **OpenAI** (cheap classifier + embeddings) — platform.openai.com
 - **Inngest** (background jobs) — inngest.com  *(easiest via the Vercel integration)*
 
 ---
@@ -28,9 +27,13 @@ Everything below runs on **free tiers**. The only ongoing cost is LLM tokens (si
    - direct/unpooled → **`DATABASE_URL_UNPOOLED`**  *(migrations need the direct one)*
 2. pgvector needs no setup — migration `0000` runs `CREATE EXTENSION vector`.
 
-## 3. LLM keys
-- Anthropic → **`ANTHROPIC_API_KEY`**
-- OpenAI → **`OPENAI_API_KEY`**
+## 3. LLM key
+- Anthropic → **`ANTHROPIC_API_KEY`**  *(the only AI vendor)*
+
+> Baumy uses **only Anthropic**. Replies/classification run on Claude (Haiku →
+> Sonnet → Opus by role); **embeddings are computed locally in-process** (no
+> OpenAI, no second key, no model download). If you ever want deeper semantic
+> recall, the `lib/ai/embed.ts` seam can be swapped for a local transformer model.
 
 ## 4. Generate the app secrets
 ```bash
@@ -52,7 +55,7 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 | `DATABASE_URL_UNPOOLED` | Neon direct URL |
 | `TELEGRAM_BOT_TOKEN` | from BotFather |
 | `TELEGRAM_WEBHOOK_SECRET` | generated (step 4) |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM keys |
+| `ANTHROPIC_API_KEY` | your Anthropic key (the only AI vendor) |
 | `BAUMY_SESSION_SECRET` | generated — signs the dashboard session cookie |
 | `BAUMY_ENCRYPTION_KEY` | generated — `openssl rand -base64 32`; AES-256-GCM for secure values (wifi/door/bank). A DB dump is useless without it; losing it makes existing secrets undecryptable. |
 | `BAUMY_PUBLIC_URL` | your deployed URL (e.g. `https://baumy.vercel.app`) |
@@ -64,7 +67,7 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 > house group (otherwise it's captured on bot-add) and `BAUMY_OWNER_ID` pins the
 > owner (otherwise it's whoever adds the bot). Leave both unset for the automatic flow.
 
-> ⚠️ **Verify at build:** the default model ids in `lib/ai/models.ts` are placeholders — confirm the current Anthropic/OpenAI ids and set the `BAUMY_*_MODEL` overrides if needed.
+> ⚠️ **Verify at build:** the default Claude model ids in `lib/ai/models.ts` are best-effort — confirm the current Anthropic ids and set the `BAUMY_*_MODEL` overrides if any have changed.
 
 ## 6. Run the database migrations
 ```bash

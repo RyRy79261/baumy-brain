@@ -1,11 +1,9 @@
 import { createHttpDb, type Database } from '@/db/client'
 import { telegramChats, members, memoryItems, memoryEmbeddings, replies } from '@/db/schema'
-import { embed } from '@/lib/ai/embed'
+import { embed, EMBED_MODEL } from '@/lib/ai/embed'
 import { scanSensitivity } from '@/lib/core/sensitivity'
 import { encryptSecret } from '@/lib/core/crypto'
 import type { Trust } from '@/lib/core/origin'
-
-const EMBED_MODEL = 'text-embedding-3-small'
 
 // Minimal registration so FK-bound memory writes succeed. Full B10 member
 // auto-discovery + bootstrap arrive with the auth phase; this is idempotent.
