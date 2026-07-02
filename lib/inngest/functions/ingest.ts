@@ -8,11 +8,14 @@ import { classify } from '@/lib/ai/classify'
 import { captureMemory, claimReply, ensureRegistered } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
 import { groundedReply } from '@/lib/ai/reply'
+import { extractReminder } from '@/lib/ai/reminder-extract'
+import { parseWhen } from '@/lib/reminders/parse'
+import { createReminder } from '@/lib/reminders/store'
 import { sendToHouse } from '@/lib/telegram/client'
 
 // The reactive ingest pipeline (architecture D10): record-inbound → pre-filter →
-// nano classify (memoized) → deterministic write-gate → act (capture / reply).
-// Secrets/clients are re-resolved INSIDE each step (never across a boundary).
+// nano classify (memoized) → deterministic write-gate → act (capture / reply /
+// reminder). Secrets/clients are re-resolved INSIDE each step (never crossed).
 export const handleTelegramMessage = inngest.createFunction(
   { id: 'handle-telegram-message', retries: 3 },
   { event: 'telegram/message.received' },
@@ -26,7 +29,6 @@ export const handleTelegramMessage = inngest.createFunction(
         .insert(telegramUpdates)
         .values({ updateId, chatId, raw: event.data as unknown as Record<string, unknown> })
         .onConflictDoNothing()
-      // Minimal registration (house group + sender) so memory FKs resolve.
       if (chatId === houseChatId) await ensureRegistered(db, chatId, fromId)
     })
 
@@ -65,6 +67,24 @@ export const handleTelegramMessage = inngest.createFunction(
         const memories = await retrieve(text ?? '', { groupId: chatId }, { db })
         const answer = await groundedReply(text ?? '', memories)
         await sendToHouse(answer)
+      })
+    } else if (decision === 'reminder') {
+      await step.run('reminder', async () => {
+        const db = createHttpDb()
+        const ex = await extractReminder(text ?? '')
+        if (!ex.isReminder) return
+        const parsed = parseWhen(ex.whenText)
+        if (!parsed) return
+        const id = await createReminder(db, {
+          groupId: chatId,
+          deliverChatId: houseChatId, // fixed destination, resolved in code (never LLM)
+          content: ex.content,
+          fireAt: parsed.fireAt,
+          createdBy: fromId != null ? String(fromId) : null,
+        })
+        await sendToHouse(`Got it — I'll remind the house: "${ex.content}" on ${parsed.resolvedLocal}.`)
+        // Arm immediately so near-term reminders don't wait for the daily cron.
+        await inngest.send({ id: `reminder-arm:${id}`, name: 'reminder/arm.due', data: { reminderId: id } })
       })
     }
 
