@@ -109,6 +109,30 @@ describe('memory store → recall (PGlite + pgvector)', () => {
     expect(expanded.some((r) => r.content.includes('oat milk'))).toBe(true)
   })
 
+  it('consolidation: a near-verbatim restatement bumps the original, not a duplicate', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 100)
+    const id1 = await captureMemory(
+      { groupId: GROUP, content: 'bins go out on tuesday', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
+      { db, embed },
+    )
+    // said again by someone else — same fact, must consolidate onto the original.
+    const id2 = await captureMemory(
+      { groupId: GROUP, content: 'bins go out on tuesday', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
+      { db, embed },
+    )
+    expect(id2).toBe(id1)
+    const res = await retrieve('when do the bins go out', { groupId: GROUP, floor: 0 }, { db, embed })
+    expect(res.filter((r) => r.content.includes('bins')).length).toBe(1) // one item, not two
+
+    // a genuinely different fact is NOT swallowed by dedup.
+    const id3 = await captureMemory(
+      { groupId: GROUP, content: 'recycling goes out on thursday', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
+      { db, embed },
+    )
+    expect(id3).not.toBe(id1)
+  })
+
   it('a similarity floor filters out unrelated items (honest miss)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, 100)
