@@ -274,3 +274,13 @@ export const llmUsage = pgTable('baumy_llm_usage', {
   updateId: bigint('update_id', { mode: 'number' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+// Dashboard magic-link login tokens (Phase 6): single-use, short-TTL, hashed at rest.
+export const dashboardLoginTokens = pgTable('baumy_dashboard_login_tokens', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tokenHash: text('token_hash').notNull().unique(),
+  userId: text('user_id').notNull(), // telegram_user_id
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+})

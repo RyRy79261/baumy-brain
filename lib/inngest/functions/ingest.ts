@@ -1,7 +1,7 @@
 import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { telegramUpdates } from '@/db/schema'
-import { resolveOriginParts, type Roster } from '@/lib/core/origin'
+import { resolveOriginParts } from '@/lib/core/origin'
 import { decide, type Verdict } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify } from '@/lib/ai/classify'
@@ -11,11 +11,12 @@ import { groundedReply } from '@/lib/ai/reply'
 import { extractReminder } from '@/lib/ai/reminder-extract'
 import { parseWhen } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
+import { loadRoster } from '@/lib/identity/roster'
+import { handleCommand } from '@/lib/identity/commands'
 import { sendToHouse } from '@/lib/telegram/client'
 
 // The reactive ingest pipeline (architecture D10): record-inbound → pre-filter →
-// nano classify (memoized) → deterministic write-gate → act (capture / reply /
-// reminder). Secrets/clients are re-resolved INSIDE each step (never crossed).
+// origin (real roster) → member-DM commands OR classify → write-gate → act.
 export const handleTelegramMessage = inngest.createFunction(
   { id: 'handle-telegram-message', retries: 3 },
   { event: 'telegram/message.received' },
@@ -32,19 +33,22 @@ export const handleTelegramMessage = inngest.createFunction(
       if (chatId === houseChatId) await ensureRegistered(db, chatId, fromId)
     })
 
-    // Deterministic pre-filter — drop obvious noise before any paid LLM call.
     const pf = prefilter(text)
     if (!pf.keep) return { updateId, decision: 'drop' as const, reason: pf.reason }
 
-    // Cheap nano classify (memoized: a retry reuses the same verdict).
-    const verdict = (await step.run('classify', async () => classify(text ?? ''))) as Verdict
-
-    // Deterministic origin + write-gate. Classifier proposes; this disposes.
-    const roster: Roster = {
-      isOwner: (id) => String(id) === (process.env.BAUMY_OWNER_ID ?? ''),
-      isMember: () => false, // the DM roster arrives with the auth/binding phase
-    }
+    // Real roster (fail-closed) + deterministic origin — before any LLM call.
+    const roster = await loadRoster(createHttpDb())
     const origin = resolveOriginParts({ chatId, fromId, text: text ?? null, isPrivate: chatType === 'private' }, roster)
+
+    // Member-DM commands (house-management). Deterministic; no classify/LLM.
+    if (origin.lane === 'member_dm' && (text ?? '').trim().startsWith('/')) {
+      await step.run('command', async () => handleCommand(origin, text ?? ''))
+      return { updateId, decision: 'command' as const }
+    }
+    if (origin.lane === 'ignore') return { updateId, decision: 'drop' as const, reason: 'out-of-scope' }
+
+    // Cheap nano classify (memoized) → write-gate decision.
+    const verdict = (await step.run('classify', async () => classify(text ?? ''))) as Verdict
     const decision = decide(origin, verdict)
 
     if (decision === 'capture') {
@@ -60,13 +64,13 @@ export const handleTelegramMessage = inngest.createFunction(
           { db: createHttpDb() },
         )
       })
-    } else if (decision === 'reply') {
+    } else if (decision === 'reply' && origin.lane === 'house') {
+      // Retrieval-grounded replies only ever go INTO the house group.
       await step.run('reply', async () => {
         const db = createHttpDb()
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
         const memories = await retrieve(text ?? '', { groupId: chatId }, { db })
-        const answer = await groundedReply(text ?? '', memories)
-        await sendToHouse(answer)
+        await sendToHouse(await groundedReply(text ?? '', memories))
       })
     } else if (decision === 'reminder') {
       await step.run('reminder', async () => {
@@ -83,7 +87,6 @@ export const handleTelegramMessage = inngest.createFunction(
           createdBy: fromId != null ? String(fromId) : null,
         })
         await sendToHouse(`Got it — I'll remind the house: "${ex.content}" on ${parsed.resolvedLocal}.`)
-        // Arm immediately so near-term reminders don't wait for the daily cron.
         await inngest.send({ id: `reminder-arm:${id}`, name: 'reminder/arm.due', data: { reminderId: id } })
       })
     }

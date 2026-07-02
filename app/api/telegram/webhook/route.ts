@@ -23,6 +23,20 @@ export async function POST(req: Request): Promise<Response> {
   const update = parseUpdate(body)
   if (!update) return Response.json({ ok: true, ignored: 'bad-shape' })
 
+  // 2b. my_chat_member (bot added/removed) → owner capture + group registration.
+  if ((update as { my_chat_member?: unknown }).my_chat_member) {
+    try {
+      await inngest.send({
+        id: `tg:mcm:${update.update_id}`,
+        name: 'telegram/my_chat_member',
+        data: { updateId: update.update_id, raw: update },
+      })
+    } catch {
+      return new Response('enqueue failed', { status: 503 })
+    }
+    return Response.json({ ok: true })
+  }
+
   // 3. Structural scope gate: house group, or a private DM (member identity is
   //    checked downstream in the pipeline). Out-of-scope → 200 to drain queue.
   const msg = update.message ?? update.edited_message
