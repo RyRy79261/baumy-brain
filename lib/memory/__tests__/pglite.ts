@@ -1,5 +1,6 @@
 import { PGlite } from '@electric-sql/pglite'
 import { vector } from '@electric-sql/pglite/vector'
+import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm'
 import { drizzle } from 'drizzle-orm/pglite'
 import * as schema from '@/db/schema'
 import type { Database } from '@/db/client'
@@ -14,6 +15,7 @@ export function fakeEmbed(text: string): number[] {
 // Just the tables the memory helpers touch (no HNSW needed for correctness).
 const DDL = `
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE TABLE baumy_telegram_chats (chat_id text PRIMARY KEY, kind text NOT NULL DEFAULT 'house_group', title text, is_primary boolean NOT NULL DEFAULT false, is_active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE baumy_members (telegram_user_id text PRIMARY KEY, group_id text NOT NULL REFERENCES baumy_telegram_chats(chat_id), display_name text, role text NOT NULL DEFAULT 'member', can_access_dashboard boolean NOT NULL DEFAULT false, dm_chat_id text, is_active boolean NOT NULL DEFAULT true, deactivated_at timestamptz, created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE baumy_memory_items (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), group_id text NOT NULL REFERENCES baumy_telegram_chats(chat_id), source_kind text NOT NULL, source_message_id uuid, memory_type text NOT NULL, content text NOT NULL, authored_by text REFERENCES baumy_members(telegram_user_id), trust_level text NOT NULL DEFAULT 'untrusted', is_secure boolean NOT NULL DEFAULT false, content_encrypted text, salience real NOT NULL DEFAULT 0.5, access_count integer NOT NULL DEFAULT 0, last_accessed_at timestamptz, is_active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(), content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED);
@@ -30,7 +32,7 @@ CREATE TABLE baumy_audit_log (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY
 `
 
 export async function makeTestDb(): Promise<Database> {
-  const client = new PGlite({ extensions: { vector } })
+  const client = new PGlite({ extensions: { vector, pg_trgm } })
   await client.exec(DDL)
   return drizzle(client, { schema }) as unknown as Database
 }

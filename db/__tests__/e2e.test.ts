@@ -90,6 +90,17 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect(hits[0]?.content).toContain('0300')
   })
 
+  it('entity resolution: surface variants merge; read-side fuzzy recalls (real pg_trgm)', async () => {
+    await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'the kitchen sink', predicate: 'status', object: 'leaking' }, authoredBy: null, trustLevel: 'untrusted' })
+    // "the sink" trigram-merges onto the same entity → supersede, not a fork.
+    expect(
+      await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'the sink', predicate: 'status', object: 'fixed' }, authoredBy: null, trustLevel: 'untrusted' }),
+    ).toBe('update')
+    // read-side fuzzy: singular query recalls the fact under a merged/varied surface.
+    const hits = await currentFactsForQuery(h.db, GROUP, 'did we fix the sinks yet')
+    expect(hits.some((r) => r.content.includes('fixed'))).toBe(true)
+  })
+
   it('reminder: atomic claim (exactly-once) + release re-arms on failure', async () => {
     const id = await createReminder(h.db, { groupId: GROUP, deliverChatId: GROUP, content: 'pay rent', fireAt: new Date(Date.now() - 1000), createdBy: null })
     expect(await claimReminder(h.db, id)).toBe(true)
