@@ -22,28 +22,40 @@ const REQUIRED: EnvSpec[] = [
   // BAUMY_ENCRYPTION_KEY becomes required once the secure-value AES helper is wired.
 ]
 
-let validated = false
+export interface EnvReport {
+  ok: boolean
+  /** Human-readable problems, VAR NAMES ONLY — never values. Safe to surface. */
+  problems: string[]
+}
 
-export function assertServerEnv(): void {
-  if (validated) return
-  // Skip during `next build` static collection — no secrets present, not runtime.
-  if (process.env.NEXT_PHASE === 'phase-production-build') return
+// Non-throwing readiness check. Used by /api/health (to report exactly what's
+// missing) and by boot logging. Never leaks secret values.
+export function checkServerEnv(): EnvReport {
+  // During `next build` static collection there are no secrets — not runtime.
+  if (process.env.NEXT_PHASE === 'phase-production-build') return { ok: true, problems: [] }
 
-  const errors: string[] = []
+  const problems: string[] = []
   for (const spec of REQUIRED) {
     const v = process.env[spec.key]
-    if (!v) errors.push(`missing ${spec.key}`)
+    if (!v) problems.push(`missing ${spec.key}`)
     else if (spec.minLen && v.length < spec.minLen) {
-      errors.push(`${spec.key} too short (min ${spec.minLen} chars)`)
+      problems.push(`${spec.key} too short (min ${spec.minLen} chars)`)
     }
   }
+  return { ok: problems.length === 0, problems }
+}
 
-  if (errors.length > 0) {
-    const msg = `[baumy/env] invalid server environment:\n  - ${errors.join('\n  - ')}`
-    if (process.env.NODE_ENV === 'production') throw new Error(msg)
-    console.warn(msg) // dev: warn loudly, don't crash the dev server
+// Boot check (instrumentation.ts). Deliberately does NOT throw: a half-configured
+// deploy still boots so /api/health can REPORT what's missing, and each operational
+// route (webhook secret, sends, DB, LLM) already fails closed on its own missing
+// dependency. We just log loudly.
+export function assertServerEnv(): void {
+  const { ok, problems } = checkServerEnv()
+  if (!ok) {
+    console.error(
+      `[baumy/env] server NOT fully configured — dependent routes will fail. Check /api/health:\n  - ${problems.join('\n  - ')}`,
+    )
   }
-  validated = true
 }
 
 export const houseChatId = (): string => process.env.BAUMY_HOUSE_CHAT_ID ?? ''
