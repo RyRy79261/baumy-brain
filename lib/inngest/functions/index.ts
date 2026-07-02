@@ -1,12 +1,14 @@
 import type { InngestFunction } from 'inngest'
 import { handleTelegramMessage } from './ingest'
 import { reminderArm, reminderDeliver, reminderSweeper } from './reminders'
+import { scheduledTaskDispatch } from './scheduled-tasks'
 
-// All registered Inngest functions. Scheduled-task dispatcher, digests, and
-// consolidation are appended in Phases 5+.
+// All registered Inngest functions. Consolidation/decay + the ad-hoc nudge path
+// are appended in later phases.
 export const functions: InngestFunction.Any[] = [
   handleTelegramMessage,
   reminderArm,
   reminderDeliver,
   reminderSweeper,
+  scheduledTaskDispatch,
 ]
