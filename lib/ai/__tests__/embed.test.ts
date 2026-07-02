@@ -1,24 +1,32 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
+import { embed, embedMany, embedSync, EMBED_DIM } from '@/lib/ai/embed'
 
-vi.mock('ai', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('ai')>()
-  return {
-    ...actual,
-    embed: vi.fn(async () => ({ embedding: [0.1, 0.2, 0.3] })),
-    embedMany: vi.fn(async (args: { values: string[] }) => ({ embeddings: args.values.map(() => [0.1]) })),
-  }
-})
+const cos = (a: number[], b: number[]) => a.reduce((s, x, i) => s + x * b[i], 0)
 
-const { embed, embedMany } = await import('@/lib/ai/embed')
-
-describe('embed helpers', () => {
-  it('embed returns a vector', async () => {
-    expect(await embed('hi')).toEqual([0.1, 0.2, 0.3])
+describe('local embeddings (dependency-free)', () => {
+  it('produces a unit-normalized vector of the right dimension', async () => {
+    const v = await embed('rent is due friday')
+    expect(v).toHaveLength(EMBED_DIM)
+    expect(Math.sqrt(v.reduce((s, x) => s + x * x, 0))).toBeCloseTo(1, 5)
   })
-  it('embedMany short-circuits on empty input (no model call)', async () => {
+
+  it('is deterministic (same text → same vector)', () => {
+    expect(embedSync('wifi password')).toEqual(embedSync('wifi password'))
+  })
+
+  it('scores related text higher than unrelated (cosine)', () => {
+    const q = embedSync('when is the rent due')
+    const near = embedSync('rent is due on friday')
+    const far = embedSync('we are out of oat milk')
+    expect(cos(q, near)).toBeGreaterThan(cos(q, far))
+  })
+
+  it('subword overlap survives typos/word-forms (rents ~ rent)', () => {
+    expect(cos(embedSync('rent'), embedSync('rents'))).toBeGreaterThan(cos(embedSync('rent'), embedSync('milk')))
+  })
+
+  it('embedMany short-circuits on empty input, else one vector per value', async () => {
     expect(await embedMany([])).toEqual([])
-  })
-  it('embedMany returns one vector per value', async () => {
     expect(await embedMany(['a', 'b'])).toHaveLength(2)
   })
 })
