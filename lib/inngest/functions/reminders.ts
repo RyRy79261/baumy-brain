@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm'
 import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { reminders } from '@/db/schema'
-import { claimReminder, markSent, dueScheduled } from '@/lib/reminders/store'
+import { claimReminder, markSent, dueScheduled, releaseReminder, reapStaleFiring } from '@/lib/reminders/store'
 import { sendToHouse } from '@/lib/telegram/client'
 
 const ARM_WINDOW_DAYS = 6 // Inngest Free caps a single sleep at 7 days
@@ -48,8 +48,13 @@ export const reminderDeliver = inngest.createFunction(
     await step.run('deliver', async () => {
       const db = createHttpDb()
       if (!(await claimReminder(db, reminderId))) return // another path already claimed it
-      await sendToHouse(row.deliverChatId, `⏰ ${row.content}`)
-      await markSent(db, reminderId)
+      try {
+        await sendToHouse(row.deliverChatId, `⏰ ${row.content}`)
+        await markSent(db, reminderId)
+      } catch (e) {
+        await releaseReminder(db, reminderId) // send failed → back to scheduled so it retries (never zero-fire)
+        throw e
+      }
     })
     return { delivered: reminderId }
   },
@@ -63,13 +68,19 @@ export const reminderSweeper = inngest.createFunction(
   async ({ step }) => {
     const sent = await step.run('sweep', async () => {
       const db = createHttpDb()
+      // Reap reminders orphaned in 'firing' (process died mid-send) older than 10 min.
+      await reapStaleFiring(db, new Date(Date.now() - 10 * 60_000))
       const overdue = await dueScheduled(db, new Date())
       let count = 0
       for (const r of overdue) {
         if (await claimReminder(db, r.id)) {
-          await sendToHouse(r.deliverChatId, `⏰ ${r.content}`)
-          await markSent(db, r.id)
-          count++
+          try {
+            await sendToHouse(r.deliverChatId, `⏰ ${r.content}`)
+            await markSent(db, r.id)
+            count++
+          } catch {
+            await releaseReminder(db, r.id) // failed → return to scheduled for the next sweep
+          }
         }
       }
       return count

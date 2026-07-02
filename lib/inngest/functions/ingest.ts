@@ -15,6 +15,7 @@ import { loadRoster } from '@/lib/identity/roster'
 import { getHouseChatId } from '@/lib/identity/house'
 import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
+import { loadResponsePolicy, replyAllowed } from '@/lib/policy'
 import { sendToHouse, sendConfirmCard } from '@/lib/telegram/client'
 
 // The reactive ingest pipeline (architecture D10): record-inbound → pre-filter →
@@ -26,6 +27,8 @@ export const handleTelegramMessage = inngest.createFunction(
     const { updateId, chatId, fromId, text, chatType, isBot, isForwarded } = event.data
     // House group id from house_config (captured on bot-add); env override wins.
     const houseChatId = await getHouseChatId(createHttpDb())
+    // Owner-configurable response policy (kill-switch / confidence floor / mutes).
+    const policy = await loadResponsePolicy(createHttpDb())
 
     await step.run('record-inbound', async () => {
       const db = createHttpDb()
@@ -73,9 +76,14 @@ export const handleTelegramMessage = inngest.createFunction(
         )
       })
     } else if (decision === 'reply' && origin.lane === 'house') {
+      // Owner response-policy gate: kill-switch / confidence floor / muted topics.
+      if (!replyAllowed(policy, verdict.confidence, text ?? '')) {
+        return { updateId, decision: 'drop' as const, reason: 'response-policy' }
+      }
       // Retrieval-grounded replies only ever go INTO the house group.
       await step.run('reply', async () => {
         const db = createHttpDb()
+        if (chatId !== houseChatId) return // belt-and-suspenders: house group only (E2)
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
         const memories = await retrieve(text ?? '', { groupId: chatId }, { db })
         // Disclosure discretion (memory-core #15): a secure value is decrypted
@@ -87,6 +95,7 @@ export const handleTelegramMessage = inngest.createFunction(
         await sendToHouse(chatId, await groundedReply(text ?? '', grounding))
       })
     } else if (decision === 'reminder') {
+      if (!policy.global_enabled) return { updateId, decision: 'drop' as const, reason: 'paused' }
       await step.run('reminder-propose', async () => {
         const db = createHttpDb()
         const ex = await extractReminder(text ?? '')
