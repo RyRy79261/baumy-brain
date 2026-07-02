@@ -56,11 +56,16 @@ export async function editMessageText(chatId: string, messageId: number, text: s
   await api().editMessageText(chatId, messageId, text, NO_PREVIEW)
 }
 
-// Best-effort emoji reaction — Baumy's lightweight "noted 👍" on a message,
-// instead of always sending a full line. Never breaks the pipeline on failure.
-export async function reactToMessage(chatId: string, messageId: number, emoji: ReactionTypeEmoji['emoji']): Promise<void> {
+// Best-effort emoji reaction — Baumy's lightweight ack (👀 seen, 👍 noted) on a
+// message instead of always sending a line. Pass null to CLEAR the reaction (swap
+// the eyes out once it answers). Never breaks the pipeline on failure.
+export async function reactToMessage(
+  chatId: string,
+  messageId: number,
+  emoji: ReactionTypeEmoji['emoji'] | null,
+): Promise<void> {
   try {
-    await api().setMessageReaction(chatId, messageId, [{ type: 'emoji', emoji }])
+    await api().setMessageReaction(chatId, messageId, emoji ? [{ type: 'emoji', emoji }] : [])
   } catch {
     // reactions are cosmetic; a failure (perms, unsupported emoji) must not throw
   }

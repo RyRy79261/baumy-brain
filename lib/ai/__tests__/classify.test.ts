@@ -6,18 +6,28 @@ vi.mock('ai', async (importOriginal) => {
   return {
     ...actual,
     generateObject: vi.fn(async () => ({
-      object: { worthRemembering: true, intent: 'fact', needsReply: false, confidence: 0.88 },
+      object: {
+        worthRemembering: true,
+        intent: 'fact',
+        needsReply: false,
+        confidence: 0.88,
+        respond: 'react',
+        reaction: '👍',
+        tier: 'quick',
+      },
     })),
   }
 })
 
 const { classify } = await import('@/lib/ai/classify')
 
-describe('classify', () => {
-  it('returns the validated structured verdict (schema is the injection firewall)', async () => {
+describe('classify (triage + router)', () => {
+  it('returns the validated verdict incl. the response plan + model tier', async () => {
     const v = await classify('rent is due friday')
     expect(v.intent).toBe('fact')
     expect(v.worthRemembering).toBe(true)
     expect(v.confidence).toBeCloseTo(0.88)
+    expect(v.respond).toBe('react')
+    expect(v.tier).toBe('quick')
   })
 })
