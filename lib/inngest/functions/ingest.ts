@@ -10,7 +10,6 @@ import { retrieve } from '@/lib/memory/retrieve'
 import { extractFacts } from '@/lib/ai/extract'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
 import { answer } from '@/lib/ai/reply'
-import { baumyLine } from '@/lib/ai/voice'
 import { extractReminder } from '@/lib/ai/reminder-extract'
 import { parseWhen } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
@@ -111,14 +110,9 @@ export const handleTelegramMessage = inngest.createFunction(
           createdBy: fromId != null ? String(fromId) : null,
         })
         await inngest.send({ id: `reminder-arm:${id}`, name: 'reminder/arm.due', data: { reminderId: id } })
-        // The acknowledgment is written by the model, not a template — natural,
-        // its own words, no robotic date restatement.
-        await sendToHouse(
-          chatId,
-          await baumyLine(
-            `A housemate just said: "${text ?? ''}". You quietly set a reminder so the house gets nudged about "${ex.content}" around ${parsed.resolvedLocal}. Let them know you've got it — one short, natural line; you can lightly check it's right.`,
-          ),
-        )
+        // Minimal ack: a 👍 says "noted, reminder set" without polluting the chat.
+        // (No "okay cool, scheduled you in" wall of text.)
+        await reactToMessage(chatId, messageId, '👍')
       })
       return { updateId, decision, directed, intent: verdict.intent, confidence: verdict.confidence, source: origin.source }
     }
