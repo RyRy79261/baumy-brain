@@ -75,6 +75,20 @@ export async function getMe() {
   return api().getMe()
 }
 
+// User ids of the house group's admins (creator + administrators), excluding bots.
+// Used ONLY as a dashboard HINT ("this member is a group admin — grant access?") —
+// it NEVER auto-grants (that would delegate grant authority to the Telegram admin
+// graph). Needs no bot-admin rights. Best-effort: empty set on any error.
+export async function getGroupAdminIds(chatId: string): Promise<Set<string>> {
+  if (!chatId) return new Set()
+  try {
+    const admins = await api().getChatAdministrators(chatId)
+    return new Set(admins.filter((a) => !a.user.is_bot).map((a) => String(a.user.id)))
+  } catch {
+    return new Set()
+  }
+}
+
 // Baumy's own @username (from getMe), cached for the process — so directed-at-
 // Baumy detection uses the bot's REAL name, never a hardcoded guess.
 let cachedUsername: string | null = null
