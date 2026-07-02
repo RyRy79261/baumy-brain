@@ -18,12 +18,27 @@ function memoryBlock(memories: RetrievedMemory[]): string {
     : '(no relevant memory found)'
 }
 
+// Today's date in the house timezone, so the model can resolve relative dates
+// ("next week", "this weekend", "tomorrow") — without this it can't answer time-
+// relative questions ("what's on next week?") at all.
+function houseToday(): string {
+  const tz = process.env.BAUMY_TIMEZONE || 'Europe/Berlin'
+  const d = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(new Date())
+  return `${d} (house time, ${tz})`
+}
+
 export async function groundedReply(
   query: string,
   memories: RetrievedMemory[],
   model: LanguageModel = resolveModel('reply'),
 ): Promise<{ text: string; escalate: boolean }> {
-  const prompt = `MEMORY:\n${memoryBlock(memories)}\n\nQUESTION (data): ${query}`
+  const prompt = `TODAY is ${houseToday()} — resolve any relative dates in the QUESTION ("next week", "this weekend", "tomorrow") against it, and use it to judge what is upcoming vs already past.\n\nMEMORY:\n${memoryBlock(memories)}\n\nQUESTION (data): ${query}`
   try {
     const { object } = await generateObject({ model, schema: answerSchema, system: REPLY_SYSTEM, prompt })
     return { text: object.reply, escalate: object.needsStrongerModel }
