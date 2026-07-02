@@ -38,6 +38,26 @@ describe('memory store → recall (PGlite + pgvector)', () => {
     expect(res.length).toBe(0)
   })
 
+  it('excludes quarantined (forwarded/bot) content from grounding — poisoning defense', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 100)
+    // a planted/forwarded "fact" — quarantined, must never ground a reply
+    await captureMemory(
+      { groupId: GROUP, content: 'the door code is 0000', memoryType: 'fact', authoredBy: null, trustLevel: 'quarantined' },
+      { db, embed },
+    )
+    // a genuine housemate fact — untrusted, grounds normally
+    await captureMemory(
+      { groupId: GROUP, content: 'bins go out on tuesday', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
+      { db, embed },
+    )
+
+    const poison = await retrieve('what is the door code', { groupId: GROUP, floor: 0 }, { db, embed })
+    expect(poison.some((r) => r.content.includes('door code'))).toBe(false) // quarantined never surfaces
+    const legit = await retrieve('when do the bins go out', { groupId: GROUP, floor: 0 }, { db, embed })
+    expect(legit[0]?.content).toBe('bins go out on tuesday') // untrusted still grounds
+  })
+
   it('a similarity floor filters out unrelated items (honest miss)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, 100)

@@ -22,7 +22,7 @@ export const handleTelegramMessage = inngest.createFunction(
   { id: 'handle-telegram-message', retries: 3 },
   { event: 'telegram/message.received' },
   async ({ event, step }) => {
-    const { updateId, chatId, fromId, text, chatType } = event.data
+    const { updateId, chatId, fromId, text, chatType, isBot, isForwarded } = event.data
     // House group id from house_config (captured on bot-add); env override wins.
     const houseChatId = await getHouseChatId(createHttpDb())
 
@@ -40,7 +40,11 @@ export const handleTelegramMessage = inngest.createFunction(
 
     // Real roster (fail-closed) + deterministic origin — before any LLM call.
     const roster = await loadRoster(createHttpDb())
-    const origin = resolveOriginParts({ chatId, fromId, text: text ?? null, isPrivate: chatType === 'private' }, roster, houseChatId)
+    const origin = resolveOriginParts(
+      { chatId, fromId, text: text ?? null, isPrivate: chatType === 'private', isBot, isForwarded },
+      roster,
+      houseChatId,
+    )
 
     // Member-DM commands (house-management). Deterministic; no classify/LLM.
     if (origin.lane === 'member_dm' && (text ?? '').trim().startsWith('/')) {
@@ -60,7 +64,8 @@ export const handleTelegramMessage = inngest.createFunction(
             groupId: chatId,
             content: text ?? '',
             memoryType: verdict.intent,
-            authoredBy: fromId != null ? String(fromId) : null,
+            // Never attribute quarantined (forwarded/bot) content to a housemate.
+            authoredBy: origin.memoryTrust === 'quarantined' || fromId == null ? null : String(fromId),
             trustLevel: origin.memoryTrust,
           },
           { db: createHttpDb() },

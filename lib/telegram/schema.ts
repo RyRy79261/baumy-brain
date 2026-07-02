@@ -25,6 +25,10 @@ const tgMessage = z
     left_chat_member: tgUser.optional(),
     migrate_to_chat_id: z.number().optional(),
     migrate_from_chat_id: z.number().optional(),
+    // Forwarded content is quarantined (memory-core #94 injection wall). Telegram
+    // sends forward_origin (Bot API 7+) and/or the legacy forward_date.
+    forward_origin: z.unknown().optional(),
+    forward_date: z.number().optional(),
   })
   .passthrough()
 
