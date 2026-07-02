@@ -122,7 +122,7 @@ export const entities = pgTable('baumy_entities', {
   kind: text('kind').notNull(), // free-form label (NEVER pgEnum)
   canonicalName: text('canonical_name').notNull(),
   aliases: text('aliases').array(),
-  nameEmbedding: vector('name_embedding', { dimensions: 384 }), // HNSW index in raw SQL migration
+  nameEmbedding: vector('name_embedding', { dimensions: 512 }), // HNSW index in raw SQL migration
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
@@ -156,7 +156,7 @@ export const memoryEmbeddings = pgTable(
       .notNull()
       .references(() => memoryItems.id, { onDelete: 'cascade' }),
     model: text('model').notNull(),
-    embedding: vector('embedding', { dimensions: 384 }).notNull(),
+    embedding: vector('embedding', { dimensions: 512 }).notNull(),
   },
   (t) => [uniqueIndex('baumy_memory_embeddings_item_model_uq').on(t.memoryItemId, t.model)],
 )

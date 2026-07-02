@@ -29,11 +29,11 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     await h?.stop()
   })
 
-  it('every real migration applied: embedding is vector(384) + both HNSW indexes exist', async () => {
+  it('every real migration applied: embedding is vector(512) + both HNSW indexes exist', async () => {
     const dim = await h.pool.query(
       "SELECT format_type(atttypid, atttypmod) t FROM pg_attribute WHERE attrelid = 'baumy_memory_embeddings'::regclass AND attname = 'embedding'",
     )
-    expect(dim.rows[0].t).toBe('vector(384)')
+    expect(dim.rows[0].t).toBe('vector(512)')
     const idx = await h.pool.query("SELECT count(*)::int n FROM pg_indexes WHERE indexname LIKE '%hnsw%'")
     expect(idx.rows[0].n).toBe(2)
   })

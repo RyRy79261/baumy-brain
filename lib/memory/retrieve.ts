@@ -1,7 +1,7 @@
 import { and, cosineDistance, desc, eq, ne, sql } from 'drizzle-orm'
 import { createHttpDb, type Database } from '@/db/client'
 import { memoryItems, memoryEmbeddings } from '@/db/schema'
-import { embed } from '@/lib/ai/embed'
+import { embed, EMBED_MODEL } from '@/lib/ai/embed'
 
 // Retrieval helper (task-graph M3): pgvector cosine ANN, group-scoped, active
 // only, top-k with a similarity floor. Recency/salience re-rank is a follow-up.
@@ -46,11 +46,14 @@ export async function retrieve(
     .innerJoin(memoryEmbeddings, eq(memoryEmbeddings.memoryItemId, memoryItems.id))
     // Grounding mode (memory-core #69): group-scoped, active, and EXCLUDING
     // quarantined (forwarded/bot) rows so poisoned content can never ground a reply.
+    // Only the CURRENT embedding model — never cosine-compare vectors from a
+    // different embedder (mixing spaces is meaningless); stale rows await backfill.
     .where(
       and(
         eq(memoryItems.groupId, opts.groupId),
         eq(memoryItems.isActive, true),
         ne(memoryItems.trustLevel, 'quarantined'),
+        eq(memoryEmbeddings.model, EMBED_MODEL),
       ),
     )
     .orderBy(desc(similarity))
