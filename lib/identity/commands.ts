@@ -31,7 +31,7 @@ export async function handleCommand(origin: Origin, text: string): Promise<void>
   }
 
   // ── Owner-only house administration ────────────────────────────
-  if (cmd === '/mates') {
+  if (cmd === '/housemates') {
     const roster = await loadRoster(db)
     if (origin.fromId == null || !roster.isOwner(origin.fromId)) {
       await sendDmLoginResponse(origin.chatId, 'Only the house owner can list housemates.')
@@ -56,7 +56,7 @@ export async function handleCommand(origin: Origin, text: string): Promise<void>
     }
     const target = (parts[1] ?? '').replace(/^@/, '')
     if (!/^\d+$/.test(target)) {
-      await sendDmLoginResponse(origin.chatId, `Usage: ${cmd} <telegram-user-id>  —  run /mates to see ids.`)
+      await sendDmLoginResponse(origin.chatId, `Usage: ${cmd} <telegram-user-id>  —  run /housemates to see ids.`)
       return
     }
     const grant = cmd === '/grant'
