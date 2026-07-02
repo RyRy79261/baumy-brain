@@ -24,6 +24,13 @@ export interface Roster {
   isMember: (id: number) => boolean
 }
 
+export interface OriginParts {
+  chatId: string
+  fromId: number | null
+  text: string | null
+  isPrivate: boolean
+}
+
 const IGNORE: Origin = {
   source: 'unauthorized',
   lane: 'ignore',
@@ -34,44 +41,33 @@ const IGNORE: Origin = {
   text: null,
 }
 
-export function resolveOrigin(update: TelegramUpdate, roster: Roster): Origin {
-  const msg = update.message ?? update.edited_message
-  if (!msg) return IGNORE
-
+export function resolveOriginParts(p: OriginParts, roster: Roster): Origin {
   const houseChatId = process.env.BAUMY_HOUSE_CHAT_ID ?? ''
-  const chatId = String(msg.chat.id)
-  const fromId = msg.from?.id ?? null
-  const text = msg.text ?? null
+  const { chatId, fromId, text, isPrivate } = p
   const isOwner = fromId != null && roster.isOwner(fromId)
 
   // House lane: everyone in the house group is a housemate (B10). Their text is
   // ALWAYS untrusted for privileged actions (privacy mode is OFF → injection
-  // wall); it can only become memory or a reply. owner/member is attribution.
+  // wall); it can only become memory, a reply, or a (fixed-destination) reminder.
+  // owner/member is attribution only.
   if (chatId === houseChatId) {
-    return {
-      source: isOwner ? 'owner' : 'member',
-      lane: 'house',
-      memoryTrust: 'untrusted',
-      privileged: false,
-      chatId,
-      fromId,
-      text,
-    }
+    return { source: isOwner ? 'owner' : 'member', lane: 'house', memoryTrust: 'untrusted', privileged: false, chatId, fromId, text }
   }
 
   // Member-DM lane: a private chat from a KNOWN member — house-management only.
-  if (msg.chat.type === 'private' && fromId != null && roster.isMember(fromId)) {
-    return {
-      source: isOwner ? 'owner' : 'member',
-      lane: 'member_dm',
-      memoryTrust: 'trusted',
-      privileged: true, // gated further by the action policy (owner vs member)
-      chatId,
-      fromId,
-      text,
-    }
+  if (isPrivate && fromId != null && roster.isMember(fromId)) {
+    return { source: isOwner ? 'owner' : 'member', lane: 'member_dm', memoryTrust: 'trusted', privileged: true, chatId, fromId, text }
   }
 
   // Unknown DM sender / out-of-scope → ignored.
   return { ...IGNORE, chatId, fromId, text }
+}
+
+export function resolveOrigin(update: TelegramUpdate, roster: Roster): Origin {
+  const msg = update.message ?? update.edited_message
+  if (!msg) return IGNORE
+  return resolveOriginParts(
+    { chatId: String(msg.chat.id), fromId: msg.from?.id ?? null, text: msg.text ?? null, isPrivate: msg.chat.type === 'private' },
+    roster,
+  )
 }

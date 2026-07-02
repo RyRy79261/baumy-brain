@@ -3,3 +3,4 @@
 export * from './origin'
 export * from './policy'
 export * from './sensitivity'
+export * from './decide'

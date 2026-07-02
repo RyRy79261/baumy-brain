@@ -17,8 +17,10 @@ export type Action = (typeof ACTIONS)[number]
 
 export function allowedActions(o: Origin): Action[] {
   if (o.lane === 'ignore') return []
-  // House lane — the injection wall: memory + reply only, never a privileged effect.
-  if (o.lane === 'house') return ['capture', 'answer']
+  // House lane — the injection wall. Capture + answer + reminders only (a reminder
+  // fires only into the fixed house group, so it's safe-by-construction). No
+  // scheduled tasks (deliberative/cost), no config, no admin.
+  if (o.lane === 'house') return ['capture', 'answer', 'create_reminder']
 
   // Member-DM lane — house-management.
   const base: Action[] = [

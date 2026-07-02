@@ -8,6 +8,7 @@ type Events = {
     data: {
       updateId: number
       chatId: string
+      chatType: string
       fromId: number | null
       text: string | null
     }
