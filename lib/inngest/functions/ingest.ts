@@ -12,6 +12,7 @@ import { extractReminder } from '@/lib/ai/reminder-extract'
 import { parseWhen } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
 import { loadRoster } from '@/lib/identity/roster'
+import { getHouseChatId } from '@/lib/identity/house'
 import { handleCommand } from '@/lib/identity/commands'
 import { sendToHouse } from '@/lib/telegram/client'
 
@@ -22,7 +23,8 @@ export const handleTelegramMessage = inngest.createFunction(
   { event: 'telegram/message.received' },
   async ({ event, step }) => {
     const { updateId, chatId, fromId, text, chatType } = event.data
-    const houseChatId = process.env.BAUMY_HOUSE_CHAT_ID ?? ''
+    // House group id from house_config (captured on bot-add); env override wins.
+    const houseChatId = await getHouseChatId(createHttpDb())
 
     await step.run('record-inbound', async () => {
       const db = createHttpDb()
@@ -38,7 +40,7 @@ export const handleTelegramMessage = inngest.createFunction(
 
     // Real roster (fail-closed) + deterministic origin — before any LLM call.
     const roster = await loadRoster(createHttpDb())
-    const origin = resolveOriginParts({ chatId, fromId, text: text ?? null, isPrivate: chatType === 'private' }, roster)
+    const origin = resolveOriginParts({ chatId, fromId, text: text ?? null, isPrivate: chatType === 'private' }, roster, houseChatId)
 
     // Member-DM commands (house-management). Deterministic; no classify/LLM.
     if (origin.lane === 'member_dm' && (text ?? '').trim().startsWith('/')) {
@@ -70,7 +72,7 @@ export const handleTelegramMessage = inngest.createFunction(
         const db = createHttpDb()
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
         const memories = await retrieve(text ?? '', { groupId: chatId }, { db })
-        await sendToHouse(await groundedReply(text ?? '', memories))
+        await sendToHouse(chatId, await groundedReply(text ?? '', memories))
       })
     } else if (decision === 'reminder') {
       await step.run('reminder', async () => {
@@ -86,7 +88,7 @@ export const handleTelegramMessage = inngest.createFunction(
           fireAt: parsed.fireAt,
           createdBy: fromId != null ? String(fromId) : null,
         })
-        await sendToHouse(`Got it — I'll remind the house: "${ex.content}" on ${parsed.resolvedLocal}.`)
+        await sendToHouse(houseChatId, `Got it — I'll remind the house: "${ex.content}" on ${parsed.resolvedLocal}.`)
         await inngest.send({ id: `reminder-arm:${id}`, name: 'reminder/arm.due', data: { reminderId: id } })
       })
     }

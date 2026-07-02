@@ -12,13 +12,14 @@ const REQUIRED: EnvSpec[] = [
   { key: 'DATABASE_URL_UNPOOLED' },
   { key: 'TELEGRAM_BOT_TOKEN' },
   { key: 'TELEGRAM_WEBHOOK_SECRET', minLen: 16 },
-  { key: 'BAUMY_HOUSE_CHAT_ID' },
+  // NOT BAUMY_HOUSE_CHAT_ID — the house group is auto-captured when the bot is
+  // added (my_chat_member → house_config). The env var is an optional override.
   { key: 'ANTHROPIC_API_KEY' },
   { key: 'OPENAI_API_KEY' },
-  { key: 'BAUMY_ENCRYPTION_KEY', minLen: 32 },
-  { key: 'BETTER_AUTH_SECRET', minLen: 16 },
-  { key: 'BETTER_AUTH_URL' },
+  // Session signing for the Telegram magic-link dashboard (lib/auth/session.ts).
   { key: 'BAUMY_SESSION_SECRET', minLen: 16 },
+  // NOTE: no Better Auth / Neon Auth — login is Telegram magic-link only.
+  // BAUMY_ENCRYPTION_KEY becomes required once the secure-value AES helper is wired.
 ]
 
 let validated = false

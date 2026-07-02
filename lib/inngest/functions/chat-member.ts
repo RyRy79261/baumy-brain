@@ -20,6 +20,14 @@ export const handleMyChatMember = inngest.createFunction(
       if (houseChatId && chatId !== houseChatId) return { ignored: 'not-house' }
 
       const db = createHttpDb()
+      // First invite wins: once a house group is captured, a later add to a
+      // DIFFERENT group can't hijack it (env override still forces the match above).
+      const [cfg] = await db.select({ existing: houseConfig.houseGroupChatId }).from(houseConfig).limit(1)
+      const existing = cfg?.existing ?? ''
+      if (!houseChatId && existing !== '' && existing !== chatId) {
+        return { ignored: 'house-already-set', existing }
+      }
+
       await ensureRegistered(db, chatId, inviterId)
       if (inviterId != null) {
         const override = process.env.BAUMY_OWNER_ID

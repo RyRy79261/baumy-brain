@@ -41,8 +41,11 @@ const IGNORE: Origin = {
   text: null,
 }
 
-export function resolveOriginParts(p: OriginParts, roster: Roster): Origin {
-  const houseChatId = process.env.BAUMY_HOUSE_CHAT_ID ?? ''
+// `houseChatId` is the house group id — resolved by the caller from house_config
+// (auto-captured when the bot is added). Falls back to the BAUMY_HOUSE_CHAT_ID
+// env override when a caller omits it (e.g. unit tests).
+export function resolveOriginParts(p: OriginParts, roster: Roster, houseChatId?: string): Origin {
+  const house = houseChatId ?? process.env.BAUMY_HOUSE_CHAT_ID ?? ''
   const { chatId, fromId, text, isPrivate } = p
   const isOwner = fromId != null && roster.isOwner(fromId)
 
@@ -50,7 +53,7 @@ export function resolveOriginParts(p: OriginParts, roster: Roster): Origin {
   // ALWAYS untrusted for privileged actions (privacy mode is OFF → injection
   // wall); it can only become memory, a reply, or a (fixed-destination) reminder.
   // owner/member is attribution only.
-  if (chatId === houseChatId) {
+  if (house !== '' && chatId === house) {
     return { source: isOwner ? 'owner' : 'member', lane: 'house', memoryTrust: 'untrusted', privileged: false, chatId, fromId, text }
   }
 
@@ -63,11 +66,12 @@ export function resolveOriginParts(p: OriginParts, roster: Roster): Origin {
   return { ...IGNORE, chatId, fromId, text }
 }
 
-export function resolveOrigin(update: TelegramUpdate, roster: Roster): Origin {
+export function resolveOrigin(update: TelegramUpdate, roster: Roster, houseChatId?: string): Origin {
   const msg = update.message ?? update.edited_message
   if (!msg) return IGNORE
   return resolveOriginParts(
     { chatId: String(msg.chat.id), fromId: msg.from?.id ?? null, text: msg.text ?? null, isPrivate: msg.chat.type === 'private' },
     roster,
+    houseChatId,
   )
 }
