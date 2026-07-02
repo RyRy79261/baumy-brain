@@ -2,9 +2,10 @@ import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { telegramUpdates } from '@/db/schema'
 import { resolveOriginParts } from '@/lib/core/origin'
-import { decide, type Verdict } from '@/lib/core/decide'
+import { decide } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
-import { classify } from '@/lib/ai/classify'
+import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
+import { resolveModel } from '@/lib/ai/registry'
 import { captureMemory, claimReply, ensureRegistered } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
 import { extractFacts } from '@/lib/ai/extract'
@@ -62,7 +63,7 @@ export const handleTelegramMessage = inngest.createFunction(
     if (origin.lane === 'ignore') return { updateId, decision: 'drop' as const, reason: 'out-of-scope' }
 
     // Cheap nano classify (memoized) → write-gate decision.
-    const verdict = (await step.run('classify', async () => classify(text ?? ''))) as Verdict
+    const verdict = (await step.run('classify', async () => classify(text ?? ''))) as ClassifierVerdict
     const decision = decide(origin, verdict)
 
     // "Directed at Baumy" uses the bot's REAL @username (getMe, cached), not a guess.
@@ -86,8 +87,6 @@ export const handleTelegramMessage = inngest.createFunction(
             await reconcileFact(db, { groupId: chatId, fact: f, authoredBy, trustLevel: origin.memoryTrust })
           }
         }
-        // A subtle "noted 👍" — Baumy observes without always talking (best-effort).
-        if (origin.lane === 'house') await reactToMessage(chatId, messageId, '👍')
       })
     }
 
@@ -125,35 +124,48 @@ export const handleTelegramMessage = inngest.createFunction(
       return { updateId, decision, directed, intent: verdict.intent, confidence: verdict.confidence, source: origin.source }
     }
 
-    // Reply: a message DIRECTED at Baumy (@mention / by name / reply-to-Baumy) is
-    // ALWAYS answered; an undirected groundable question is answered when policy
-    // allows. The kill-switch silences both. Replies converse but never fabricate
-    // house facts (reply.ts) and only ever go INTO the house group.
+    // Reply: a DIRECTED message (@mention / by name / reply-to-Baumy) is always
+    // answered; otherwise the triage decides (respond === 'answer'). The model TIER
+    // comes from the triage — quick=Haiku, think=Sonnet, deep=Opus. Baumy shows 👀
+    // while thinking, then swaps it for the words. Kill-switch silences both.
     const wantReply =
       origin.lane === 'house' &&
-      ((directed && policy.global_enabled) || (decision === 'reply' && replyAllowed(policy, verdict.confidence, text ?? '')))
+      policy.global_enabled &&
+      (directed || (verdict.respond === 'answer' && replyAllowed(policy, verdict.confidence, text ?? '')))
     if (wantReply) {
       await step.run('reply', async () => {
         const db = createHttpDb()
         if (chatId !== houseChatId) return // belt-and-suspenders: house group only (E2)
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
-        const memories = await retrieve(text ?? '', { groupId: chatId }, { db })
-        // Union the structured knowledge graph (current facts naming the query's
-        // subject) with semantic recall.
-        const factHits = await currentFactsForQuery(db, chatId, text ?? '')
+        await reactToMessage(chatId, messageId, '👀') // seen — thinking
+        // Deep (Opus + broad history search) is reserved for real questions; other
+        // intents can't burn Opus — clamp a stray 'deep' down to 'think'.
+        const tier = verdict.intent === 'question' ? verdict.tier : verdict.tier === 'deep' ? 'think' : verdict.tier
+        const deep = tier === 'deep'
+        const model = resolveModel(deep ? 'advisor' : tier === 'think' ? 'assess' : 'reply')
+        const memories = await retrieve(text ?? '', { groupId: chatId, k: deep ? 30 : 8, floor: deep ? 0.05 : 0.2 }, { db })
+        const factHits = await currentFactsForQuery(db, chatId, text ?? '', deep ? 15 : 5)
         const combined = [
           ...factHits.map((f, i) => ({ id: `fact:${i}`, memoryType: 'fact', authoredBy: null, similarity: 1, ...f })),
           ...memories,
         ]
-        // Disclosure discretion (memory-core #15): a secure value is decrypted
-        // ONLY here, to answer a direct question — never volunteered / in digests.
+        // Disclosure discretion (memory-core #15): a secure value is decrypted ONLY
+        // here, to answer a direct question — never volunteered / in digests.
         const grounding = combined.map((m) =>
           m.isSecure && m.contentEncrypted ? { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` } : m,
         )
-        await sendToHouse(chatId, await groundedReply(text ?? '', grounding))
+        await sendToHouse(chatId, await groundedReply(text ?? '', grounding, model))
+        await reactToMessage(chatId, messageId, null) // swap the 👀 out — the words are the reply
       })
+      return { updateId, decision, directed, tier: verdict.tier, source: origin.source }
     }
 
-    return { updateId, decision, directed, intent: verdict.intent, confidence: verdict.confidence, source: origin.source }
+    // React-only: a light emoji ack when the triage says a reaction is enough (a
+    // noted agreement, a "seen") — no words.
+    if (origin.lane === 'house' && policy.global_enabled && verdict.respond === 'react') {
+      await reactToMessage(chatId, messageId, verdict.reaction ?? '👍')
+    }
+
+    return { updateId, decision, directed, respond: verdict.respond, source: origin.source }
   },
 )
