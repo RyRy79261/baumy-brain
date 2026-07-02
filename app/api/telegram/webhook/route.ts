@@ -60,6 +60,20 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ ok: true })
   }
 
+  // 2d. chat_member (a housemate joined/left) → membership lifecycle handler.
+  if ((update as { chat_member?: unknown }).chat_member) {
+    try {
+      await inngest.send({
+        id: `tg:cm:${update.update_id}`,
+        name: 'telegram/chat_member',
+        data: { updateId: update.update_id, raw: update },
+      })
+    } catch {
+      return new Response('enqueue failed', { status: 503 })
+    }
+    return Response.json({ ok: true })
+  }
+
   // 3. In-shape message? Forward it. Scope (house group vs known-member DM vs
   //    ignore) is resolved DOWNSTREAM in the pipeline from house_config — the
   //    house group is auto-captured on bot-add, so the webhook needs no chat id.

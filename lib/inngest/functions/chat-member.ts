@@ -3,7 +3,9 @@ import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { houseConfig } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
-import { parseMyChatMember, upsertMember } from '@/lib/identity/roster'
+import { parseMyChatMember, parseChatMember, upsertMember, deactivateMember } from '@/lib/identity/roster'
+import { getHouseChatId } from '@/lib/identity/house'
+import { writeAudit } from '@/lib/audit'
 
 // Owner = whoever invited the bot (decision OWNER). Captured from the
 // my_chat_member "added" transition (Telegram-authenticated `from.id`);
@@ -38,4 +40,30 @@ export const handleMyChatMember = inngest.createFunction(
       return { owner: inviterId, chatId }
     })
   },
+)
+
+// A HOUSEMATE's status changed (chat_member update — distinct from the bot's
+// my_chat_member). On leave/kick/ban → deactivate so they immediately lose
+// trusted-DM + dashboard access (audit #6). On join → register/reactivate.
+export const handleChatMember = inngest.createFunction(
+  { id: 'handle-chat-member' },
+  { event: 'telegram/chat_member' },
+  async ({ event, step }) =>
+    step.run('apply', async () => {
+      const { userId, status, name } = parseChatMember(event.data.raw)
+      if (!userId || !status) return { ignored: true }
+      const db = createHttpDb()
+
+      if (status === 'left' || status === 'kicked' || status === 'banned') {
+        await deactivateMember(db, userId)
+        await writeAudit(db, 'member.deactivate', null, userId, { reason: status })
+        return { deactivated: userId }
+      }
+      if (status === 'member' || status === 'administrator' || status === 'creator') {
+        const houseChatId = await getHouseChatId(db)
+        if (houseChatId) await upsertMember(db, houseChatId, userId, name)
+        return { active: userId }
+      }
+      return { ignored: status }
+    }),
 )

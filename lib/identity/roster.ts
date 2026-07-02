@@ -60,6 +60,41 @@ export async function deactivateMember(db: Database, userId: string): Promise<vo
   await db.update(members).set({ isActive: false, deactivatedAt: new Date() }).where(eq(members.telegramUserId, userId))
 }
 
+// Owner-gated dashboard grant/revoke (returns false if no such member row).
+export async function setDashboardAccess(db: Database, userId: string, allow: boolean): Promise<boolean> {
+  const rows = await db
+    .update(members)
+    .set({ canAccessDashboard: allow })
+    .where(eq(members.telegramUserId, userId))
+    .returning({ id: members.telegramUserId })
+  return rows.length > 0
+}
+
+export async function listActiveMembers(
+  db: Database,
+): Promise<Array<{ id: string; name: string | null; role: string; dashboard: boolean }>> {
+  const rows = await db
+    .select({
+      id: members.telegramUserId,
+      name: members.displayName,
+      role: members.role,
+      dashboard: members.canAccessDashboard,
+      active: members.isActive,
+    })
+    .from(members)
+  return rows.filter((r) => r.active).map((r) => ({ id: r.id, name: r.name, role: r.role, dashboard: r.dashboard }))
+}
+
+// Parse a chat_member update (a HOUSEMATE's status change, not the bot's).
+export function parseChatMember(update: unknown): { userId: string | null; status: string | null; name: string | null } {
+  const u = update as {
+    chat_member?: { new_chat_member?: { user?: { id?: number; first_name?: string; username?: string }; status?: string } }
+  }
+  const ncm = u.chat_member?.new_chat_member
+  if (!ncm?.user?.id) return { userId: null, status: null, name: null }
+  return { userId: String(ncm.user.id), status: ncm.status ?? null, name: ncm.user.first_name ?? ncm.user.username ?? null }
+}
+
 // Parse a my_chat_member update: was the BOT added, and by whom (→ owner = inviter)?
 export function parseMyChatMember(update: unknown): { botAdded: boolean; inviterId: number | null; chatId: string | null } {
   const u = update as {

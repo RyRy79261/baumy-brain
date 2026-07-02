@@ -3,7 +3,15 @@ import { eq } from 'drizzle-orm'
 import { members } from '@/db/schema'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { ensureRegistered } from '@/lib/memory/write'
-import { loadRoster, upsertMember, deactivateMember, parseMyChatMember } from '@/lib/identity/roster'
+import {
+  loadRoster,
+  upsertMember,
+  deactivateMember,
+  parseMyChatMember,
+  parseChatMember,
+  setDashboardAccess,
+  listActiveMembers,
+} from '@/lib/identity/roster'
 
 const GROUP = '-100ros'
 
@@ -61,6 +69,41 @@ describe('loadRoster (fail-closed)', () => {
     await db.update(members).set({ canAccessDashboard: true }).where(eq(members.telegramUserId, '400'))
     await deactivateMember(db, '400')
     expect((await loadRoster(db)).canAccessDashboard(400)).toBe(false)
+  })
+})
+
+describe('owner administration', () => {
+  it('grant/revoke flips can_access_dashboard; unknown id is a no-op', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await upsertMember(db, GROUP, '500', 'Tom', 'member')
+
+    expect(await setDashboardAccess(db, '500', true)).toBe(true)
+    expect((await loadRoster(db)).canAccessDashboard(500)).toBe(true)
+    expect(await setDashboardAccess(db, '500', false)).toBe(true)
+    expect((await loadRoster(db)).canAccessDashboard(500)).toBe(false)
+    expect(await setDashboardAccess(db, '999', true)).toBe(false) // no such member
+  })
+
+  it('listActiveMembers returns only active rows with role + dashboard flag', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await upsertMember(db, GROUP, '100', 'Owner', 'owner')
+    await upsertMember(db, GROUP, '200', 'Gone', 'member')
+    await deactivateMember(db, '200')
+    const mates = await listActiveMembers(db)
+    expect(mates.map((m) => m.id)).toEqual(['100'])
+    expect(mates[0].role).toBe('owner')
+  })
+})
+
+describe('parseChatMember (housemate join/leave)', () => {
+  it('reads a leave (→ deactivate) and a join (→ register)', () => {
+    const left = parseChatMember({ chat_member: { new_chat_member: { user: { id: 42, first_name: 'Ann' }, status: 'left' } } })
+    expect(left).toEqual({ userId: '42', status: 'left', name: 'Ann' })
+    const joined = parseChatMember({ chat_member: { new_chat_member: { user: { id: 7 }, status: 'member' } } })
+    expect(joined.status).toBe('member')
+    expect(parseChatMember({ message: {} }).userId).toBeNull()
   })
 })
 
