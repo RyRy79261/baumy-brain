@@ -7,4 +7,11 @@ import { functions } from '@/lib/inngest/functions'
 export const runtime = 'nodejs'
 export const maxDuration = 300
 
-export const { GET, POST, PUT } = serve({ client: inngest, functions })
+// Register against the STABLE public production URL (BAUMY_PUBLIC_URL), not the
+// per-deploy `*.vercel.app` URL that Vercel Deployment Protection makes
+// unreachable to Inngest. Falls back to auto-detect locally (inngest:dev).
+export const { GET, POST, PUT } = serve({
+  client: inngest,
+  functions,
+  serveHost: process.env.BAUMY_PUBLIC_URL || undefined,
+})
