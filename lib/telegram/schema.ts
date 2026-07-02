@@ -49,6 +49,7 @@ export const updateSchema = z
     message: tgMessage.optional(),
     edited_message: tgMessage.optional(),
     my_chat_member: z.unknown().optional(),
+    chat_member: z.unknown().optional(),
     callback_query: tgCallbackQuery.optional(),
   })
   .passthrough()

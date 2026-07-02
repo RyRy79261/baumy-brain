@@ -28,6 +28,7 @@ type Events = {
   'reminder/arm.due': { data: { reminderId: string } }
   'reminder/cancelled': { data: { reminderId: string } }
   'telegram/my_chat_member': { data: { updateId: number; raw: unknown } }
+  'telegram/chat_member': { data: { updateId: number; raw: unknown } }
 }
 
 export const inngest = new Inngest({
