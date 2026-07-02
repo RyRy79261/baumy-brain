@@ -1,7 +1,7 @@
-import { generateObject, type LanguageModel } from 'ai'
+import { generateObject, generateText, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { resolveModel } from './registry'
-import { REPLY_SYSTEM } from './prompts'
+import { REPLY_SYSTEM, REPLY_SYSTEM_TEXT } from './prompts'
 import type { RetrievedMemory } from '@/lib/memory/retrieve'
 
 // Grounded reply. Memory-only, ZERO tools (exfil-safe). Answers strictly from the
@@ -23,13 +23,17 @@ export async function groundedReply(
   memories: RetrievedMemory[],
   model: LanguageModel = resolveModel('reply'),
 ): Promise<{ text: string; escalate: boolean }> {
-  const { object } = await generateObject({
-    model,
-    schema: answerSchema,
-    system: REPLY_SYSTEM,
-    prompt: `MEMORY:\n${memoryBlock(memories)}\n\nQUESTION (data): ${query}`,
-  })
-  return { text: object.reply, escalate: object.needsStrongerModel }
+  const prompt = `MEMORY:\n${memoryBlock(memories)}\n\nQUESTION (data): ${query}`
+  try {
+    const { object } = await generateObject({ model, schema: answerSchema, system: REPLY_SYSTEM, prompt })
+    return { text: object.reply, escalate: object.needsStrongerModel }
+  } catch {
+    // A model occasionally malforms the structured object (e.g. wraps it under an
+    // extra key) — that must NEVER swallow a user-facing reply. Fall back to plain
+    // text with the same grounding; forgo self-escalation for this turn.
+    const { text } = await generateText({ model, system: REPLY_SYSTEM_TEXT, prompt })
+    return { text: text.trim(), escalate: false }
+  }
 }
 
 // Self-advising escalation ladder: Haiku → Sonnet → Opus. The triage tier sets the
