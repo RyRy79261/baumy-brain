@@ -2,6 +2,8 @@
 // Run:  node --experimental-strip-types scripts/set-webhook.ts
 // Needs: TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, BAUMY_PUBLIC_URL
 
+export {} // module scope (isolates top-level names from other scripts under tsc)
+
 const token = process.env.TELEGRAM_BOT_TOKEN
 const secret = process.env.TELEGRAM_WEBHOOK_SECRET
 const base = process.env.BAUMY_PUBLIC_URL

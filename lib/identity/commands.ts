@@ -1,19 +1,26 @@
-import { createHttpDb } from '@/db/client'
-import { loadRoster, listActiveMembers } from '@/lib/identity/roster'
+import { createHttpDb, type Database } from '@/db/client'
+import { loadRoster, setDmChatId } from '@/lib/identity/roster'
 import { issueLoginToken } from '@/lib/auth/tokens'
-import { createPendingAction } from '@/lib/confirm/store'
 import { setGlobalEnabled } from '@/lib/policy'
 import { writeAudit } from '@/lib/audit'
-import { sendDmLoginResponse, sendConfirmCard } from '@/lib/telegram/client'
+import { sendDmLoginResponse } from '@/lib/telegram/client'
+import { START_MESSAGE } from '@/lib/ai/prompts'
 import type { Origin } from '@/lib/core/origin'
 
 // House-management commands over the member-DM lane (deterministic; no LLM).
 // origin.chatId for a member DM is that member's private chat id.
-export async function handleCommand(origin: Origin, text: string): Promise<void> {
+export async function handleCommand(origin: Origin, text: string, db: Database = createHttpDb()): Promise<void> {
   const parts = text.trim().split(/\s+/)
   // Strip a "@botusername" suffix so "/dashboard@baumy_bot" === "/dashboard".
   const cmd = (parts[0] ?? '').split('@')[0].toLowerCase()
-  const db = createHttpDb()
+
+  // Orientation + first-DM capture. Reaches here only in the member-DM lane, so the
+  // caller is a known housemate — record their DM chat id for future proactive DMs.
+  if (cmd === '/start') {
+    if (origin.fromId != null) await setDmChatId(db, String(origin.fromId), origin.chatId)
+    await sendDmLoginResponse(origin.chatId, START_MESSAGE)
+    return
+  }
 
   if (cmd === '/dashboard') {
     if (origin.fromId == null) return
@@ -31,52 +38,10 @@ export async function handleCommand(origin: Origin, text: string): Promise<void>
     return
   }
 
-  // ── Owner-only house administration ────────────────────────────
-  if (cmd === '/housemates') {
-    const roster = await loadRoster(db)
-    if (origin.fromId == null || !roster.isOwner(origin.fromId)) {
-      await sendDmLoginResponse(origin.chatId, 'Only the house owner can list housemates.')
-      return
-    }
-    const mates = await listActiveMembers(db)
-    const lines = mates.length
-      ? mates.map(
-          (m) =>
-            `• ${m.name ?? '(no name)'} — id ${m.id}${m.role === 'owner' ? ' (owner)' : ''}${m.dashboard ? ' • dashboard ✓' : ''}`,
-        )
-      : ['No housemates on file yet.']
-    await sendDmLoginResponse(origin.chatId, ['Housemates:', ...lines].join('\n'))
-    return
-  }
-
-  if (cmd === '/grant' || cmd === '/revoke') {
-    const roster = await loadRoster(db)
-    if (origin.fromId == null || !roster.isOwner(origin.fromId)) {
-      await sendDmLoginResponse(origin.chatId, 'Only the house owner can change dashboard access.')
-      return
-    }
-    const target = (parts[1] ?? '').replace(/^@/, '')
-    if (!/^\d+$/.test(target)) {
-      await sendDmLoginResponse(origin.chatId, `Usage: ${cmd} <telegram-user-id>  —  run /housemates to see ids.`)
-      return
-    }
-    const grant = cmd === '/grant'
-    // Privileged action → a human tap confirms (security B4). Even the owner's own
-    // command lands as a confirm card in the DM before it commits.
-    const actionId = await createPendingAction(db, {
-      groupId: origin.chatId,
-      actionType: grant ? 'dashboard.grant' : 'dashboard.revoke',
-      payload: { targetUserId: target },
-      requestedBy: String(origin.fromId),
-      ttlSec: 600,
-    })
-    await sendConfirmCard(
-      origin.chatId,
-      `${grant ? 'Grant' : 'Revoke'} dashboard access for user ${target}? Tap to confirm.`,
-      actionId,
-    )
-    return
-  }
+  // Member/dashboard management (list / grant / revoke) lives in the web dashboard,
+  // not in chat commands — you can see who's in the group already, and grants are a
+  // one-tap toggle there (with a "group admin → grant?" hint). No /housemates,
+  // /grant, /revoke.
 
   if (cmd === '/pause' || cmd === '/resume') {
     const roster = await loadRoster(db)
@@ -97,6 +62,5 @@ export async function handleCommand(origin: Origin, text: string): Promise<void>
     return
   }
 
-  // /start (binding) lands in a follow-up.
   await sendDmLoginResponse(origin.chatId, 'Unknown command.')
 }

@@ -60,6 +60,12 @@ export async function deactivateMember(db: Database, userId: string): Promise<vo
   await db.update(members).set({ isActive: false, deactivatedAt: new Date() }).where(eq(members.telegramUserId, userId))
 }
 
+// Capture a member's private-chat id (on /start) so Baumy can DM them later —
+// e.g. hand them a dashboard link proactively instead of only ever replying.
+export async function setDmChatId(db: Database, userId: string, dmChatId: string): Promise<void> {
+  await db.update(members).set({ dmChatId }).where(eq(members.telegramUserId, userId))
+}
+
 // Owner-gated dashboard grant/revoke (returns false if no such member row).
 export async function setDashboardAccess(db: Database, userId: string, allow: boolean): Promise<boolean> {
   const rows = await db
