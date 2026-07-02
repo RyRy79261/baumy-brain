@@ -5,12 +5,11 @@ import { resolveOriginParts } from '@/lib/core/origin'
 import { decide } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
-import { resolveModel } from '@/lib/ai/registry'
 import { captureMemory, claimReply, ensureRegistered } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
 import { extractFacts } from '@/lib/ai/extract'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
-import { groundedReply } from '@/lib/ai/reply'
+import { answer } from '@/lib/ai/reply'
 import { baumyLine } from '@/lib/ai/voice'
 import { extractReminder } from '@/lib/ai/reminder-extract'
 import { parseWhen } from '@/lib/reminders/parse'
@@ -138,11 +137,10 @@ export const handleTelegramMessage = inngest.createFunction(
         if (chatId !== houseChatId) return // belt-and-suspenders: house group only (E2)
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
         await reactToMessage(chatId, messageId, '👀') // seen — thinking
-        // Deep (Opus + broad history search) is reserved for real questions; other
-        // intents can't burn Opus — clamp a stray 'deep' down to 'think'.
-        const tier = verdict.intent === 'question' ? verdict.tier : verdict.tier === 'deep' ? 'think' : verdict.tier
-        const deep = tier === 'deep'
-        const model = resolveModel(deep ? 'advisor' : tier === 'think' ? 'assess' : 'reply')
+        // Deep (broad history search) is reserved for real questions; other intents
+        // can't trigger the broad/expensive path — clamp a stray 'deep' to 'think'.
+        const startTier = verdict.intent === 'question' ? verdict.tier : verdict.tier === 'deep' ? 'think' : verdict.tier
+        const deep = startTier === 'deep'
         const memories = await retrieve(text ?? '', { groupId: chatId, k: deep ? 30 : 8, floor: deep ? 0.05 : 0.2 }, { db })
         const factHits = await currentFactsForQuery(db, chatId, text ?? '', deep ? 15 : 5)
         const combined = [
@@ -154,7 +152,10 @@ export const handleTelegramMessage = inngest.createFunction(
         const grounding = combined.map((m) =>
           m.isSecure && m.contentEncrypted ? { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` } : m,
         )
-        await sendToHouse(chatId, await groundedReply(text ?? '', grounding, model))
+        // Start at the tier the triage picked; the model self-escalates (→ Sonnet →
+        // Opus) only if it decides it needs more brainpower.
+        const { text: reply } = await answer(text ?? '', grounding, startTier)
+        await sendToHouse(chatId, reply)
         await reactToMessage(chatId, messageId, null) // swap the 👀 out — the words are the reply
       })
       return { updateId, decision, directed, tier: verdict.tier, source: origin.source }
