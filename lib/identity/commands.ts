@@ -11,7 +11,8 @@ import type { Origin } from '@/lib/core/origin'
 // origin.chatId for a member DM is that member's private chat id.
 export async function handleCommand(origin: Origin, text: string): Promise<void> {
   const parts = text.trim().split(/\s+/)
-  const cmd = parts[0]?.toLowerCase() ?? ''
+  // Strip a "@botusername" suffix so "/dashboard@baumy_bot" === "/dashboard".
+  const cmd = (parts[0] ?? '').split('@')[0].toLowerCase()
   const db = createHttpDb()
 
   if (cmd === '/dashboard') {

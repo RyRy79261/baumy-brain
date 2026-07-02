@@ -89,7 +89,7 @@ export function resolveOrigin(update: TelegramUpdate, roster: Roster, houseChatI
       text: msg.text ?? null,
       isPrivate: msg.chat.type === 'private',
       isBot: msg.from?.is_bot === true,
-      isForwarded: msg.forward_origin != null || msg.forward_date != null,
+      isForwarded: msg.forward_origin != null,
     },
     roster,
     houseChatId,

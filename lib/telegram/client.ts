@@ -1,53 +1,33 @@
-const API = 'https://api.telegram.org/bot'
+import { Api } from 'grammy'
 
-function token(): string {
-  const t = process.env.TELEGRAM_BOT_TOKEN
-  if (!t) throw new Error('[baumy/telegram] TELEGRAM_BOT_TOKEN not set')
-  return t
+// grammY typed Bot API client (transport layer). grammY owns the Bot API surface
+// — methods, params, error handling, the bot's own identity — so we don't
+// reinvent it. Sends stay deterministic and destination-fixed by the CALLER
+// (architecture D9): the classifier/LLM can never choose a recipient.
+let _api: Api | null = null
+function api(): Api {
+  if (_api) return _api
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) throw new Error('[baumy/telegram] TELEGRAM_BOT_TOKEN not set')
+  _api = new Api(token)
+  return _api
 }
 
-async function call<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {
-  const res = await fetch(`${API}${token()}/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(params),
-  })
-  const json = (await res.json()) as { ok: boolean; result?: T; description?: string }
-  if (!json.ok) throw new Error(`[baumy/telegram] ${method} failed: ${json.description ?? 'unknown'}`)
-  return json.result as T
-}
+const NO_PREVIEW = { link_preview_options: { is_disabled: true } }
 
 // Fixed-destination send (architecture D9): the caller resolves the destination
-// deterministically (the house group id from house_config, a reminder's stored
-// deliver_chat_id, or a task's group_id). The classifier/LLM can NEVER choose it.
+// (house config / stored deliver_chat_id / task group_id) — never the LLM.
 export async function sendToHouse(chatId: string, text: string, opts?: { silent?: boolean }): Promise<void> {
   if (!chatId) throw new Error('[baumy/telegram] no house chat id resolved (bot not added to a group yet?)')
-  await call('sendMessage', {
-    chat_id: chatId,
-    text,
-    disable_notification: opts?.silent ?? false,
-    link_preview_options: { is_disabled: true },
-  })
-}
-
-// DM reply — permitted ONLY for the auth/login response path to the exact
-// originating member (architecture D9). Never for house content.
-export async function sendDmLoginResponse(chatId: number | string, text: string): Promise<void> {
-  await call('sendMessage', {
-    chat_id: chatId,
-    text,
-    link_preview_options: { is_disabled: true },
-  })
+  await api().sendMessage(chatId, text, { ...NO_PREVIEW, disable_notification: opts?.silent ?? false })
 }
 
 // Inline-keyboard confirm card (security B4). The tap — a callback_query from a
-// member's Telegram-authenticated from.id — is the injection wall for a
-// privileged action. callback_data encodes verb + pending-action id.
+// member's authenticated from.id — is the injection wall for a privileged action.
 export async function sendConfirmCard(chatId: string, text: string, actionId: string): Promise<void> {
   if (!chatId) throw new Error('[baumy/telegram] no chat id for confirm card')
-  await call('sendMessage', {
-    chat_id: chatId,
-    text,
+  await api().sendMessage(chatId, text, {
+    ...NO_PREVIEW,
     reply_markup: {
       inline_keyboard: [
         [
@@ -56,31 +36,31 @@ export async function sendConfirmCard(chatId: string, text: string, actionId: st
         ],
       ],
     },
-    link_preview_options: { is_disabled: true },
   })
+}
+
+// DM reply — permitted ONLY for the auth/login response path to the originating
+// member (architecture D9). Never for house content.
+export async function sendDmLoginResponse(chatId: number | string, text: string): Promise<void> {
+  await api().sendMessage(chatId, text, NO_PREVIEW)
 }
 
 // Ack a callback_query (dismisses the button spinner; optional toast text).
 export async function answerCallback(callbackId: string, text?: string): Promise<void> {
-  await call('answerCallbackQuery', { callback_query_id: callbackId, text })
+  await api().answerCallbackQuery(callbackId, text ? { text } : {})
 }
 
-// Rewrite the card after a decision, dropping the keyboard (omit reply_markup).
+// Rewrite a card after a decision, dropping the keyboard (no reply_markup).
 export async function editMessageText(chatId: string, messageId: number, text: string): Promise<void> {
-  await call('editMessageText', { chat_id: chatId, message_id: messageId, text, link_preview_options: { is_disabled: true } })
+  await api().editMessageText(chatId, messageId, text, NO_PREVIEW)
 }
 
-export async function getMe(): Promise<{
-  id: number
-  username?: string
-  can_read_all_group_messages?: boolean
-}> {
-  return call('getMe', {})
+export async function getMe() {
+  return api().getMe()
 }
 
-// Baumy's own @username, fetched once from Telegram (getMe) and cached for the
-// process — so "directed at Baumy" detection uses the bot's REAL name, never a
-// hardcoded guess.
+// Baumy's own @username (from getMe), cached for the process — so directed-at-
+// Baumy detection uses the bot's REAL name, never a hardcoded guess.
 let cachedUsername: string | null = null
 export async function getBotUsername(): Promise<string> {
   if (cachedUsername !== null) return cachedUsername

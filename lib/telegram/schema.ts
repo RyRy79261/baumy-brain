@@ -1,65 +1,15 @@
-import { z } from 'zod'
+import type { Update, Message } from 'grammy/types'
 
-const tgUser = z.object({
-  id: z.number(),
-  is_bot: z.boolean().optional(),
-  first_name: z.string().optional(),
-  username: z.string().optional(),
-})
+// Telegram update types come from grammY (source of truth for the Bot API shape).
+export type TelegramUpdate = Update
+export type TelegramMessage = Message
 
-const tgChat = z.object({
-  id: z.number(),
-  type: z.enum(['private', 'group', 'supergroup', 'channel']),
-  title: z.string().optional(),
-})
-
-const tgMessage = z
-  .object({
-    message_id: z.number(),
-    date: z.number(),
-    chat: tgChat,
-    from: tgUser.optional(),
-    text: z.string().optional(),
-    // service fields used for member auto-discovery + group migration
-    new_chat_members: z.array(tgUser).optional(),
-    left_chat_member: tgUser.optional(),
-    migrate_to_chat_id: z.number().optional(),
-    migrate_from_chat_id: z.number().optional(),
-    // Forwarded content is quarantined (memory-core #94 injection wall). Telegram
-    // sends forward_origin (Bot API 7+) and/or the legacy forward_date.
-    forward_origin: z.unknown().optional(),
-    forward_date: z.number().optional(),
-    // Reply target — used to detect a message directed at Baumy (reply-to-bot).
-    reply_to_message: z.object({ from: tgUser.optional() }).passthrough().optional(),
-  })
-  .passthrough()
-
-// Inline-keyboard confirm tap (security B4). from.id is Telegram-authenticated.
-const tgCallbackQuery = z
-  .object({
-    id: z.string(),
-    from: tgUser,
-    message: z.object({ message_id: z.number(), chat: tgChat }).passthrough().optional(),
-    data: z.string().optional(),
-  })
-  .passthrough()
-
-// Minimal update shape; passthrough retains unknown fields for later phases.
-export const updateSchema = z
-  .object({
-    update_id: z.number(),
-    message: tgMessage.optional(),
-    edited_message: tgMessage.optional(),
-    my_chat_member: z.unknown().optional(),
-    chat_member: z.unknown().optional(),
-    callback_query: tgCallbackQuery.optional(),
-  })
-  .passthrough()
-
-export type TelegramUpdate = z.infer<typeof updateSchema>
-export type TelegramMessage = z.infer<typeof tgMessage>
-
-export function parseUpdate(body: unknown): TelegramUpdate | null {
-  const r = updateSchema.safeParse(body)
-  return r.success ? r.data : null
+// The webhook payload is Telegram-authenticated (the constant-time secret check
+// runs first, before this), so we trust its shape rather than re-validating the
+// whole Bot API schema. A minimal guard rejects obvious garbage.
+export function parseUpdate(body: unknown): Update | null {
+  if (body && typeof body === 'object' && typeof (body as { update_id?: unknown }).update_id === 'number') {
+    return body as Update
+  }
+  return null
 }
