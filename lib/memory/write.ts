@@ -1,9 +1,15 @@
+import { eq, sql } from 'drizzle-orm'
 import { createHttpDb, type Database } from '@/db/client'
 import { telegramChats, members, memoryItems, memoryEmbeddings, replies } from '@/db/schema'
 import { embed, EMBED_MODEL } from '@/lib/ai/embed'
 import { scanSensitivity } from '@/lib/core/sensitivity'
 import { encryptSecret } from '@/lib/core/crypto'
 import type { Trust } from '@/lib/core/origin'
+
+// Consolidation (memory Phase 5): a new item this cosine-close to an existing active
+// one is treated as a restatement, not a new memory. Near-verbatim only — distinct
+// facts that merely read alike ("rent due friday" vs "…monday") sit well below this.
+const DEDUP_THRESHOLD = 0.97
 
 // Minimal registration so FK-bound memory writes succeed. Full B10 member
 // auto-discovery + bootstrap arrive with the auth phase; this is idempotent.
@@ -42,6 +48,25 @@ export async function captureMemory(input: CaptureInput, deps?: Partial<MemoryDe
   const contentEncrypted = sens.isSecure ? encryptSecret(input.content) : null
   const vector = await embedFn(storedContent)
 
+  // Suppress a near-verbatim restatement: bump the original's salience/recency and
+  // return it, instead of storing a duplicate. Skipped for secure items — an
+  // unchanged descriptor can mask a CHANGED secret, and the facts layer owns secret
+  // supersede (memory-core #39).
+  if (!sens.isSecure) {
+    const dupId = await findDuplicate(db, input.groupId, vector)
+    if (dupId) {
+      await db
+        .update(memoryItems)
+        .set({
+          salience: sql`least(1.0, ${memoryItems.salience} + 0.1)`,
+          accessCount: sql`${memoryItems.accessCount} + 1`,
+          lastAccessedAt: new Date(),
+        })
+        .where(eq(memoryItems.id, dupId))
+      return dupId
+    }
+  }
+
   const [item] = await db
     .insert(memoryItems)
     .values({
@@ -58,6 +83,24 @@ export async function captureMemory(input: CaptureInput, deps?: Partial<MemoryDe
 
   await db.insert(memoryEmbeddings).values({ memoryItemId: item.id, model: EMBED_MODEL, embedding: vector })
   return item.id
+}
+
+// The nearest active, non-secure item in the group (current embedding model); its id
+// iff it is within DEDUP_THRESHOLD cosine of the incoming vector, else null.
+async function findDuplicate(db: Database, groupId: string, vector: number[]): Promise<string | null> {
+  const v = `[${vector.join(',')}]`
+  const res = await db.execute(sql`
+    SELECT mi.id AS id, 1 - (me.embedding <=> ${v}::vector) AS sim
+    FROM baumy_memory_items mi
+    JOIN baumy_memory_embeddings me ON me.memory_item_id = mi.id
+    WHERE mi.group_id = ${groupId}
+      AND mi.is_active = true
+      AND mi.is_secure = false
+      AND me.model = ${EMBED_MODEL}
+    ORDER BY me.embedding <=> ${v}::vector
+    LIMIT 1`)
+  const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
+  return rows.length && Number(rows[0].sim) >= DEDUP_THRESHOLD ? String(rows[0].id) : null
 }
 
 // Claim-before-send guard (D12): true only for the FIRST claim of an update_id.
