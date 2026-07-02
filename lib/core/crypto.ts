@@ -1,17 +1,18 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 
 // App-side secure-value encryption (memory-core #15 / security C8). AES-256-GCM
-// with the key held in the app env (BAUMY_ENCRYPTION_KEY = base64 of 32 bytes) —
-// NOT in the DB, so a database dump alone is useless. The stored blob is
+// with the key held in the app env (BAUMY_ENCRYPTION_KEY) — NOT in the DB, so a
+// database dump alone is useless. The stored blob is
 // base64( iv(12) || authTag(16) || ciphertext ). Single key, no rotation in v1
 // (memory-core open-Q resolved): rotating the key makes existing secrets
 // undecryptable, so treat it as a durable secret.
 function key(): Buffer {
-  const b64 = process.env.BAUMY_ENCRYPTION_KEY
-  if (!b64) throw new Error('[baumy/crypto] BAUMY_ENCRYPTION_KEY not set')
-  const k = Buffer.from(b64, 'base64')
-  if (k.length !== 32) throw new Error('[baumy/crypto] BAUMY_ENCRYPTION_KEY must decode to 32 bytes (use `openssl rand -base64 32`)')
-  return k
+  const raw = process.env.BAUMY_ENCRYPTION_KEY
+  if (!raw) throw new Error('[baumy/crypto] BAUMY_ENCRYPTION_KEY not set')
+  // Derive the 32-byte AES-256 key from the secret via SHA-256, so ANY
+  // sufficiently-random value works — hex (`openssl rand -hex 24`), base64
+  // (`... -base64 32`), or a passphrase. No exact-length/encoding requirement.
+  return createHash('sha256').update(raw, 'utf8').digest()
 }
 
 export function encryptSecret(plaintext: string): string {

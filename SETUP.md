@@ -38,9 +38,11 @@ Everything below runs on **free tiers**. The only ongoing cost is LLM tokens (si
 ## 4. Generate the app secrets
 ```bash
 openssl rand -hex 24      # TELEGRAM_WEBHOOK_SECRET
-openssl rand -base64 32   # BAUMY_SESSION_SECRET     (>=32 chars)
-openssl rand -base64 32   # BAUMY_ENCRYPTION_KEY     (32-byte base64; AES-256-GCM for secure values)
+openssl rand -hex 24      # BAUMY_SESSION_SECRET     (HMAC key; any random >=32-char value)
+openssl rand -hex 24      # BAUMY_ENCRYPTION_KEY     (hashed to a 32-byte AES-256 key; any random >=32-char value)
 ```
+> `hex 24` (48 chars) is fine for all three — they only need to be long and random.
+> The encryption key is SHA-256-derived to 32 bytes, so the encoding doesn't matter.
 > Login is **Telegram magic-link** (`/dashboard` → one-time link → a signed session
 > cookie). There is **no Better Auth / Neon Auth** — the only session secret is
 > `BAUMY_SESSION_SECRET`. (`BAUMY_ENCRYPTION_KEY` is only needed once the deferred
@@ -57,7 +59,7 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 | `TELEGRAM_WEBHOOK_SECRET` | generated (step 4) |
 | `ANTHROPIC_API_KEY` | your Anthropic key (the only AI vendor) |
 | `BAUMY_SESSION_SECRET` | generated — signs the dashboard session cookie |
-| `BAUMY_ENCRYPTION_KEY` | generated — `openssl rand -base64 32`; AES-256-GCM for secure values (wifi/door/bank). A DB dump is useless without it; losing it makes existing secrets undecryptable. |
+| `BAUMY_ENCRYPTION_KEY` | generated — any random ≥32-char value (`openssl rand -hex 24`); SHA-256-derived to a 32-byte AES-256 key for secure values (wifi/door/bank). A DB dump is useless without it; losing it makes existing secrets undecryptable. |
 | `BAUMY_PUBLIC_URL` | your deployed URL (e.g. `https://baumy.vercel.app`) |
 | `BAUMY_TIMEZONE` | `Europe/Berlin` (default) |
 | `BAUMY_DAILY_SPEND_CAP` | `0.5` (default) |
