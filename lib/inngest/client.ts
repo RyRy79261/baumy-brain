@@ -13,6 +13,8 @@ type Events = {
       text: string | null
     }
   }
+  'reminder/arm.due': { data: { reminderId: string } }
+  'reminder/cancelled': { data: { reminderId: string } }
 }
 
 export const inngest = new Inngest({

@@ -26,8 +26,10 @@
     "@neondatabase/serverless": "^1.0.0",
     "ai": "^5.0.0",
     "better-auth": "^1.2.0",
+    "chrono-node": "^2.9.1",
     "drizzle-orm": "^0.38.0",
     "inngest": "^3.30.0",
+    "luxon": "^3.7.2",
     "next": "^15.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -35,6 +37,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.0",
+    "@types/luxon": "^3.7.2",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
