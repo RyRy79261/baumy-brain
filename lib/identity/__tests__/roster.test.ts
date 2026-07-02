@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { eq } from 'drizzle-orm'
+import { members } from '@/db/schema'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { ensureRegistered } from '@/lib/memory/write'
 import { loadRoster, upsertMember, deactivateMember, parseMyChatMember } from '@/lib/identity/roster'
@@ -38,6 +40,27 @@ describe('loadRoster (fail-closed)', () => {
     await upsertMember(db, GROUP, '300', 'Gone', 'member')
     await deactivateMember(db, '300')
     expect((await loadRoster(db)).isMember(300)).toBe(false)
+  })
+
+  // The dashboard grant must be LIVE (spec D2/D8): both the magic-link redeem and
+  // requireAdmin() recompute canAccessDashboard from the DB on every request, so a
+  // revoked grant or a deactivated member is denied immediately — never cached.
+  it('the dashboard grant is live: revoke or deactivate flips canAccessDashboard at once', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await upsertMember(db, GROUP, '400', 'Admin', 'member')
+
+    await db.update(members).set({ canAccessDashboard: true }).where(eq(members.telegramUserId, '400'))
+    expect((await loadRoster(db)).canAccessDashboard(400)).toBe(true)
+
+    // revoke → immediately denied (no admit cached in a session)
+    await db.update(members).set({ canAccessDashboard: false }).where(eq(members.telegramUserId, '400'))
+    expect((await loadRoster(db)).canAccessDashboard(400)).toBe(false)
+
+    // re-grant then deactivate → is_active gates it shut regardless of the grant
+    await db.update(members).set({ canAccessDashboard: true }).where(eq(members.telegramUserId, '400'))
+    await deactivateMember(db, '400')
+    expect((await loadRoster(db)).canAccessDashboard(400)).toBe(false)
   })
 })
 

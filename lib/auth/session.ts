@@ -1,9 +1,11 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 
-// Signed stateless session (Phase 6). Decision A1b keeps Better Auth as the
-// session layer; this is a lighter HMAC-signed equivalent for a single-tenant
-// house bot (swap-in point noted). Format: base64url(payload).hmac.
-export const SESSION_COOKIE = 'baumy_session'
+// The dashboard session cookie for the Telegram login. You DM the bot
+// `/dashboard`, it sends a one-time link, the link mints this signed cookie and
+// you're in. Login is Telegram, full stop. Format: base64url(payload).hmac.
+// NOTE: the cookie proves IDENTITY only. Authorization (the live dashboard grant)
+// is re-checked against the DB on every request — see lib/auth/require-admin.ts.
+export { SESSION_COOKIE } from './constants'
 
 function secret(): string {
   const s = process.env.BAUMY_SESSION_SECRET
