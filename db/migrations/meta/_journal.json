@@ -36,6 +36,20 @@
       "when": 1783012851404,
       "tag": "0004_tricky_callisto",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783025790999,
+      "tag": "0005_overconfident_lord_tyger",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783027644383,
+      "tag": "0006_sad_swordsman",
+      "breakpoints": true
     }
   ]
 }

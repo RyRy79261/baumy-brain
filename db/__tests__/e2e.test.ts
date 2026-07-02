@@ -51,6 +51,23 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect(res[0]?.content).toBe('rent is due friday')
   })
 
+  it('hybrid recall: an exact rare term surfaces via the lexical (tsvector) arm', async () => {
+    // content_tsv is a generated column + GIN index (migration 0006).
+    const col = await h.pool.query(
+      "SELECT count(*)::int n FROM information_schema.columns WHERE table_name='baumy_memory_items' AND column_name='content_tsv'",
+    )
+    expect(col.rows[0].n).toBe(1)
+
+    await captureMemory(
+      { groupId: GROUP, content: 'the tortilla press lives in the pantry', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' },
+      { db: h.db, embed },
+    )
+    // A high floor would drop weak vector matches; the exact term 'tortilla' still
+    // wins because the lexical arm bypasses the floor when the words actually match.
+    const res = await retrieve('where is the tortilla press', { groupId: GROUP, floor: 0.9 }, { db: h.db, embed })
+    expect(res.some((r) => r.content.includes('tortilla press'))).toBe(true)
+  })
+
   it('secure value stored encrypted (real crypto + real column), never plaintext', async () => {
     await captureMemory(
       { groupId: GROUP, content: 'the wifi password is hunter2-Berlin', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' },

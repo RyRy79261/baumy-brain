@@ -15,9 +15,19 @@ import {
   index,
   uniqueIndex,
   check,
+  customType,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
+
+// Postgres full-text search vector (drizzle has no native tsvector type). Used as
+// a STORED generated column so Postgres maintains the lexical index from content
+// automatically — the lexical half of hybrid RRF retrieval (memory Phase 2).
+const tsvector = customType<{ data: string }>({
+  dataType() {
+    return 'tsvector'
+  },
+})
 
 // Baumy Brain memory-first schema (Phase 1 / task-graph S2).
 // Principles: ONE shared house pool (no visibility/owner_user_id/RLS);
@@ -145,7 +155,10 @@ export const memoryItems = pgTable('baumy_memory_items', {
   lastAccessedAt: timestamp('last_accessed_at', { withTimezone: true }),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-})
+  // Lexical index for hybrid RRF recall (memory Phase 2) — generated + STORED so
+  // Postgres keeps it in sync with content; queried via a GIN index (below).
+  contentTsv: tsvector('content_tsv').generatedAlwaysAs(sql`to_tsvector('english', "content")`),
+}, (t) => [index('baumy_memory_items_tsv_idx').using('gin', t.contentTsv)])
 
 // Embeddings split 1:N by model → sync-write item, embed later; zero-downtime re-embed.
 export const memoryEmbeddings = pgTable(
