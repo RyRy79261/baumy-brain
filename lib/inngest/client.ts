@@ -15,6 +15,16 @@ type Events = {
       isForwarded: boolean
     }
   }
+  'telegram/callback.received': {
+    data: {
+      updateId: number
+      callbackId: string
+      fromId: number
+      chatId: string
+      messageId: number | null
+      data: string
+    }
+  }
   'reminder/arm.due': { data: { reminderId: string } }
   'reminder/cancelled': { data: { reminderId: string } }
   'telegram/my_chat_member': { data: { updateId: number; raw: unknown } }

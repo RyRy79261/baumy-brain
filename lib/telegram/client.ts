@@ -40,6 +40,36 @@ export async function sendDmLoginResponse(chatId: number | string, text: string)
   })
 }
 
+// Inline-keyboard confirm card (security B4). The tap — a callback_query from a
+// member's Telegram-authenticated from.id — is the injection wall for a
+// privileged action. callback_data encodes verb + pending-action id.
+export async function sendConfirmCard(chatId: string, text: string, actionId: string): Promise<void> {
+  if (!chatId) throw new Error('[baumy/telegram] no chat id for confirm card')
+  await call('sendMessage', {
+    chat_id: chatId,
+    text,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ Confirm', callback_data: `c:${actionId}` },
+          { text: '✖️ Cancel', callback_data: `x:${actionId}` },
+        ],
+      ],
+    },
+    link_preview_options: { is_disabled: true },
+  })
+}
+
+// Ack a callback_query (dismisses the button spinner; optional toast text).
+export async function answerCallback(callbackId: string, text?: string): Promise<void> {
+  await call('answerCallbackQuery', { callback_query_id: callbackId, text })
+}
+
+// Rewrite the card after a decision, dropping the keyboard (omit reply_markup).
+export async function editMessageText(chatId: string, messageId: number, text: string): Promise<void> {
+  await call('editMessageText', { chat_id: chatId, message_id: messageId, text, link_preview_options: { is_disabled: true } })
+}
+
 export async function getMe(): Promise<{
   id: number
   username?: string

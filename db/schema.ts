@@ -286,3 +286,18 @@ export const dashboardLoginTokens = pgTable('baumy_dashboard_login_tokens', {
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+// Privileged/sensitive actions awaiting a human tap-to-confirm (security B4).
+// A member/owner proposes; only an inline-keyboard callback_query from an active
+// member's authenticated from.id executes it. The tap IS the injection wall —
+// group text can propose but can never self-execute a privileged action.
+export const pendingActions = pgTable('baumy_pending_actions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  groupId: text('group_id').notNull(),
+  actionType: text('action_type').notNull(), // 'reminder.create' | 'response_policy.update' | ...
+  payload: jsonb('payload').notNull(),
+  requestedBy: text('requested_by'), // telegram_user_id who proposed
+  status: text('status').notNull().default('pending'), // pending|confirmed|cancelled
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+})
