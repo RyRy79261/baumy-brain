@@ -2,9 +2,13 @@ import { describe, it, expect } from 'vitest'
 import { makeTestDb, fakeEmbed } from './pglite'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
+import { decryptSecret } from '@/lib/core/crypto'
 
 const GROUP = '-100test'
 const embed = async (t: string) => fakeEmbed(t)
+
+// Secure-value capture needs the app-side key (lib/core/crypto.ts).
+process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64')
 
 describe('memory store → recall (PGlite + pgvector)', () => {
   it('recalls the semantically-matching item first', async () => {
@@ -56,6 +60,27 @@ describe('memory store → recall (PGlite + pgvector)', () => {
     expect(poison.some((r) => r.content.includes('door code'))).toBe(false) // quarantined never surfaces
     const legit = await retrieve('when do the bins go out', { groupId: GROUP, floor: 0 }, { db, embed })
     expect(legit[0]?.content).toBe('bins go out on tuesday') // untrusted still grounds
+  })
+
+  it('a secure value is encrypted at rest + embedded only as a descriptor, decryptable on request', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 100)
+    const secret = 'the wifi password is hunter2-Berlin'
+    await captureMemory(
+      { groupId: GROUP, content: secret, memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
+      { db, embed },
+    )
+
+    // Recall by descriptor still finds it...
+    const res = await retrieve('what is the wifi password', { groupId: GROUP, floor: 0 }, { db, embed })
+    expect(res.length).toBeGreaterThan(0)
+    const hit = res[0]
+    // ...but neither the stored content nor the embedding hold the secret value.
+    expect(hit.content).not.toContain('hunter2')
+    expect(hit.isSecure).toBe(true)
+    expect(hit.contentEncrypted).toBeTruthy()
+    // Decrypt-on-request recovers the literal.
+    expect(decryptSecret(hit.contentEncrypted!)).toBe(secret)
   })
 
   it('a similarity floor filters out unrelated items (honest miss)', async () => {

@@ -137,7 +137,9 @@ export const memoryItems = pgTable('baumy_memory_items', {
   memoryType: text('memory_type').notNull(), // free-form label
   content: text('content').notNull(),
   authoredBy: text('authored_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
-  trustLevel: text('trust_level').notNull().default('untrusted'), // 'trusted'|'untrusted'|'system'
+  trustLevel: text('trust_level').notNull().default('untrusted'), // 'trusted'|'untrusted'|'quarantined'|'system'
+  isSecure: boolean('is_secure').notNull().default(false),
+  contentEncrypted: text('content_encrypted'), // AES-256-GCM base64(iv||tag||ct) when is_secure; plaintext content holds only a descriptor
   salience: real('salience').notNull().default(0.5),
   accessCount: integer('access_count').notNull().default(0),
   lastAccessedAt: timestamp('last_accessed_at', { withTimezone: true }),

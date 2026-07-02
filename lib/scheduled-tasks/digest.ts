@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lte } from 'drizzle-orm'
+import { and, desc, eq, gte, lte, ne } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { reminders, memoryItems } from '@/db/schema'
 
@@ -25,7 +25,15 @@ export async function buildDigest(db: Database, groupId: string, now: Date = new
   const recent = await db
     .select({ content: memoryItems.content })
     .from(memoryItems)
-    .where(and(eq(memoryItems.groupId, groupId), eq(memoryItems.isActive, true)))
+    // Never surface secure values or quarantined (forwarded/bot) content unprompted.
+    .where(
+      and(
+        eq(memoryItems.groupId, groupId),
+        eq(memoryItems.isActive, true),
+        eq(memoryItems.isSecure, false),
+        ne(memoryItems.trustLevel, 'quarantined'),
+      ),
+    )
     .orderBy(desc(memoryItems.createdAt))
     .limit(8)
 
