@@ -32,6 +32,16 @@ const tgMessage = z
   })
   .passthrough()
 
+// Inline-keyboard confirm tap (security B4). from.id is Telegram-authenticated.
+const tgCallbackQuery = z
+  .object({
+    id: z.string(),
+    from: tgUser,
+    message: z.object({ message_id: z.number(), chat: tgChat }).passthrough().optional(),
+    data: z.string().optional(),
+  })
+  .passthrough()
+
 // Minimal update shape; passthrough retains unknown fields for later phases.
 export const updateSchema = z
   .object({
@@ -39,7 +49,7 @@ export const updateSchema = z
     message: tgMessage.optional(),
     edited_message: tgMessage.optional(),
     my_chat_member: z.unknown().optional(),
-    callback_query: z.unknown().optional(),
+    callback_query: tgCallbackQuery.optional(),
   })
   .passthrough()
 

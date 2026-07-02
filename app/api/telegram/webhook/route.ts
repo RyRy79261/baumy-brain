@@ -37,6 +37,29 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ ok: true })
   }
 
+  // 2c. callback_query (inline-keyboard confirm tap) → deterministic confirm
+  //     handler (security Stage D). Authorization (member from.id) is downstream.
+  if (update.callback_query) {
+    const cq = update.callback_query
+    try {
+      await inngest.send({
+        id: `tg:cb:${update.update_id}`,
+        name: 'telegram/callback.received',
+        data: {
+          updateId: update.update_id,
+          callbackId: cq.id,
+          fromId: cq.from.id,
+          chatId: cq.message?.chat.id != null ? String(cq.message.chat.id) : '',
+          messageId: cq.message?.message_id ?? null,
+          data: cq.data ?? '',
+        },
+      })
+    } catch {
+      return new Response('enqueue failed', { status: 503 })
+    }
+    return Response.json({ ok: true })
+  }
+
   // 3. In-shape message? Forward it. Scope (house group vs known-member DM vs
   //    ignore) is resolved DOWNSTREAM in the pipeline from house_config — the
   //    house group is auto-captured on bot-add, so the webhook needs no chat id.

@@ -10,12 +10,12 @@ import { retrieve } from '@/lib/memory/retrieve'
 import { groundedReply } from '@/lib/ai/reply'
 import { extractReminder } from '@/lib/ai/reminder-extract'
 import { parseWhen } from '@/lib/reminders/parse'
-import { createReminder } from '@/lib/reminders/store'
+import { createPendingAction } from '@/lib/confirm/store'
 import { loadRoster } from '@/lib/identity/roster'
 import { getHouseChatId } from '@/lib/identity/house'
 import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
-import { sendToHouse } from '@/lib/telegram/client'
+import { sendToHouse, sendConfirmCard } from '@/lib/telegram/client'
 
 // The reactive ingest pipeline (architecture D10): record-inbound → pre-filter →
 // origin (real roster) → member-DM commands OR classify → write-gate → act.
@@ -87,21 +87,29 @@ export const handleTelegramMessage = inngest.createFunction(
         await sendToHouse(chatId, await groundedReply(text ?? '', grounding))
       })
     } else if (decision === 'reminder') {
-      await step.run('reminder', async () => {
+      await step.run('reminder-propose', async () => {
         const db = createHttpDb()
         const ex = await extractReminder(text ?? '')
         if (!ex.isReminder) return
         const parsed = parseWhen(ex.whenText)
         if (!parsed) return
-        const id = await createReminder(db, {
+        // Privileged action (security gate): a reminder is a PRIVILEGED effect, so
+        // group text can only PROPOSE it. Post a confirm card; the reminder is
+        // created only when a member taps ✅ (handled in functions/callback.ts).
+        const actionId = await createPendingAction(db, {
           groupId: chatId,
-          deliverChatId: houseChatId, // fixed destination, resolved in code (never LLM)
-          content: ex.content,
-          fireAt: parsed.fireAt,
-          createdBy: fromId != null ? String(fromId) : null,
+          actionType: 'reminder.create',
+          payload: {
+            deliverChatId: houseChatId, // fixed destination, resolved in code (never LLM)
+            content: ex.content,
+            fireAt: parsed.fireAt.toISOString(),
+            createdBy: fromId != null ? String(fromId) : null,
+            resolvedLocal: parsed.resolvedLocal,
+          },
+          requestedBy: fromId != null ? String(fromId) : null,
+          ttlSec: 3600,
         })
-        await sendToHouse(houseChatId, `Got it — I'll remind the house: "${ex.content}" on ${parsed.resolvedLocal}.`)
-        await inngest.send({ id: `reminder-arm:${id}`, name: 'reminder/arm.due', data: { reminderId: id } })
+        await sendConfirmCard(chatId, `Set a reminder — "${ex.content}" on ${parsed.resolvedLocal}? Tap to confirm.`, actionId)
       })
     }
 

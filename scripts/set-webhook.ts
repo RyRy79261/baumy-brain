@@ -26,7 +26,7 @@ async function main() {
   const set = await post('setWebhook', {
     url: `${base}/api/telegram/webhook`,
     secret_token: secret,
-    allowed_updates: ['message', 'edited_message', 'my_chat_member'],
+    allowed_updates: ['message', 'edited_message', 'callback_query', 'my_chat_member', 'chat_member'],
     drop_pending_updates: true,
   })
   console.log('setWebhook:', set)
