@@ -14,7 +14,8 @@ Everything below runs on **free tiers**. The only ongoing cost is LLM tokens (si
 ## 1. Create the bot
 1. In **@BotFather**: `/newbot` → get the **bot token**.
 2. **Disable privacy mode** (so Baumy sees all group messages): `/mybots` → your bot → *Bot Settings* → *Group Privacy* → **Turn off**.
-3. Create your **house Telegram group** — but **don't add the bot yet**. You add it in step 9, *after* the webhook is live, so the "you're the owner" capture reaches Baumy.
+3. **Turn inline mode OFF**: `/mybots` → your bot → *Bot Settings* → *Inline Mode* → **Turn off**. If inline mode is on, typing `@baumy_bot …` at the **start** of a message opens Telegram's "Search…" inline box and you **can't send** it as a normal mention (Baumy has no inline results). Baumy is a mention/DM bot, never an inline bot — keep this off. *(Workaround if it's ever on: **reply** to one of Baumy's messages instead of @-tagging — reply-to-bot counts as directed.)*
+4. Create your **house Telegram group** — but **don't add the bot yet**. You add it in step 9, *after* the webhook is live, so the "you're the owner" capture reaches Baumy.
 
 > You do **not** look up any chat id or your user id. When you add the bot to the
 > group (step 9), it captures **that group as the house** and **whoever added it as
