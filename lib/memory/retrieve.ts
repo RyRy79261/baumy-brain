@@ -1,4 +1,4 @@
-import { and, cosineDistance, desc, eq, sql } from 'drizzle-orm'
+import { and, cosineDistance, desc, eq, ne, sql } from 'drizzle-orm'
 import { createHttpDb, type Database } from '@/db/client'
 import { memoryItems, memoryEmbeddings } from '@/db/schema'
 import { embed } from '@/lib/ai/embed'
@@ -39,7 +39,15 @@ export async function retrieve(
     })
     .from(memoryItems)
     .innerJoin(memoryEmbeddings, eq(memoryEmbeddings.memoryItemId, memoryItems.id))
-    .where(and(eq(memoryItems.groupId, opts.groupId), eq(memoryItems.isActive, true)))
+    // Grounding mode (memory-core #69): group-scoped, active, and EXCLUDING
+    // quarantined (forwarded/bot) rows so poisoned content can never ground a reply.
+    .where(
+      and(
+        eq(memoryItems.groupId, opts.groupId),
+        eq(memoryItems.isActive, true),
+        ne(memoryItems.trustLevel, 'quarantined'),
+      ),
+    )
     .orderBy(desc(similarity))
     .limit(opts.k ?? 8)
 

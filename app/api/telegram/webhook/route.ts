@@ -56,6 +56,9 @@ export async function POST(req: Request): Promise<Response> {
         chatType: msg.chat.type,
         fromId: msg.from?.id ?? null,
         text: msg.text ?? null,
+        // Trust signals resolved downstream: bot-origin / forwarded → quarantined.
+        isBot: msg.from?.is_bot === true,
+        isForwarded: msg.forward_origin != null || msg.forward_date != null,
       },
     })
   } catch {

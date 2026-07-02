@@ -11,6 +11,8 @@ type Events = {
       chatType: string
       fromId: number | null
       text: string | null
+      isBot: boolean
+      isForwarded: boolean
     }
   }
   'reminder/arm.due': { data: { reminderId: string } }
