@@ -1,20 +1,23 @@
 import { describe, it, expect } from 'vitest'
 import { isDirectedAtBaumy } from '@/lib/pipeline/directed'
 
+const U = 'baumy_bot' // the bot's real @username (from getMe)
+
 describe('isDirectedAtBaumy', () => {
-  it('true when addressed by name or @mention', () => {
-    expect(isDirectedAtBaumy('hey baumy are you around?', false)).toBe(true)
-    expect(isDirectedAtBaumy('@Baumy when is rent due', false)).toBe(true)
-    expect(isDirectedAtBaumy('BAUMY, remember the code', false)).toBe(true)
+  it('true for an @mention of the real username (incl. the _bot suffix)', () => {
+    expect(isDirectedAtBaumy('@baumy_bot Are you alive', false, U)).toBe(true)
+    expect(isDirectedAtBaumy('hey @Baumy_Bot when is rent', false, U)).toBe(true)
   })
 
-  it('true when replying to Baumy, regardless of text', () => {
-    expect(isDirectedAtBaumy('ok thanks', true)).toBe(true)
+  it('true for the short name as a word, and for a reply to the bot', () => {
+    expect(isDirectedAtBaumy('hey baumy are you around?', false, U)).toBe(true)
+    expect(isDirectedAtBaumy('ok thanks', true, U)).toBe(true) // reply-to-bot
   })
 
-  it('false for undirected chatter', () => {
-    expect(isDirectedAtBaumy('rent is due friday', false)).toBe(false)
-    expect(isDirectedAtBaumy('baumyish vibes', false)).toBe(false) // substring, not a mention
-    expect(isDirectedAtBaumy(null, false)).toBe(false)
+  it('false for undirected chatter or substrings', () => {
+    expect(isDirectedAtBaumy('rent is due friday', false, U)).toBe(false)
+    expect(isDirectedAtBaumy('baumyish vibes', false, U)).toBe(false)
+    expect(isDirectedAtBaumy(null, false, U)).toBe(false)
+    expect(isDirectedAtBaumy('@baumy_bot hi', false, '')).toBe(false) // no username known
   })
 })

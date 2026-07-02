@@ -23,7 +23,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.0",
     "@ai-sdk/openai": "^2.0.0",
-    "@neondatabase/serverless": "^1.0.0",
+    "@neondatabase/serverless": "^0.10.4",
     "ai": "^5.0.0",
     "chrono-node": "^2.9.1",
     "drizzle-orm": "^0.38.0",

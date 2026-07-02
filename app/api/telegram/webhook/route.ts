@@ -1,6 +1,5 @@
 import { verifyWebhookSecret } from '@/lib/telegram/verify'
 import { parseUpdate } from '@/lib/telegram/schema'
-import { isDirectedAtBaumy } from '@/lib/pipeline/directed'
 import { inngest } from '@/lib/inngest/client'
 
 // The "200-fast-then-defer-to-Inngest" spine (architecture D5/D6/D7/D8).
@@ -97,8 +96,9 @@ export async function POST(req: Request): Promise<Response> {
         // Trust signals resolved downstream: bot-origin / forwarded → quarantined.
         isBot: msg.from?.is_bot === true,
         isForwarded: msg.forward_origin != null || msg.forward_date != null,
-        // Directed at Baumy (@mention / by name / reply-to-Baumy) → always answered.
-        directed: isDirectedAtBaumy(msg.text ?? null, msg.reply_to_message?.from?.is_bot === true),
+        // Raw signal for "directed at Baumy" — the @mention match (against the bot's
+        // real username via getMe) is resolved downstream in the pipeline.
+        replyToBot: msg.reply_to_message?.from?.is_bot === true,
       },
     })
   } catch {

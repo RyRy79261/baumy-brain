@@ -18,7 +18,8 @@ import { getHouseChatId } from '@/lib/identity/house'
 import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
 import { loadResponsePolicy, replyAllowed } from '@/lib/policy'
-import { sendToHouse, sendConfirmCard } from '@/lib/telegram/client'
+import { isDirectedAtBaumy } from '@/lib/pipeline/directed'
+import { sendToHouse, sendConfirmCard, getBotUsername } from '@/lib/telegram/client'
 
 // The reactive ingest pipeline (architecture D10): record-inbound → pre-filter →
 // origin (real roster) → member-DM commands OR classify → write-gate → act.
@@ -26,7 +27,7 @@ export const handleTelegramMessage = inngest.createFunction(
   { id: 'handle-telegram-message', retries: 3 },
   { event: 'telegram/message.received' },
   async ({ event, step }) => {
-    const { updateId, chatId, fromId, text, chatType, isBot, isForwarded } = event.data
+    const { updateId, chatId, fromId, text, chatType, isBot, isForwarded, replyToBot } = event.data
     // House group id from house_config (captured on bot-add); env override wins.
     const houseChatId = await getHouseChatId(createHttpDb())
     // Owner-configurable response policy (kill-switch / confidence floor / mutes).
@@ -63,7 +64,8 @@ export const handleTelegramMessage = inngest.createFunction(
     const verdict = (await step.run('classify', async () => classify(text ?? ''))) as Verdict
     const decision = decide(origin, verdict)
 
-    const directed = event.data.directed === true
+    // "Directed at Baumy" uses the bot's REAL @username (getMe, cached), not a guess.
+    const directed = isDirectedAtBaumy(text ?? null, replyToBot === true, await getBotUsername())
 
     // Capture (evidence + facts) — independent of whether we also reply.
     if (decision === 'capture') {
