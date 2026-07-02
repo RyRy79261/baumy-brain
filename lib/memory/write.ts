@@ -51,8 +51,9 @@ export async function captureMemory(input: CaptureInput, deps?: Partial<MemoryDe
   // Suppress a near-verbatim restatement: bump the original's salience/recency and
   // return it, instead of storing a duplicate. Skipped for secure items — an
   // unchanged descriptor can mask a CHANGED secret, and the facts layer owns secret
-  // supersede (memory-core #39).
-  if (!sens.isSecure) {
+  // supersede (memory-core #39). Skipped for quarantined (forwarded/bot) input so a
+  // planted note can never suppress — and never bump the salience of — a real fact.
+  if (!sens.isSecure && input.trustLevel !== 'quarantined') {
     const dupId = await findDuplicate(db, input.groupId, vector)
     if (dupId) {
       await db
@@ -96,6 +97,7 @@ async function findDuplicate(db: Database, groupId: string, vector: number[]): P
     WHERE mi.group_id = ${groupId}
       AND mi.is_active = true
       AND mi.is_secure = false
+      AND mi.trust_level <> 'quarantined'
       AND me.model = ${EMBED_MODEL}
     ORDER BY me.embedding <=> ${v}::vector
     LIMIT 1`)
