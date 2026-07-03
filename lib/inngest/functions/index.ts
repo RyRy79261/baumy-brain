@@ -5,6 +5,7 @@ import { handleMyChatMember, handleChatMember } from './chat-member'
 import { reminderArm, reminderDeliver, reminderSweeper } from './reminders'
 import { scheduledTaskDispatch } from './scheduled-tasks'
 import { reembedSweep } from './reembed'
+import { reflectSweep } from './reflect'
 
 // All registered Inngest functions.
 export const functions: InngestFunction.Any[] = [
@@ -17,4 +18,5 @@ export const functions: InngestFunction.Any[] = [
   reminderSweeper,
   scheduledTaskDispatch,
   reembedSweep,
+  reflectSweep,
 ]
