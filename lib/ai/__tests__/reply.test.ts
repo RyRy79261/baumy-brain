@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 let captured: { prompt?: string; system?: string } = {}
 const gen = vi.fn(async (args: { prompt?: string; system?: string }) => {
   captured = args
-  return { object: { reply: 'MOCK REPLY', needsStrongerModel: false } }
+  return { object: { reply: 'MOCK REPLY', answered: true, needsStrongerModel: false } }
 })
 const genText = vi.fn(async (args: { prompt?: string; system?: string }) => {
   captured = args
@@ -45,6 +45,13 @@ describe('groundedReply — retrieval-grounded, tool-less, self-assessing', () =
     expect(captured.prompt).toContain('(no relevant memory found)')
   })
 
+  it('surfaces the answered signal (knows vs. miss)', async () => {
+    gen.mockResolvedValueOnce({ object: { reply: 'friday', answered: true, needsStrongerModel: false } })
+    expect((await groundedReply('when is rent', [mem('rent friday', '1')])).answered).toBe(true)
+    gen.mockResolvedValueOnce({ object: { reply: 'no idea, never come up', answered: false, needsStrongerModel: false } })
+    expect((await groundedReply('what is the door code', [])).answered).toBe(false)
+  })
+
   it('never drops the reply: malformed object → plain-text fallback', async () => {
     // the exact prod failure — the model wraps the object, so schema validation throws.
     gen.mockRejectedValueOnce(new Error('No object generated: response did not match schema'))
@@ -58,22 +65,22 @@ describe('groundedReply — retrieval-grounded, tool-less, self-assessing', () =
 
 describe('answer — self-advising escalation ladder (Sonnet → Opus)', () => {
   it('starts on Sonnet and bumps to Opus when the model asks for one', async () => {
-    gen.mockResolvedValueOnce({ object: { reply: 'over my head', needsStrongerModel: true } }) // Sonnet
-    gen.mockResolvedValueOnce({ object: { reply: 'FINAL', needsStrongerModel: false } }) // Opus
+    gen.mockResolvedValueOnce({ object: { reply: 'over my head', answered: false, needsStrongerModel: true } }) // Sonnet
+    gen.mockResolvedValueOnce({ object: { reply: 'FINAL', answered: true, needsStrongerModel: false } }) // Opus
     const r = await answer('a hard one', [])
     expect(r.text).toBe('FINAL')
     expect(r.usedTier).toBe('advisor') // escalated Sonnet → Opus
   })
 
   it('answers on Sonnet without escalating when it does not need to', async () => {
-    gen.mockResolvedValueOnce({ object: { reply: 'got it', needsStrongerModel: false } })
+    gen.mockResolvedValueOnce({ object: { reply: 'got it', answered: true, needsStrongerModel: false } })
     const r = await answer('an easy one', [])
     expect(r.text).toBe('got it')
     expect(r.usedTier).toBe('reply') // stayed on Sonnet
   })
 
   it('caps at Opus even if it keeps asking', async () => {
-    gen.mockResolvedValue({ object: { reply: 'still want more', needsStrongerModel: true } })
+    gen.mockResolvedValue({ object: { reply: 'still want more', answered: false, needsStrongerModel: true } })
     const r = await answer('impossible', [])
     expect(r.usedTier).toBe('advisor') // Sonnet → Opus, then stop
     gen.mockReset()

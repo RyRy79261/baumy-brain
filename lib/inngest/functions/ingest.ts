@@ -71,9 +71,11 @@ export const handleTelegramMessage = inngest.createFunction(
 
     // Capture (evidence + facts) — ORTHOGONAL to the reply/reminder/task action, so a
     // reminder that also states a fact ("Zuzana arrives 10pm, staying in my room") is
-    // still remembered (previously it was silently forgotten).
+    // still remembered (previously it was silently forgotten). Returns whether a durable
+    // FACT was learned (add/update) — that earns a 🧠 acknowledgement below.
+    let learnedFact = false
     if (shouldCapture(origin, verdict)) {
-      await step.run('capture', async () => {
+      learnedFact = (await step.run('capture', async () => {
         const db = createHttpDb()
         // Never attribute quarantined (forwarded/bot) content to a housemate.
         const authoredBy = origin.memoryTrust === 'quarantined' || fromId == null ? null : String(fromId)
@@ -84,14 +86,17 @@ export const handleTelegramMessage = inngest.createFunction(
         // M2: distil structured facts + trust-gated reconcile into the knowledge
         // graph. Quarantined content never writes a fact (injection wall). The
         // speaker's name lets first-person references resolve ("my room" → their room).
+        let learned = false
         if (origin.memoryTrust !== 'quarantined') {
           const speaker = authoredBy ? ((await memberDisplayNames(db)).get(authoredBy) ?? null) : null
           const { facts } = await extractFacts(text ?? '', speaker)
           for (const f of facts) {
-            await reconcileFact(db, { groupId: chatId, fact: f, authoredBy, trustLevel: origin.memoryTrust })
+            const r = await reconcileFact(db, { groupId: chatId, fact: f, authoredBy, trustLevel: origin.memoryTrust })
+            if (r === 'add' || r === 'update') learned = true
           }
         }
-      })
+        return learned
+      })) as boolean
     }
 
     // Reminder: AUTO-COMMIT the ACTION (no click-to-confirm — safe, a reminder only
@@ -176,13 +181,24 @@ export const handleTelegramMessage = inngest.createFunction(
           m.isSecure && m.contentEncrypted ? { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` } : m,
         )
         // Always starts on Sonnet; the model self-escalates to Opus only if it needs to.
-        const { text: reply } = await answer(text ?? '', grounding)
-        await sendToHouse(chatId, reply)
-        await reactToMessage(chatId, messageId, null) // swap the 👀 out — the words are the reply
+        const { text: reply, answered } = await answer(text ?? '', grounding)
+        // Graduated honest-miss: send WORDS when it answered, or when the miss is
+        // itself informative (grounding was blank → "we've never mentioned that"). A
+        // plain miss with adjacent-but-unhelpful memory gets a 👎, not a wall of text.
+        if (answered || grounding.length === 0) {
+          await sendToHouse(chatId, reply)
+          await reactToMessage(chatId, messageId, null) // 👀 → gone; the words are the reply
+        } else {
+          await reactToMessage(chatId, messageId, '👎') // 👀 → 👎: asked, nothing in the records
+        }
       })
-    } else if (canSpeak && (verdict.respond === 'react' || reminderSet)) {
-      // Emoji is plenty; a set reminder gets at least a 👍 so it's confirmed.
-      await reactToMessage(chatId, messageId, verdict.reaction ?? '👍')
+    } else if (canSpeak && reminderSet) {
+      await reactToMessage(chatId, messageId, '👍') // reminder confirmed
+    } else if (canSpeak && learnedFact) {
+      // Learned a durable fact and no reply is warranted → make the memory VISIBLE.
+      await reactToMessage(chatId, messageId, '🧠')
+    } else if (canSpeak && verdict.respond === 'react') {
+      await reactToMessage(chatId, messageId, verdict.reaction ?? '👍') // social vibe
     }
 
     return { updateId, decision, directed, respond: verdict.respond, reminderSet, source: origin.source }

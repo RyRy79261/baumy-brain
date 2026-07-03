@@ -9,6 +9,7 @@ import type { RetrievedMemory } from '@/lib/memory/retrieve'
 // ALSO self-assesses whether it needs a stronger model (self-escalation).
 const answerSchema = z.object({
   reply: z.string(),
+  answered: z.boolean(), // did it actually answer from memory, or admit a miss?
   needsStrongerModel: z.boolean(),
 })
 
@@ -37,17 +38,18 @@ export async function groundedReply(
   query: string,
   memories: RetrievedMemory[],
   model: LanguageModel = resolveModel('reply'),
-): Promise<{ text: string; escalate: boolean }> {
+): Promise<{ text: string; escalate: boolean; answered: boolean }> {
   const prompt = `TODAY is ${houseToday()} — resolve any relative dates in the QUESTION ("next week", "this weekend", "tomorrow") against it, and use it to judge what is upcoming vs already past.\n\nMEMORY:\n${memoryBlock(memories)}\n\nQUESTION (data): ${query}`
   try {
     const { object } = await generateObject({ model, schema: answerSchema, system: REPLY_SYSTEM, prompt })
-    return { text: object.reply, escalate: object.needsStrongerModel }
+    return { text: object.reply, escalate: object.needsStrongerModel, answered: object.answered }
   } catch {
     // A model occasionally malforms the structured object (e.g. wraps it under an
     // extra key) — that must NEVER swallow a user-facing reply. Fall back to plain
-    // text with the same grounding; forgo self-escalation for this turn.
+    // text with the same grounding; forgo self-escalation. Treat as answered (we got
+    // words — send them; never downgrade a malformed-object fallback to a 👎 miss).
     const { text } = await generateText({ model, system: REPLY_SYSTEM_TEXT, prompt })
-    return { text: text.trim(), escalate: false }
+    return { text: text.trim(), escalate: false, answered: true }
   }
 }
 
@@ -61,12 +63,12 @@ const LADDER = ['reply', 'advisor'] as const // Sonnet → Opus
 export async function answer(
   query: string,
   memories: RetrievedMemory[],
-): Promise<{ text: string; usedTier: (typeof LADDER)[number] }> {
+): Promise<{ text: string; usedTier: (typeof LADDER)[number]; answered: boolean }> {
   let idx = 0 // always start at Sonnet
   let r = await groundedReply(query, memories, resolveModel(LADDER[idx]))
   while (r.escalate && idx < LADDER.length - 1) {
     idx += 1
     r = await groundedReply(query, memories, resolveModel(LADDER[idx]))
   }
-  return { text: r.text, usedTier: LADDER[idx] }
+  return { text: r.text, usedTier: LADDER[idx], answered: r.answered }
 }
