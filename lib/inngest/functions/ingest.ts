@@ -19,6 +19,7 @@ import { findMemoryToForget, type ForgetMode } from '@/lib/memory/forget'
 import { enrichIssue, formatIssueBody } from '@/lib/ai/issue-enrich'
 import { issuesConfigured, labelsFor } from '@/lib/github/issues'
 import { parseReportCommand } from '@/lib/pipeline/report'
+import { parseHouseReport, weeklyReport, guestReport } from '@/lib/reports/reports'
 import { createPendingAction } from '@/lib/confirm/store'
 import { parseWhen } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
@@ -95,6 +96,20 @@ export const handleTelegramMessage = inngest.createFunction(
         await sendConfirmCard(chatId, `${kind}: ${enriched.title}\n\n${enriched.summary}\n\nFile this as a GitHub issue?`, pid)
       })
       return { updateId, decision: 'report' as const }
+    }
+
+    // House reports (/weekly, /guests) → post a memory-grounded report. Read-only, no
+    // confirm, works in the house group OR a member DM, from a member. Independent of pause.
+    const reportView = parseHouseReport(text ?? '')
+    if (reportView && fromId != null && roster.isMember(fromId)) {
+      await step.run('house-report', async () => {
+        const db = createHttpDb()
+        await reactToMessage(chatId, messageId, '👀') // seen — putting it together
+        const md = reportView === 'guests' ? await guestReport(db, chatId) : await weeklyReport(db, chatId)
+        await sendToHouse(chatId, md)
+        await reactToMessage(chatId, messageId, null)
+      })
+      return { updateId, decision: 'report-view' as const }
     }
 
     // Member-DM commands (house-management). Deterministic; no classify/LLM.
