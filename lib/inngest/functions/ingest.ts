@@ -10,6 +10,7 @@ import { retrieve, retrieveExpanded, type RetrievedMemory } from '@/lib/memory/r
 import { extractFacts } from '@/lib/ai/extract'
 import { reconcileFact, currentFactsForQuery, tagMemoryAboutPerson } from '@/lib/memory/facts'
 import { answer } from '@/lib/ai/reply'
+import { webSearchAnswer } from '@/lib/ai/websearch'
 import { expandQuery } from '@/lib/ai/expand'
 import { rerank } from '@/lib/ai/rerank'
 import { extractReminder } from '@/lib/ai/reminder-extract'
@@ -234,6 +235,18 @@ export const handleTelegramMessage = inngest.createFunction(
         const grounding = combined.map((m) =>
           m.isSecure && m.contentEncrypted ? { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` } : m,
         )
+        // Explicit online-lookup request ("look it up", "google it") → search the web
+        // (Anthropic server-side tool), blending in house memory. Fires ONLY on the
+        // classifier's webSearch gate — never on a normal question — so it stays rare and
+        // cost-bounded. Any failure/empty result falls through to a memory-only reply.
+        if (verdict.webSearch) {
+          const ws = await webSearchAnswer(text ?? '', grounding)
+          if (ws.searched && ws.text) {
+            await sendToHouse(chatId, ws.text)
+            await reactToMessage(chatId, messageId, null) // 👀 → gone; the words are the reply
+            return
+          }
+        }
         // Always starts on Sonnet; the model self-escalates to Opus only if it needs to.
         const { text: reply, answered } = await answer(text ?? '', grounding)
         // Graduated honest-miss: send WORDS when it answered, or when the miss is

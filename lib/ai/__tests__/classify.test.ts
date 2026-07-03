@@ -10,6 +10,7 @@ const gen = vi.fn(async (_args?: unknown) => ({
     respond: 'react',
     reaction: '👍',
     tier: 'quick',
+    webSearch: false,
   },
 }))
 vi.mock('ai', async (importOriginal) => {
@@ -27,6 +28,7 @@ describe('classify (triage + router)', () => {
     expect(v.confidence).toBeCloseTo(0.88)
     expect(v.respond).toBe('react')
     expect(v.tier).toBe('quick')
+    expect(v.webSearch).toBe(false) // web search is off unless explicitly requested
   })
 
   it('never blackholes the pipeline: a malformed object degrades to a safe capture verdict', async () => {
