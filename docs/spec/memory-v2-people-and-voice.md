@@ -1,4 +1,13 @@
-# Memory v2 — People, Sentiment, Reflection & Voice (the next set of changes)
+# Memory v2 — People, Sentiment, Reflection & Voice
+
+> **STATUS: ✅ SHIPPED (2026-07-03).** All seven sections are built, tested, and on `main`
+> — entity typing (people first-class), housemate↔roster bridge, relationships-as-edges,
+> sentiment/notes tagging, salience (ranking-only), graduated honest-miss + functional
+> reactions, and the sleep-time **reflection** cron. A follow-on added **deletion on
+> request** ("forget X" → propose → confirm-tap → soft-hide or purge), which *reconciles*
+> the "never delete arbitrarily" invariant below with human-initiated, tap-gated removal:
+> automatic deletion is still forbidden; an explicit request behind the confirm wall is not.
+> See `README.md` for the architecture diagrams and `AGENTS.md` for the live invariants.
 
 > Baumy already *recalls* well (semantic ⊕ lexical ⊕ entity-aware retrieval over a trust-gated bitemporal knowledge graph). This spec is the next chapter: making the memory **people-centric** (people are the hub, everything else hangs off them), giving it **honest epistemics** (it knows what it knows, what it half-knows, and what the house has *never* discussed), making its **learning visible** (a 🧠 when it captures), and adding a background **reflection** tier — all while staying **lossless by design** (nothing is ever deleted) and on the existing stack (Neon Postgres + pgvector + pg_trgm, Voyage embeddings, Anthropic Sonnet-primary/Opus-advisor/Haiku-routing, Inngest for async). No new vendor, no rewrite.
 

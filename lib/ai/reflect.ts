@@ -14,7 +14,7 @@ export interface ReflectNote {
 // Sleep-time reflection (memory v2 §4): synthesise a durable, plain-language profile
 // of ONE person from the house's OWN facts + attributed notes about them. The result
 // is stored as a 'system'-trust fact and grounds future answers. The caller feeds only
-// already-trusted, non-secret material; attribution + no-invention are enforced in the
+// already-captured, non-secret, non-quarantined material; attribution + no-invention in the
 // prompt. Runs on the 'assess' tier (Sonnet) — it's the synthesis, worth the reasoning,
 // and it's background work (a cron), so latency is not user-facing. Returns '' on an
 // empty synthesis so the caller can skip the write.

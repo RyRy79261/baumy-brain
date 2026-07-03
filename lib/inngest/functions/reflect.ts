@@ -11,9 +11,10 @@ import { pickPeopleToReflect, gatherPersonMaterial, PROFILE_PREDICATE } from '@/
 // synthesises a durable, plain-language profile, stored back as a 'system'-trust fact
 // (so it supersedes the prior profile and grounds future answers).
 //
-// Security: this reads ALREADY-TRUSTED rows only — reconcileFact never runs on group
-// text here (the material was captured through the injection wall), secrets are filtered
-// out of the material (never in a profile / digest), and quarantined content is excluded.
+// Security: this reads ALREADY-CAPTURED rows only (never live group text — reconcileFact
+// never runs here; the material already passed through the injection wall), and secrets
+// (never in a profile / digest) + quarantined content are filtered out. Untrusted native-
+// group notes ARE included — that's the normal grounding substrate, not attacker input.
 // A 'system'-trust profile can only be superseded by another system reflection, so no
 // group message can overwrite it. Idempotent-ish: an unchanged person is not re-picked.
 export const reflectSweep = inngest.createFunction(
