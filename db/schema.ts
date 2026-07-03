@@ -132,6 +132,9 @@ export const entities = pgTable('baumy_entities', {
   kind: text('kind').notNull(), // free-form label (NEVER pgEnum)
   canonicalName: text('canonical_name').notNull(),
   aliases: text('aliases').array(),
+  // Bridge to the roster (memory v2 §1): a person-entity that IS a housemate links to
+  // its member row. Housemates ⊆ people; members stays the auth source of truth.
+  memberId: text('member_id').references(() => members.telegramUserId, { onDelete: 'set null' }),
   nameEmbedding: vector('name_embedding', { dimensions: 512 }), // HNSW index in raw SQL migration
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

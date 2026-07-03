@@ -1,6 +1,6 @@
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
-import { entities, facts } from '@/db/schema'
+import { entities, facts, members } from '@/db/schema'
 import { encryptSecret } from '@/lib/core/crypto'
 import { scanSensitivity } from '@/lib/core/sensitivity'
 import type { Trust } from '@/lib/core/origin'
@@ -73,13 +73,39 @@ async function upgradeKind(db: Database, id: string, current: string, next: stri
   }
 }
 
+// Bridge a resolved PERSON entity to its roster member (memory v2 §1), when the name
+// UNAMBIGUOUSLY matches one active housemate's display name (full or first-name).
+// Precision-first: a single match only; never overwrites an existing link.
+async function linkHousemate(db: Database, groupId: string, entityId: string, name: string): Promise<void> {
+  const rows = await db
+    .select({ id: members.telegramUserId, name: members.displayName })
+    .from(members)
+    .where(and(eq(members.groupId, groupId), eq(members.isActive, true)))
+  const matches = rows.filter((m) => {
+    if (!m.name) return false
+    return normalizeEntityName(m.name) === name || normalizeEntityName(m.name.split(/\s+/)[0] ?? '') === name
+  })
+  if (matches.length === 1) {
+    await db
+      .update(entities)
+      .set({ memberId: matches[0].id })
+      .where(and(eq(entities.id, entityId), isNull(entities.memberId)))
+  }
+}
+
 // Resolve a subject surface form to a single canonical entity: exact canonical →
 // exact alias → conservative trigram merge (recording the surface form as an alias so
 // it resolves exactly next time) → create new. `kind` types the node (memory v2 §1);
-// a resolved node is upgraded thing→specific when we learn what it is.
+// a resolved node is upgraded thing→specific when we learn what it is, and a person is
+// bridged to its housemate roster row.
 async function resolveEntity(db: Database, groupId: string, rawName: string, kind = 'thing'): Promise<string> {
   const name = normalizeEntityName(rawName)
+  const entityId = await resolveEntityId(db, groupId, name, kind)
+  if (kind === 'person') await linkHousemate(db, groupId, entityId, name)
+  return entityId
+}
 
+async function resolveEntityId(db: Database, groupId: string, name: string, kind: string): Promise<string> {
   const [exact] = await db
     .select({ id: entities.id, kind: entities.kind })
     .from(entities)

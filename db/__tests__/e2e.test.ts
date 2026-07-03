@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { and, eq } from 'drizzle-orm'
 import { startPgHarness, dockerAvailable, type PgHarness } from './pg-harness'
+import { entities } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
@@ -99,6 +101,25 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     // read-side fuzzy: singular query recalls the fact under a merged/varied surface.
     const hits = await currentFactsForQuery(h.db, GROUP, 'did we fix the sinks yet')
     expect(hits.some((r) => r.content.includes('fixed'))).toBe(true)
+  })
+
+  it('member bridge: a person entity links to its housemate row (real migration 0007)', async () => {
+    const col = await h.pool.query(
+      "SELECT count(*)::int n FROM information_schema.columns WHERE table_name='baumy_entities' AND column_name='member_id'",
+    )
+    expect(col.rows[0].n).toBe(1)
+    await upsertMember(h.db, GROUP, '955', 'Zenobia', 'member')
+    await reconcileFact(h.db, {
+      groupId: GROUP,
+      fact: { subject: 'zenobia', subjectKind: 'person', predicate: 'brings', object: 'snacks' },
+      authoredBy: null,
+      trustLevel: 'untrusted',
+    })
+    const [e] = await h.db
+      .select({ m: entities.memberId })
+      .from(entities)
+      .where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'zenobia')))
+    expect(e.m).toBe('955')
   })
 
   it('reminder: atomic claim (exactly-once) + release re-arms on failure', async () => {
