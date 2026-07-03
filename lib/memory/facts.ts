@@ -152,7 +152,7 @@ async function resolveEntityId(db: Database, groupId: string, name: string, kind
 // to overwrite a higher-trust one).
 export async function reconcileFact(
   db: Database,
-  input: { groupId: string; fact: ExtractedFact; authoredBy: string | null; trustLevel: Trust },
+  input: { groupId: string; fact: ExtractedFact; authoredBy: string | null; trustLevel: Trust; neverSecret?: boolean },
 ): Promise<ReconcileResult> {
   // Quarantined (forwarded/bot) content NEVER becomes a fact (injection wall #7).
   if (input.trustLevel === 'quarantined') return 'rejected'
@@ -162,8 +162,10 @@ export async function reconcileFact(
 
   // Secure-value detection considers the whole triple (the secret marker usually
   // lives in the subject/predicate, e.g. "wifi password"), then encrypts the value.
-  const sens = scanSensitivity(`${input.fact.subject} ${input.fact.predicate} ${input.fact.object}`)
-  const isSecure = sens.isSecure
+  // `neverSecret` opts a SYSTEM synthesis (a reflection profile) out: its material is
+  // already secret-filtered upstream, so a benign paraphrase ("manages the gate code")
+  // must not trip the scanner and encrypt the whole readable summary.
+  const isSecure = !input.neverSecret && scanSensitivity(`${input.fact.subject} ${input.fact.predicate} ${input.fact.object}`).isSecure
   const objectValue = isSecure ? null : input.fact.object
   const valueCiphertext = isSecure ? encryptSecret(input.fact.object) : null
 

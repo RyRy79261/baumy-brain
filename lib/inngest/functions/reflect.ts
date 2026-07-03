@@ -38,11 +38,14 @@ export const reflectSweep = inngest.createFunction(
         const profile = await reflectPerson(p.name, facts, notes)
         if (!profile) return false
         // Store as a system-trust profile fact; reconcileFact supersedes the prior one.
+        // neverSecret: the profile is a readable summary of already-secret-filtered
+        // material, so it must never be encrypted if a paraphrase trips the secret scan.
         await reconcileFact(db, {
           groupId,
           fact: { subject: p.name, subjectKind: 'person', predicate: PROFILE_PREDICATE, object: profile },
           authoredBy: null,
           trustLevel: 'system',
+          neverSecret: true,
         })
         return true
       })) as boolean
