@@ -26,9 +26,17 @@ async function post(method: string, body: Record<string, unknown>) {
   return res.json() as Promise<{ ok: boolean; description?: string }>
 }
 
+// Report commands work in the group AND DMs (lib/inngest/functions/ingest.ts) — advertise
+// them in both menus so housemates can file a bug / feature request from anywhere.
+const REPORT_COMMANDS = [
+  { command: 'bug', description: 'Report a bug (Baumy files a GitHub issue)' },
+  { command: 'feature', description: 'Request a feature (Baumy files a GitHub issue)' },
+]
+
 const DM_COMMANDS = [
   { command: 'start', description: 'What Baumy is + how to use it' },
   { command: 'dashboard', description: 'Get a one-time dashboard login link' },
+  ...REPORT_COMMANDS,
 ]
 
 async function main() {
@@ -38,10 +46,10 @@ async function main() {
     'all_private_chats:',
     await post('setMyCommands', { commands: DM_COMMANDS, scope: { type: 'all_private_chats' } }),
   )
-  // Group chats: no commands — keep the house group natural-language-only.
+  // Group chats: natural-language-first, but the report commands are handy in the house group.
   console.log(
     'all_group_chats:',
-    await post('setMyCommands', { commands: [], scope: { type: 'all_group_chats' } }),
+    await post('setMyCommands', { commands: REPORT_COMMANDS, scope: { type: 'all_group_chats' } }),
   )
 }
 
