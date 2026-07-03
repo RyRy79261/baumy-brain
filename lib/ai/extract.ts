@@ -16,6 +16,10 @@ export const extractedFacts = z.object({
         subjectKind: z.enum(['person', 'place', 'org', 'event', 'thing']).optional(),
         predicate: z.string().min(1).max(60),
         object: z.string().min(1).max(200),
+        // What the OBJECT is — 'value' (a plain attribute: date/amount/description) is
+        // the default and makes NO graph edge; a concrete entity kind makes the object
+        // a real node + relationship EDGE (memory v2 §4). Precision-first.
+        objectKind: z.enum(['person', 'place', 'org', 'event', 'thing', 'value']).optional(),
       }),
     )
     .max(8),

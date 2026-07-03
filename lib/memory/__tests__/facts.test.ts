@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { and, eq } from 'drizzle-orm'
 import { makeTestDb } from './pglite'
-import { entities } from '@/db/schema'
+import { entities, facts } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
@@ -98,6 +98,35 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
     })
     const [e] = await db.select({ m: entities.memberId }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'sam')))
     expect(e.m).toBeNull() // ambiguous → refuse to guess
+  })
+
+  it('makes a real graph edge for a relationship object, none for a plain value', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const t = 'untrusted' as const
+    const edgeOf = async (predicate: string) =>
+      (await db.select({ obj: facts.objectEntityId, val: facts.objectValue }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, predicate), eq(facts.isCurrent, true))))[0]
+
+    // relationship: object is a person → objectEntityId points to the charl node
+    await reconcileFact(db, {
+      groupId: GROUP,
+      fact: { subject: 'zuzana', subjectKind: 'person', predicate: 'sibling_of', object: 'charl', objectKind: 'person' },
+      authoredBy: null,
+      trustLevel: t,
+    })
+    const [charl] = await db.select({ id: entities.id }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'charl')))
+    const rel = await edgeOf('sibling_of')
+    expect(rel.obj).toBe(charl.id) // a real, traversable edge
+    expect(rel.val).toBe('charl') // display string still kept
+
+    // attribute: a plain value → NO edge
+    await reconcileFact(db, {
+      groupId: GROUP,
+      fact: { subject: 'rent', predicate: 'due_day', object: 'friday', objectKind: 'value' },
+      authoredBy: null,
+      trustLevel: t,
+    })
+    expect((await edgeOf('due_day')).obj).toBeNull()
   })
 
   it('does NOT merge distinct entities (precision on write)', async () => {
