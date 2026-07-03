@@ -17,7 +17,7 @@ export const enrichedIssue = z.object({
 })
 export type EnrichedIssue = z.infer<typeof enrichedIssue>
 
-export type ReportHint = 'bug' | 'feature' | 'auto'
+export type ReportHint = 'bug' | 'feature'
 
 const trimTitle = (s: string) => {
   const t = s.trim().replace(/\s+/g, ' ')
