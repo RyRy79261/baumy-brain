@@ -18,9 +18,11 @@ function rowsOf(res: unknown): Record<string, unknown>[] {
 
 // People worth (re-)reflecting this run: person entities with >= MIN_FACTS current,
 // non-secret facts AND fresh activity since their last profile — i.e. their newest
-// non-profile fact is newer than their newest profile fact (or they have no profile
-// yet). This is the "only reflect what changed" gate: an unchanged person is skipped,
-// so the cron doesn't churn identical profiles every run.
+// non-secret, non-profile fact is newer than their newest profile fact (or they have
+// no profile yet). The freshness probe excludes secret facts to match the material we
+// actually reflect on (gatherPersonMaterial hides them), so a lone secret update doesn't
+// trigger a reflection that would see nothing new. This is the "only reflect what
+// changed" gate: an unchanged person is skipped, so the cron doesn't churn profiles.
 export async function pickPeopleToReflect(
   db: Database,
   groupId: string,
@@ -36,7 +38,7 @@ export async function pickPeopleToReflect(
       ) >= ${MIN_FACTS}
       AND (
         SELECT max(f.recorded_at) FROM baumy_facts f
-        WHERE f.subject_entity_id = e.id AND f.is_current AND f.predicate <> ${PROFILE_PREDICATE}
+        WHERE f.subject_entity_id = e.id AND f.is_current AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
       ) > coalesce((
         SELECT max(f.recorded_at) FROM baumy_facts f
         WHERE f.subject_entity_id = e.id AND f.is_current AND f.predicate = ${PROFILE_PREDICATE}
