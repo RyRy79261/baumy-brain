@@ -29,12 +29,10 @@ describe('decide — confidence gate + write-gate', () => {
   it('allows a reminder from the group (fixed destination = safe)', () => {
     expect(decide(houseOrigin(), V({ intent: 'reminder' }))).toBe('reminder')
   })
-  it('does NOT create a scheduled task from the group (deliberative/cost) → falls back', () => {
+  it('a task-classified message just captures/drops (scheduled tasks are not a feature)', () => {
     expect(decide(houseOrigin(), V({ intent: 'task', worthRemembering: true }))).toBe('capture')
     expect(decide(houseOrigin(), V({ intent: 'task', worthRemembering: false }))).toBe('drop')
-  })
-  it('DOES allow a scheduled task from a member DM', () => {
-    expect(decide(memberDm(), V({ intent: 'task' }))).toBe('task')
+    expect(decide(memberDm(), V({ intent: 'task', worthRemembering: true }))).toBe('capture')
   })
   it('drops low-confidence proposals', () => {
     expect(decide(houseOrigin(), V({ worthRemembering: true, intent: 'fact', confidence: 0.2 }))).toBe('drop')

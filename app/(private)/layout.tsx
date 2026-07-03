@@ -22,7 +22,6 @@ export default async function PrivateLayout({ children }: { children: React.Reac
     ['Members', '/admin'],
     ['Memory', '/admin/memory'],
     ['Reminders', '/admin/reminders'],
-    ['Tasks', '/admin/tasks'],
     ['Settings', '/admin/settings'],
   ]
   return (

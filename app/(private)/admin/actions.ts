@@ -5,11 +5,10 @@ import { createHttpDb } from '@/db/client'
 import { requireAdmin, requireOwner } from '@/lib/auth/require-admin'
 import { applyMemberAccess } from '@/lib/identity/access'
 import { cancelReminder } from '@/lib/reminders/store'
-import { cancelScheduledTask } from '@/lib/scheduled-tasks/store'
 import { setGlobalEnabled, addMutedTopic, removeMutedTopic } from '@/lib/policy'
 
 // All dashboard mutations re-verify the live session server-side; the form payload is
-// never trusted for authorization. Privileged config (access, tasks, policy) is
+// never trusted for authorization. Privileged config (access, policy) is
 // OWNER-only; a low-stakes reminder cancel is open to any dashboard user (a trusted
 // housemate). Single-tenant, so an id alone is house-scoped by construction.
 
@@ -28,13 +27,6 @@ export async function cancelReminderAction(formData: FormData): Promise<void> {
   const id = String(formData.get('id') ?? '')
   if (id) await cancelReminder(createHttpDb(), id)
   revalidatePath('/admin/reminders')
-}
-
-export async function deactivateTaskAction(formData: FormData): Promise<void> {
-  if (!(await requireOwner())) return // costs budget → owner-only
-  const id = String(formData.get('id') ?? '')
-  if (id) await cancelScheduledTask(createHttpDb(), id)
-  revalidatePath('/admin/tasks')
 }
 
 export async function setPolicyEnabledAction(formData: FormData): Promise<void> {

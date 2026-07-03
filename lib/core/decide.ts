@@ -5,7 +5,7 @@ import { isAllowed } from './policy'
 // verdict; this deterministic function DISPOSES the action, clamped by the
 // action↔origin policy. Untrusted group text can never escalate beyond
 // capture / answer / reminder; scheduled tasks + config/admin need a member/owner DM.
-export type Decision = 'drop' | 'capture' | 'reply' | 'reminder' | 'task' | 'forget'
+export type Decision = 'drop' | 'capture' | 'reply' | 'reminder' | 'forget'
 
 export interface Verdict {
   worthRemembering: boolean
@@ -18,9 +18,8 @@ export interface Thresholds {
   capture: number
   reply: number
   reminder: number
-  task: number
 }
-export const DEFAULT_THRESHOLDS: Thresholds = { capture: 0.5, reply: 0.6, reminder: 0.7, task: 0.7 }
+export const DEFAULT_THRESHOLDS: Thresholds = { capture: 0.5, reply: 0.6, reminder: 0.7 }
 
 function clampConfidence(c: number): number {
   return Number.isFinite(c) ? Math.min(1, Math.max(0, c)) : 0
@@ -31,7 +30,6 @@ export function decide(origin: Origin, v: Verdict, th: Thresholds = DEFAULT_THRE
   const conf = clampConfidence(v.confidence)
 
   // Each branch is gated by BOTH the classifier intent AND the deterministic policy.
-  if (v.intent === 'task' && isAllowed(origin, 'create_scheduled_task') && conf >= th.task) return 'task'
   if (v.intent === 'reminder' && isAllowed(origin, 'create_reminder') && conf >= th.reminder) return 'reminder'
   // "forget X" only PROPOSES a deletion (allowed like answering); the actual delete is
   // gated behind a confirm TAP downstream, so group text can never delete on its own.
