@@ -38,6 +38,11 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect(dim.rows[0].t).toBe('vector(512)')
     const idx = await h.pool.query("SELECT count(*)::int n FROM pg_indexes WHERE indexname LIKE '%hnsw%'")
     expect(idx.rows[0].n).toBe(2)
+    // memory-v2 columns exist (migrations 0006 content_tsv, 0007 member_id, 0008 about_entity_id)
+    const cols = await h.pool.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_name IN ('baumy_entities','baumy_memory_items') AND column_name IN ('member_id','about_entity_id','content_tsv')",
+    )
+    expect(cols.rows.map((r: { column_name: string }) => r.column_name).sort()).toEqual(['about_entity_id', 'content_tsv', 'member_id'])
   })
 
   it('memory capture → recall (real embeddings + real pgvector cosine)', async () => {

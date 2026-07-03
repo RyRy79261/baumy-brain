@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { and, eq } from 'drizzle-orm'
 import { makeTestDb } from './pglite'
-import { entities, facts } from '@/db/schema'
-import { ensureRegistered } from '@/lib/memory/write'
+import { entities, facts, memoryItems } from '@/db/schema'
+import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
-import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
+import { embedSync } from '@/lib/ai/embed'
+import { reconcileFact, currentFactsForQuery, tagMemoryAboutPerson } from '@/lib/memory/facts'
 
 const GROUP = '-100facts'
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 5).toString('base64')
@@ -127,6 +128,22 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
       trustLevel: t,
     })
     expect((await edgeOf('due_day')).obj).toBeNull()
+  })
+
+  it('tags an evidence note with the person it is about (sentiment/notes, §3)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 100)
+    const memId = await captureMemory(
+      { groupId: GROUP, content: 'not sure who this zuzana is tbh', memoryType: 'chatter', authoredBy: '100', trustLevel: 'untrusted' },
+      { db, embed: async (t: string) => embedSync(t) },
+    )
+    const extracted = [{ subject: 'zuzana', subjectKind: 'person' as const, predicate: 'mentioned_by', object: 'ryan' }]
+    await reconcileFact(db, { groupId: GROUP, fact: extracted[0], authoredBy: '100', trustLevel: 'untrusted' })
+    await tagMemoryAboutPerson(db, GROUP, memId, extracted)
+
+    const [zuzana] = await db.select({ id: entities.id }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'zuzana')))
+    const [mem] = await db.select({ about: memoryItems.aboutEntityId }).from(memoryItems).where(eq(memoryItems.id, memId))
+    expect(mem.about).toBe(zuzana.id) // the note is now filed under Zuzana (attributed to ryan)
   })
 
   it('does NOT merge distinct entities (precision on write)', async () => {
