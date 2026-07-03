@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm'
 import { makeTestDb } from './pglite'
 import { entities } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
+import { upsertMember } from '@/lib/identity/roster'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
 
 const GROUP = '-100facts'
@@ -61,6 +62,42 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
     const rows = await kindOf()
     expect(rows).toHaveLength(1)
     expect(rows[0].kind).toBe('person')
+  })
+
+  it('bridges a person to its housemate roster row on a unique name match', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await upsertMember(db, GROUP, '77', 'Charl Jacobs', 'member')
+    const memberOf = async (canonical: string) =>
+      (await db.select({ m: entities.memberId }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, canonical))))[0]?.m
+
+    // "charl" (person) → first-name match on "Charl Jacobs" → bridged to member 77
+    await reconcileFact(db, {
+      groupId: GROUP,
+      fact: { subject: 'charl', subjectKind: 'person', predicate: 'owns', object: 'the cave' },
+      authoredBy: null,
+      trustLevel: 'untrusted',
+    })
+    expect(await memberOf('charl')).toBe('77')
+
+    // a THING is never bridged, even if it name-matches something
+    await reconcileFact(db, { groupId: GROUP, fact: F('rent', 'due_day', 'friday'), authoredBy: null, trustLevel: 'untrusted' })
+    expect(await memberOf('rent')).toBeNull()
+  })
+
+  it('does NOT bridge an ambiguous name (two members share it)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await upsertMember(db, GROUP, '1', 'Sam', 'member')
+    await upsertMember(db, GROUP, '2', 'Sam', 'member')
+    await reconcileFact(db, {
+      groupId: GROUP,
+      fact: { subject: 'sam', subjectKind: 'person', predicate: 'is', object: 'around' },
+      authoredBy: null,
+      trustLevel: 'untrusted',
+    })
+    const [e] = await db.select({ m: entities.memberId }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'sam')))
+    expect(e.m).toBeNull() // ambiguous → refuse to guess
   })
 
   it('does NOT merge distinct entities (precision on write)', async () => {

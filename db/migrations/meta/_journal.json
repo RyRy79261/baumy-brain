@@ -50,6 +50,13 @@
       "when": 1783027644383,
       "tag": "0006_sad_swordsman",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783076160220,
+      "tag": "0007_shocking_ted_forrester",
+      "breakpoints": true
     }
   ]
 }
