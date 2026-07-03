@@ -14,7 +14,7 @@ import { answerCallback, editMessageText } from '@/lib/telegram/client'
 export const handleCallbackQuery = inngest.createFunction(
   { id: 'handle-callback-query', retries: 2 },
   { event: 'telegram/callback.received' },
-  async ({ event }) => {
+  async ({ event, step }) => {
     const { callbackId, fromId, chatId, messageId, data } = event.data
     const db = createHttpDb()
 
@@ -32,13 +32,16 @@ export const handleCallbackQuery = inngest.createFunction(
     }
 
     if (verb === 'x') {
-      await resolvePendingAction(db, id, 'cancelled')
+      await step.run('cancel', () => resolvePendingAction(db, id, 'cancelled'))
       await answerCallback(callbackId, 'Cancelled')
       if (messageId) await editMessageText(chatId, messageId, '✖️ Cancelled.')
       return { cancelled: id }
     }
 
-    const action = await resolvePendingAction(db, id, 'confirmed')
+    // Resolve in its OWN step so the result is MEMOIZED: a retry after a downstream effect
+    // fails replays the action here WITHOUT re-flipping the row, so the effect can safely
+    // re-run instead of being silently lost to "already handled".
+    const action = await step.run('resolve', () => resolvePendingAction(db, id, 'confirmed'))
     if (!action) {
       await answerCallback(callbackId, 'This already expired or was handled.')
       return { ignored: 'not-pending' }
@@ -60,19 +63,23 @@ export const handleCallbackQuery = inngest.createFunction(
         aliasHits: AliasHit[]
         summary: string
       }
-      const res = await forgetMemory(db, chatId, {
-        factIds: p.factIds ?? [],
-        scrubValues: p.scrubValues ?? [],
-        noteIds: p.noteIds ?? [],
-        aliasHits: p.aliasHits ?? [],
-        mode: p.mode,
-      })
-      await writeAudit(db, 'memory.forget', String(fromId), p.summary ?? null, {
-        mode: p.mode,
-        facts: res.facts,
-        messagesScrubbed: res.messagesScrubbed,
-        aliasesRemoved: res.aliasesRemoved,
-      })
+      const res = await step.run('forget', () =>
+        forgetMemory(db, chatId, {
+          factIds: p.factIds ?? [],
+          scrubValues: p.scrubValues ?? [],
+          noteIds: p.noteIds ?? [],
+          aliasHits: p.aliasHits ?? [],
+          mode: p.mode,
+        }),
+      )
+      await step.run('forget-audit', () =>
+        writeAudit(db, 'memory.forget', String(fromId), p.summary ?? null, {
+          mode: p.mode,
+          facts: res.facts,
+          messagesScrubbed: res.messagesScrubbed,
+          aliasesRemoved: res.aliasesRemoved,
+        }),
+      )
       const verb = p.mode === 'purge' ? 'Purged' : 'Forgotten'
       const bits = [
         `${res.facts} fact${res.facts === 1 ? '' : 's'}`,
@@ -88,8 +95,9 @@ export const handleCallbackQuery = inngest.createFunction(
     if (action.actionType === 'github.issue') {
       // File the enriched report as a GitHub issue (details resolved at propose time).
       const p = action.payload as { title: string; body: string; labels: string[]; type: string }
-      const issue = await createIssue({ title: p.title, body: p.body, labels: p.labels })
-      await writeAudit(db, 'github.issue', String(fromId), p.title, { type: p.type, number: issue?.number ?? null })
+      // In its own step so a retry does NOT file a duplicate issue (createIssue is not idempotent).
+      const issue = await step.run('github-issue', () => createIssue({ title: p.title, body: p.body, labels: p.labels }))
+      await step.run('issue-audit', () => writeAudit(db, 'github.issue', String(fromId), p.title, { type: p.type, number: issue?.number ?? null }))
       if (issue) {
         await answerCallback(callbackId, 'Filed')
         if (messageId) await editMessageText(chatId, messageId, `✅ Filed #${issue.number} — ${issue.url}`)
