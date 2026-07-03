@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, or, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { entities, facts, memoryItems, memoryEmbeddings } from '@/db/schema'
 import { normalizeEntityName } from '@/lib/memory/facts'
@@ -132,7 +132,12 @@ export async function findMemoryToForget(db: Database, groupId: string, spec: Fo
       .select({ id: facts.id, predicate: facts.predicate, objectValue: facts.objectValue, isSecure: facts.isSecure, subjectEntityId: facts.subjectEntityId })
       .from(facts)
       .where(and(eq(facts.groupId, groupId), eq(facts.isCurrent, true), valueMatches))
+      .orderBy(desc(facts.recordedAt))
       .limit(MATCH_LIMIT)
+    // At the cap a silent subset is forgotten while the caller reports success — make it visible.
+    if (factRows.length === MATCH_LIMIT) {
+      console.warn(`findMemoryToForget: fact match hit MATCH_LIMIT (${MATCH_LIMIT}); some matches may be truncated`)
+    }
     // resolve subject names for labels
     const subjIds = [...new Set(factRows.map((r) => r.subjectEntityId).filter((x): x is string => !!x))]
     const names = new Map<string, string>()

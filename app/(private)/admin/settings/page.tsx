@@ -3,10 +3,10 @@ import { createHttpDb } from '@/db/client'
 import { loadRoster } from '@/lib/identity/roster'
 import { loadResponsePolicy } from '@/lib/policy'
 import { setPolicyEnabledAction, addMutedTopicAction, removeMutedTopicAction } from '../actions'
+import { dailySpendCapUsd } from '@/lib/env'
+import { page } from '@/lib/dashboard/styles'
 
 export const runtime = 'nodejs'
-
-const page: React.CSSProperties = { padding: '2rem', maxWidth: 760, margin: '0 auto', lineHeight: 1.5 }
 
 export default async function SettingsPage() {
   const session = await requireAdmin()
@@ -69,7 +69,7 @@ export default async function SettingsPage() {
       <h2 style={{ marginTop: '2rem' }}>Spend</h2>
       <p style={{ color: '#888', fontSize: 14 }}>
         Usage metering isn&rsquo;t recording yet, so there&rsquo;s nothing to show — spend views land once it&rsquo;s
-        wired. Daily cap: <code>${process.env.BAUMY_DAILY_SPEND_CAP ?? '0.50'}</code>.
+        wired. Daily cap: <code>${dailySpendCapUsd().toFixed(2)}</code>.
       </p>
     </main>
   )

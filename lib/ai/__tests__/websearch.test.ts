@@ -1,10 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
 
 let captured: { prompt?: string; system?: string; tools?: Record<string, unknown> } = {}
-const genText = vi.fn(async (args: { prompt?: string; system?: string; tools?: Record<string, unknown> }) => {
-  captured = args
-  return { text: 'Roztoc 2026 runs Aug 14–17 in Prague; tickets open in May.' }
-})
+const genText = vi.fn(
+  async (args: { prompt?: string; system?: string; tools?: Record<string, unknown> }): Promise<{ text: string; sources?: { url: string }[] }> => {
+    captured = args
+    // `sources` present → the web_search tool genuinely ran (webSearchRan → true).
+    return { text: 'Roztoc 2026 runs Aug 14–17 in Prague; tickets open in May.', sources: [{ url: 'https://roztoc.example' }] }
+  },
+)
 vi.mock('ai', async (importOriginal) => {
   const actual = await importOriginal<typeof import('ai')>()
   return { ...actual, generateText: (...a: unknown[]) => genText(a[0] as never) }
@@ -33,5 +36,10 @@ describe('webSearchAnswer — Anthropic server-side web search, gated + best-eff
   it('treats an empty result as not-searched (memory-only fallback)', async () => {
     genText.mockResolvedValueOnce({ text: '   ' })
     expect(await webSearchAnswer('search for nothing')).toEqual({ text: '', searched: false })
+  })
+
+  it('does NOT claim searched when the model answered from parametric knowledge (no tool ran)', async () => {
+    genText.mockResolvedValueOnce({ text: 'The shop opens at 9am.' }) // non-empty, but no sources/toolCalls
+    expect(await webSearchAnswer('when does the shop open')).toEqual({ text: '', searched: false })
   })
 })

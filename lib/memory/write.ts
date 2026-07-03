@@ -74,6 +74,10 @@ export async function captureMemory(input: CaptureInput, deps?: Partial<MemoryDe
   if (!sens.isSecure && input.trustLevel !== 'quarantined') {
     const dupId = await findDuplicate(db, input.groupId, vector)
     if (dupId) {
+      // NOTE: accessCount / lastAccessedAt are write-only for now — bumped here on
+      // consolidation but read by nothing (recency composition uses createdAt), and
+      // lastAccessedAt is a misnomer (it tracks last consolidation, not a read). Kept
+      // as substrate for a future recency signal; dropping them needs a migration.
       await db
         .update(memoryItems)
         .set({

@@ -211,8 +211,11 @@ export async function reconcileFact(
     return 'add'
   }
 
-  // Unchanged non-secret value → nothing to do.
-  if (!isSecure && !existing.isSecure && existing.objectValue === objectValue) return 'noop'
+  // Unchanged non-secret value → nothing to do. Compare trimmed + lowercased (the STORED
+  // value keeps its original case) so "Fixed" vs "fixed" isn't misread as a contradiction
+  // that spuriously supersedes for nothing.
+  const norm = (v: string | null) => (v ?? '').trim().toLowerCase()
+  if (!isSecure && !existing.isSecure && norm(existing.objectValue) === norm(objectValue)) return 'noop'
 
   // Contradiction: only a fact of >= trust may overwrite the incumbent.
   if (rank(input.trustLevel) < rank(existing.trustLevel)) return 'rejected'
