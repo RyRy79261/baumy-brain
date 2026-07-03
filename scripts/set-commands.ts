@@ -29,6 +29,8 @@ async function post(method: string, body: Record<string, unknown>) {
 // Report commands work in the group AND DMs (lib/inngest/functions/ingest.ts) — advertise
 // them in both menus so housemates can file a bug / feature request from anywhere.
 const REPORT_COMMANDS = [
+  { command: 'weekly', description: "Weekly report — what's been happening" },
+  { command: 'guests', description: "Upcoming guests — who's in which room" },
   { command: 'bug', description: 'Report a bug (Baumy files a GitHub issue)' },
   { command: 'feature', description: 'Request a feature (Baumy files a GitHub issue)' },
 ]
