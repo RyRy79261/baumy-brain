@@ -17,5 +17,35 @@ export default async function PrivateLayout({ children }: { children: React.Reac
       </main>
     )
   }
-  return <>{children}</>
+
+  const NAV: Array<[string, string]> = [
+    ['Members', '/admin'],
+    ['Memory', '/admin/memory'],
+    ['Reminders', '/admin/reminders'],
+    ['Tasks', '/admin/tasks'],
+    ['Settings', '/admin/settings'],
+  ]
+  return (
+    <div style={{ fontFamily: 'system-ui' }}>
+      <nav
+        style={{
+          display: 'flex',
+          gap: '1.25rem',
+          padding: '0.9rem 1.5rem',
+          borderBottom: '1px solid #eee',
+          fontSize: 14,
+          maxWidth: 760,
+          margin: '0 auto',
+        }}
+      >
+        <strong style={{ marginRight: 'auto' }}>🌳 Baumy</strong>
+        {NAV.map(([label, href]) => (
+          <a key={href} href={href} style={{ color: '#444', textDecoration: 'none' }}>
+            {label}
+          </a>
+        ))}
+      </nav>
+      {children}
+    </div>
+  )
 }

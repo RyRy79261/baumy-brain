@@ -1,4 +1,4 @@
-import { and, eq, lte } from 'drizzle-orm'
+import { and, desc, eq, lte } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { scheduledTasks } from '@/db/schema'
 
@@ -56,6 +56,25 @@ export async function recordRun(db: Database, id: string, nextRunAt: Date | null
     .update(scheduledTasks)
     .set({ lastRunAt: new Date(), nextRunAt: deactivate ? null : nextRunAt, isActive: !deactivate })
     .where(eq(scheduledTasks.id, id))
+}
+
+// All tasks for the house group (dashboard view): active first, then by next run.
+export async function listTasks(db: Database, groupId: string, limit = 100) {
+  return db
+    .select({
+      id: scheduledTasks.id,
+      prompt: scheduledTasks.prompt,
+      cadence: scheduledTasks.cadence,
+      nextRunAt: scheduledTasks.nextRunAt,
+      lastRunAt: scheduledTasks.lastRunAt,
+      isActive: scheduledTasks.isActive,
+      isSystem: scheduledTasks.isSystem,
+      modelTier: scheduledTasks.modelTier,
+    })
+    .from(scheduledTasks)
+    .where(eq(scheduledTasks.groupId, groupId))
+    .orderBy(desc(scheduledTasks.isActive), desc(scheduledTasks.nextRunAt))
+    .limit(limit)
 }
 
 export async function cancelScheduledTask(db: Database, id: string): Promise<boolean> {

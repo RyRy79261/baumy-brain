@@ -2,12 +2,18 @@
 
 import { revalidatePath } from 'next/cache'
 import { createHttpDb } from '@/db/client'
-import { requireAdmin } from '@/lib/auth/require-admin'
+import { requireAdmin, requireOwner } from '@/lib/auth/require-admin'
 import { applyMemberAccess } from '@/lib/identity/access'
+import { cancelReminder } from '@/lib/reminders/store'
+import { cancelScheduledTask } from '@/lib/scheduled-tasks/store'
+import { setGlobalEnabled, addMutedTopic, removeMutedTopic } from '@/lib/policy'
 
-// Grant/revoke dashboard access from the member view. requireAdmin re-verifies the
-// live session; applyMemberAccess enforces owner-only + lock-out. Both re-check the
-// DB — the form payload is never trusted for authorization.
+// All dashboard mutations re-verify the live session server-side; the form payload is
+// never trusted for authorization. Privileged config (access, tasks, policy) is
+// OWNER-only; a low-stakes reminder cancel is open to any dashboard user (a trusted
+// housemate). Single-tenant, so an id alone is house-scoped by construction.
+
+// Grant/revoke dashboard access — owner-only + lock-out enforced in applyMemberAccess.
 export async function setMemberAccessAction(formData: FormData): Promise<void> {
   const session = await requireAdmin()
   if (!session) return
@@ -15,4 +21,38 @@ export async function setMemberAccessAction(formData: FormData): Promise<void> {
   const allow = formData.get('allow') === 'grant'
   await applyMemberAccess(createHttpDb(), session.uid, targetUserId, allow)
   revalidatePath('/admin')
+}
+
+export async function cancelReminderAction(formData: FormData): Promise<void> {
+  if (!(await requireAdmin())) return
+  const id = String(formData.get('id') ?? '')
+  if (id) await cancelReminder(createHttpDb(), id)
+  revalidatePath('/admin/reminders')
+}
+
+export async function deactivateTaskAction(formData: FormData): Promise<void> {
+  if (!(await requireOwner())) return // costs budget → owner-only
+  const id = String(formData.get('id') ?? '')
+  if (id) await cancelScheduledTask(createHttpDb(), id)
+  revalidatePath('/admin/tasks')
+}
+
+export async function setPolicyEnabledAction(formData: FormData): Promise<void> {
+  if (!(await requireOwner())) return
+  await setGlobalEnabled(createHttpDb(), formData.get('enabled') === 'on')
+  revalidatePath('/admin/settings')
+}
+
+export async function addMutedTopicAction(formData: FormData): Promise<void> {
+  if (!(await requireOwner())) return
+  const topic = String(formData.get('topic') ?? '')
+  if (topic.trim()) await addMutedTopic(createHttpDb(), topic)
+  revalidatePath('/admin/settings')
+}
+
+export async function removeMutedTopicAction(formData: FormData): Promise<void> {
+  if (!(await requireOwner())) return
+  const topic = String(formData.get('topic') ?? '')
+  if (topic) await removeMutedTopic(createHttpDb(), topic)
+  revalidatePath('/admin/settings')
 }

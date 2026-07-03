@@ -1,4 +1,4 @@
-import { and, eq, lte, sql } from 'drizzle-orm'
+import { and, desc, eq, lte, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { reminders } from '@/db/schema'
 
@@ -68,6 +68,22 @@ export async function cancelReminder(db: Database, id: string): Promise<boolean>
     .where(and(eq(reminders.id, id), sql`${reminders.status} in ('scheduled','firing')`))
     .returning({ id: reminders.id })
   return rows.length > 0
+}
+
+// All reminders for the house group (dashboard view), most-recent fire time first.
+export async function listReminders(db: Database, groupId: string, limit = 100) {
+  return db
+    .select({
+      id: reminders.id,
+      content: reminders.content,
+      fireAt: reminders.fireAt,
+      status: reminders.status,
+      createdBy: reminders.createdBy,
+    })
+    .from(reminders)
+    .where(eq(reminders.groupId, groupId))
+    .orderBy(desc(reminders.fireAt))
+    .limit(limit)
 }
 
 // Scheduled reminders due at/before `before` — for the arm cron + the sweeper.

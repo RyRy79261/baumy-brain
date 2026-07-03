@@ -36,6 +36,28 @@ export async function setGlobalEnabled(db: Database, enabled: boolean): Promise<
     .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: new Date() } })
 }
 
+// Replace the muted-topic list (owner-only, via the dashboard). Upserts the singleton.
+export async function setMutedTopics(db: Database, topics: string[]): Promise<void> {
+  const current = await loadResponsePolicy(db)
+  const next = { ...current, muted_topics: topics }
+  await db
+    .insert(houseConfig)
+    .values({ id: true, responsePolicy: next })
+    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: new Date() } })
+}
+
+export async function addMutedTopic(db: Database, topic: string): Promise<void> {
+  const t = topic.trim().toLowerCase()
+  if (!t) return
+  const p = await loadResponsePolicy(db)
+  if (!p.muted_topics.includes(t)) await setMutedTopics(db, [...p.muted_topics, t])
+}
+
+export async function removeMutedTopic(db: Database, topic: string): Promise<void> {
+  const p = await loadResponsePolicy(db)
+  await setMutedTopics(db, p.muted_topics.filter((t) => t !== topic))
+}
+
 // Deterministic reply filter layered on top of the write-gate: the paused
 // kill-switch silences everything; below the confidence floor or a muted topic → quiet.
 export function replyAllowed(policy: ResponsePolicy, confidence: number, text: string): boolean {
