@@ -4,7 +4,7 @@ import { resolveModel } from './registry'
 import { RERANK_SYSTEM } from './prompts'
 import type { RetrievedMemory } from '@/lib/memory/retrieve'
 
-// Deep-tier pointwise re-rank (memory Phase 5). One cheap Haiku pass scores each
+// Deep-tier pointwise re-rank (memory Phase 5). One Sonnet ('assess' tier) pass scores each
 // retrieved candidate's relevance to the question, then we reorder by that score —
 // a precision boost on top of RRF for the searches that warrant it. Best-effort:
 // callers fall back to the fusion order if this throws.

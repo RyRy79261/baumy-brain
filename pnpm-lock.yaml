@@ -11,9 +11,6 @@ importers:
       '@ai-sdk/anthropic':
         specifier: ^2.0.0
         version: 2.0.85(zod@3.25.76)
-      '@ai-sdk/openai':
-        specifier: ^2.0.0
-        version: 2.0.110(zod@3.25.76)
       '@neondatabase/serverless':
         specifier: ^0.10.4
         version: 0.10.4
@@ -98,12 +95,6 @@ packages:
 
   '@ai-sdk/gateway@2.0.108':
     resolution: {integrity: sha512-86SG+gvko20aD6aM2Z4Mx8rEJYHpC2E2QrrEQzerXkEtruMWJCKwFfeaOKDLn8axN18Lln+HvYbS6cOiRA1J0g==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  '@ai-sdk/openai@2.0.110':
-    resolution: {integrity: sha512-PVbq0vXo6LVBCKeIOiDsOfrUIL2IOkMUipWP53SJZppDo594kbu5BFs/NdwnJMAX4q6EM6sGPVv751RN9PrZ9A==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -4040,12 +4031,6 @@ snapshots:
       '@ai-sdk/provider': 2.0.3
       '@ai-sdk/provider-utils': 3.0.28(zod@3.25.76)
       '@vercel/oidc': 3.1.0
-      zod: 3.25.76
-
-  '@ai-sdk/openai@2.0.110(zod@3.25.76)':
-    dependencies:
-      '@ai-sdk/provider': 2.0.3
-      '@ai-sdk/provider-utils': 3.0.28(zod@3.25.76)
       zod: 3.25.76
 
   '@ai-sdk/provider-utils@3.0.28(zod@3.25.76)':

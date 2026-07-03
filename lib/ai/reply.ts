@@ -2,6 +2,7 @@ import { generateObject, generateText, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { resolveModel } from './registry'
 import { REPLY_SYSTEM, REPLY_SYSTEM_TEXT } from './prompts'
+import { houseToday } from '@/lib/core/clock'
 import type { RetrievedMemory } from '@/lib/memory/retrieve'
 
 // Grounded reply. Memory-only, ZERO tools (exfil-safe). Answers strictly from the
@@ -19,20 +20,6 @@ function memoryBlock(memories: RetrievedMemory[]): string {
     : '(no relevant memory found)'
 }
 
-// Today's date in the house timezone, so the model can resolve relative dates
-// ("next week", "this weekend", "tomorrow") — without this it can't answer time-
-// relative questions ("what's on next week?") at all.
-function houseToday(): string {
-  const tz = process.env.BAUMY_TIMEZONE || 'Europe/Berlin'
-  const d = new Intl.DateTimeFormat('en-GB', {
-    timeZone: tz,
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  }).format(new Date())
-  return `${d} (house time, ${tz})`
-}
 
 export async function groundedReply(
   query: string,

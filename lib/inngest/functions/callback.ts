@@ -2,7 +2,6 @@ import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { loadRoster } from '@/lib/identity/roster'
 import { resolvePendingAction } from '@/lib/confirm/store'
-import { createReminder } from '@/lib/reminders/store'
 import { forgetMemory, type ForgetMode, type AliasHit } from '@/lib/memory/forget'
 import { createIssue } from '@/lib/github/issues'
 import { writeAudit } from '@/lib/audit'
@@ -45,26 +44,9 @@ export const handleCallbackQuery = inngest.createFunction(
       return { ignored: 'not-pending' }
     }
 
-    if (action.actionType === 'reminder.create') {
-      const p = action.payload as {
-        deliverChatId: string
-        content: string
-        fireAt: string
-        createdBy: string | null
-        resolvedLocal: string
-      }
-      const rid = await createReminder(db, {
-        groupId: chatId,
-        deliverChatId: p.deliverChatId,
-        content: p.content,
-        fireAt: new Date(p.fireAt),
-        createdBy: p.createdBy,
-      })
-      await inngest.send({ id: `reminder-arm:${rid}`, name: 'reminder/arm.due', data: { reminderId: rid } })
-      await answerCallback(callbackId, 'Reminder set')
-      if (messageId) await editMessageText(chatId, messageId, `✅ Reminder set — "${p.content}" on ${p.resolvedLocal}.`)
-      return { confirmed: id, reminderId: rid }
-    }
+    // NOTE: reminders AUTO-COMMIT (they only post text to the fixed house group) — they are
+    // deliberately exempt from this confirm wall, so there is no 'reminder.create' action.
+    // The wall gates only genuinely privileged actions: memory.forget and github.issue.
 
     if (action.actionType === 'memory.forget') {
       // The TAP is the wall: the delete targets the exact fact ids + value strings resolved
