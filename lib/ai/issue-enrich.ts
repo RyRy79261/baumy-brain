@@ -2,6 +2,7 @@ import { generateObject, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { resolveModel } from './registry'
 import { ISSUE_ENRICH_SYSTEM } from './prompts'
+import { scanSensitivity } from '@/lib/core/sensitivity'
 
 // Structured GitHub issue distilled from a housemate's casual /bug or /feature message
 // (shape adapted from ryry79261/intake-tracker's reporter). The model is told to be
@@ -41,7 +42,15 @@ export async function enrichIssue(
     return object
   } catch (err) {
     console.error('enrichIssue failed — filing from the plain template:', err)
-    return { type: hint === 'feature' ? 'feature' : 'bug', title: trimTitle(rawReport), summary: rawReport.trim() || '(no description given)' }
+    const type = hint === 'feature' ? 'feature' : 'bug'
+    // The raw report is copied verbatim into a (public) GitHub issue on this path, so run the
+    // deterministic secret scan first: if it trips, withhold the raw text and file only a
+    // safe descriptor — a pasted wifi/door/bank secret must not leak into the issue body/title.
+    const sensitive = scanSensitivity(rawReport)
+    if (sensitive.isSecure) {
+      return { type, title: 'Report from the house (details withheld)', summary: `A report was filed but its text was withheld here because it appears to contain ${sensitive.descriptor}. Ask the reporter to share the details privately.` }
+    }
+    return { type, title: trimTitle(rawReport), summary: rawReport.trim() || '(no description given)' }
   }
 }
 

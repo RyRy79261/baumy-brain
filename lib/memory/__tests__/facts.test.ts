@@ -26,6 +26,15 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
     expect(hits.some((h) => h.content.includes('friday'))).toBe(false) // superseded → not current
   })
 
+  it('treats a same-value-different-case restatement as a NOOP (not a spurious supersede)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const t = 'untrusted' as const
+    expect(await reconcileFact(db, { groupId: GROUP, fact: F('sink', 'status', 'fixed'), authoredBy: null, trustLevel: t })).toBe('add')
+    // "Fixed" only differs in case/whitespace → same value, so it must NOT supersede.
+    expect(await reconcileFact(db, { groupId: GROUP, fact: F('sink', 'status', '  Fixed '), authoredBy: null, trustLevel: t })).toBe('noop')
+  })
+
   it('resolves surface variants to ONE entity (no fragmentation)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)

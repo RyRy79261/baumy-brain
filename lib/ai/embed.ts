@@ -11,6 +11,7 @@ export const EMBED_MODEL = 'voyage-3.5-lite'
 // ── Production embedder: Voyage 3.5-lite ─────────────────────────
 export async function embed(text: string): Promise<number[]> {
   const [v] = await embedMany([text])
+  if (!v) throw new Error('[baumy/embed] voyage returned no embedding')
   return v
 }
 
@@ -26,8 +27,10 @@ export async function embedMany(values: string[]): Promise<number[][]> {
   if (!res.ok) {
     throw new Error(`[baumy/embed] voyage ${res.status}: ${await res.text().catch(() => '')}`)
   }
-  const json = (await res.json()) as { data: { embedding: number[] }[] }
-  return json.data.map((d) => d.embedding)
+  const json = (await res.json()) as { data: { embedding: number[]; index: number }[] }
+  // Voyage tags each item with its request `index`; sort by it rather than trusting
+  // array order, so a returned vector is never paired with the wrong input.
+  return [...json.data].sort((a, b) => a.index - b.index).map((d) => d.embedding)
 }
 
 // ── Deterministic lexical embedder (TESTS + no-vendor fallback) ──

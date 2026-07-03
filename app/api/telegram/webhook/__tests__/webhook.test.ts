@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mock the Inngest client so the webhook never actually enqueues; we assert on
 // the send call. (Hoisted above the route import by Vitest.)
@@ -7,9 +7,8 @@ vi.mock('@/lib/inngest/client', () => ({ inngest: { send: (...a: unknown[]) => s
 
 const HOUSE = '-1001234567890'
 const SECRET = 'test-secret-0123456789'
-process.env.BAUMY_HOUSE_CHAT_ID = HOUSE
-process.env.TELEGRAM_WEBHOOK_SECRET = SECRET
 
+// Env is read at call time (verifyWebhookSecret), so the route import is env-free.
 const { POST } = await import('@/app/api/telegram/webhook/route')
 
 function req(body: unknown, secret: string | null = SECRET): Request {
@@ -27,7 +26,13 @@ const houseMsg = (text: string, updateId = 1) => ({
   message: { message_id: updateId, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 100 }, text },
 })
 
-beforeEach(() => send.mockClear())
+// Scope env to each test via vi.stubEnv so nothing leaks into a shared worker.
+beforeEach(() => {
+  send.mockClear()
+  vi.stubEnv('BAUMY_HOUSE_CHAT_ID', HOUSE)
+  vi.stubEnv('TELEGRAM_WEBHOOK_SECRET', SECRET)
+})
+afterEach(() => vi.unstubAllEnvs())
 
 describe('telegram webhook — the fast-ack spine', () => {
   it('rejects a bad secret with 401 and NEVER enqueues', async () => {
@@ -67,6 +72,59 @@ describe('telegram webhook — the fast-ack spine', () => {
     )
     expect(res.status).toBe(200)
     expect(send).toHaveBeenCalledOnce()
+  })
+
+  it('routes a callback_query tap with the AUTHENTICATED tapper id — not message text', async () => {
+    const update = {
+      update_id: 10,
+      callback_query: {
+        id: 'cbq-1',
+        from: { id: 100 },
+        message: { message_id: 55, chat: { id: Number(HOUSE), type: 'supergroup' } },
+        data: 'confirm:grant:abc',
+      },
+    }
+    const res = await POST(req(update))
+    expect(res.status).toBe(200)
+    expect(send).toHaveBeenCalledOnce()
+    const sent = send.mock.calls[0]?.[0] as { id: string; name: string; data: Record<string, unknown> }
+    expect(sent.id).toBe('tg:cb:10') // idempotency keyed on update_id
+    expect(sent.name).toBe('telegram/callback.received')
+    expect(sent.data.callbackId).toBe('cbq-1')
+    expect(sent.data.fromId).toBe(100) // the WALL: from cq.from.id, the Telegram-authenticated tapper
+    expect(sent.data.chatId).toBe(HOUSE)
+    expect(sent.data.messageId).toBe(55)
+    expect(sent.data.data).toBe('confirm:grant:abc')
+  })
+
+  it('routes a my_chat_member update (bot add/remove) to owner capture, keyed on update_id', async () => {
+    const update = {
+      update_id: 11,
+      my_chat_member: { chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 100 }, date: 0 },
+    }
+    const res = await POST(req(update))
+    expect(res.status).toBe(200)
+    expect(send).toHaveBeenCalledOnce()
+    const sent = send.mock.calls[0]?.[0] as { id: string; name: string; data: { updateId: number; raw: unknown } }
+    expect(sent.id).toBe('tg:mcm:11')
+    expect(sent.name).toBe('telegram/my_chat_member')
+    expect(sent.data.updateId).toBe(11)
+    expect(sent.data.raw).toEqual(update)
+  })
+
+  it('routes a chat_member update (housemate join/leave) to membership lifecycle, keyed on update_id', async () => {
+    const update = {
+      update_id: 12,
+      chat_member: { chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 100 }, date: 0 },
+    }
+    const res = await POST(req(update))
+    expect(res.status).toBe(200)
+    expect(send).toHaveBeenCalledOnce()
+    const sent = send.mock.calls[0]?.[0] as { id: string; name: string; data: { updateId: number; raw: unknown } }
+    expect(sent.id).toBe('tg:cm:12')
+    expect(sent.name).toBe('telegram/chat_member')
+    expect(sent.data.updateId).toBe(12)
+    expect(sent.data.raw).toEqual(update)
   })
 
   it('absorbs unparseable input with 200 and no enqueue', async () => {

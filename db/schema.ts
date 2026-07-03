@@ -60,7 +60,8 @@ export const members = pgTable('baumy_members', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
 
-// Idempotency ledger; raw is nulled after processing (privacy — bot sees ALL group msgs).
+// Idempotency ledger (dedup on update_id). The message body is NOT persisted (privacy — the
+// bot sees ALL group msgs, incl. secrets); `raw` is intentionally left null.
 export const telegramUpdates = pgTable('baumy_telegram_updates', {
   updateId: bigint('update_id', { mode: 'number' }).primaryKey(),
   chatId: text('chat_id'),
@@ -71,6 +72,7 @@ export const telegramUpdates = pgTable('baumy_telegram_updates', {
 })
 
 // Verbatim transcript — the evidence/quote layer + bot-queryable store (D17).
+// reserved / not yet written — table + FK exist (memoryItems.sourceMessageId), but no path inserts rows yet.
 export const messages = pgTable(
   'baumy_messages',
   {
@@ -200,7 +202,7 @@ export const facts = pgTable(
     // secure-value (app-side AES-256-GCM; base64 text — a DB dump is useless without BAUMY_ENCRYPTION_KEY)
     isSecure: boolean('is_secure').notNull().default(false),
     valueCiphertext: text('value_ciphertext'),
-    valueIv: text('value_iv'),
+    valueIv: text('value_iv'), // reserved / not yet written — the IV is packed inside value_ciphertext (base64 iv||tag||ct), so this stays NULL
     keyVersion: smallint('key_version'),
     // dated events + recurrence
     eventAt: timestamp('event_at', { withTimezone: true }),
@@ -270,6 +272,7 @@ export const scheduledTasks = pgTable(
 
 // ── Operability ──────────────────────────────────────────────────
 
+// reserved / not yet written — prompt registry for future prompt versioning; nothing writes it yet.
 export const prompts = pgTable(
   'baumy_prompts',
   {
@@ -287,6 +290,7 @@ export const prompts = pgTable(
 )
 
 // Spend ledger for the hard daily cap (reminder delivery is never gated).
+// reserved / not yet written — usage metering isn't recording yet (see settings page), so no path inserts rows.
 export const llmUsage = pgTable('baumy_llm_usage', {
   id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
   role: text('role').notNull(),

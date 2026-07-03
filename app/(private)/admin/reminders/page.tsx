@@ -3,12 +3,9 @@ import { createHttpDb } from '@/db/client'
 import { getHouseChatId } from '@/lib/identity/house'
 import { listReminders } from '@/lib/reminders/store'
 import { cancelReminderAction } from '../actions'
+import { page, th, td } from '@/lib/dashboard/styles'
 
 export const runtime = 'nodejs'
-
-const page: React.CSSProperties = { padding: '2rem', maxWidth: 760, margin: '0 auto', lineHeight: 1.5 }
-const th: React.CSSProperties = { padding: '0.4rem 0.5rem', textAlign: 'left' }
-const td: React.CSSProperties = { padding: '0.4rem 0.5rem', borderTop: '1px solid #f0f0f0', verticalAlign: 'top' }
 
 export default async function RemindersPage() {
   await requireAdmin()
