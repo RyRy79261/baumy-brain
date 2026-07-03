@@ -99,10 +99,11 @@ describe('owner administration', () => {
 
 describe('parseChatMember (housemate join/leave)', () => {
   it('reads a leave (→ deactivate) and a join (→ register)', () => {
-    const left = parseChatMember({ chat_member: { new_chat_member: { user: { id: 42, first_name: 'Ann' }, status: 'left' } } })
-    expect(left).toEqual({ userId: '42', status: 'left', name: 'Ann' })
+    const left = parseChatMember({ chat_member: { chat: { id: -100 }, new_chat_member: { user: { id: 42, first_name: 'Ann' }, status: 'left' } } })
+    expect(left).toEqual({ userId: '42', status: 'left', name: 'Ann', chatId: '-100' }) // chat id threaded for the house-lane guard
     const joined = parseChatMember({ chat_member: { new_chat_member: { user: { id: 7 }, status: 'member' } } })
     expect(joined.status).toBe('member')
+    expect(joined.chatId).toBeNull() // no chat.id in the payload
     expect(parseChatMember({ message: {} }).userId).toBeNull()
   })
 })

@@ -1,4 +1,4 @@
-import { and, eq, ilike, inArray, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, or, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { entities, facts, memoryItems, memoryEmbeddings } from '@/db/schema'
 import { normalizeEntityName } from '@/lib/memory/facts'
@@ -45,18 +45,24 @@ function rowsOf(res: unknown): Record<string, unknown>[] {
   return Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
 }
 
-// Regex-escape a value (it's DATA, not a pattern) for case-insensitive replace.
+// Replace each value with "[redacted]", case-insensitively and only on WORD BOUNDARIES —
+// so forgetting a short value ("Ed", "Jo") never scrubs it out of a larger word
+// ("Edinburgh", "Wednesday"). The value is data, not a pattern, so it's regex-escaped;
+// lookarounds (not \b) so it works even when the value's own edges aren't word chars.
 export function redactValues(content: string, values: string[]): string {
   let out = content
   for (const v of values) {
     if (!v) continue
-    const re = new RegExp(v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
-    out = out.replace(re, '[redacted]')
+    const esc = v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    out = out.replace(new RegExp(`(?<![\\w])${esc}(?![\\w])`, 'gi'), '[redacted]')
   }
   return out
 }
 
-const likeEscape = (v: string) => v.replace(/[\\%_]/g, '\\$&')
+// Postgres case-insensitive word-boundary regex (\y) for the SAME whole-word matching in
+// SQL — so a candidate fact/message is only found when it holds the value as a whole word.
+const regexEscape = (v: string) => v.replace(/[.^$*+?()[\]{}|\\]/g, '\\$&')
+const wordRegex = (v: string) => `\\y${regexEscape(v)}\\y`
 const labelFor = (subject: string, predicate: string, objectValue: string | null, isSecure: boolean) =>
   `${subject} ${predicate.replace(/_/g, ' ')}${isSecure ? ' (secret)' : `: ${objectValue ?? ''}`}`
 
@@ -120,8 +126,8 @@ export async function findMemoryToForget(db: Database, groupId: string, spec: Fo
   let aliasHits: AliasHit[] = []
 
   if (scrubValues.length) {
-    // Facts whose stored VALUE contains a scrub string (exact substring, case-insensitive).
-    const valueMatches = or(...scrubValues.map((v) => ilike(facts.objectValue, `%${likeEscape(v)}%`)))
+    // Facts whose stored VALUE contains a scrub string as a WHOLE WORD (case-insensitive).
+    const valueMatches = or(...scrubValues.map((v) => sql`${facts.objectValue} ~* ${wordRegex(v)}`))
     const factRows = await db
       .select({ id: facts.id, predicate: facts.predicate, objectValue: facts.objectValue, isSecure: facts.isSecure, subjectEntityId: facts.subjectEntityId })
       .from(facts)
@@ -148,7 +154,7 @@ export async function findMemoryToForget(db: Database, groupId: string, spec: Fo
         and(
           eq(memoryItems.groupId, groupId),
           eq(memoryItems.isActive, true),
-          or(...scrubValues.map((v) => ilike(memoryItems.content, `%${likeEscape(v)}%`))),
+          or(...scrubValues.map((v) => sql`${memoryItems.content} ~* ${wordRegex(v)}`)),
         ),
       )
     noteIds = noteRows.map((r) => r.id)

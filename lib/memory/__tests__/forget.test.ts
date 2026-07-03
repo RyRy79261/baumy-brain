@@ -19,6 +19,19 @@ describe('deletion on request (forget) — exact value matching', () => {
     expect(redactValues("I'm Ryan, and madeleine goujon lives here", ['Madeleine Goujon'])).toBe("I'm Ryan, and [redacted] lives here")
   })
 
+  it('redactValues matches WHOLE WORDS only — a short value never mangles a larger word', () => {
+    expect(redactValues('I love Edinburgh, thanks Ed', ['Ed'])).toBe('I love Edinburgh, thanks [redacted]')
+    expect(redactValues('bins on wednesday, ask Jo', ['Jo'])).toBe('bins on wednesday, ask [redacted]')
+  })
+
+  it('a short value does not drag in messages that merely contain it as a substring', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await captureMemory({ groupId: GROUP, content: 'we all went to Edinburgh last year', memoryType: 'chatter', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    const m = await findMemoryToForget(db, GROUP, { values: ['Ed'], subject: '', attribute: '' })
+    expect(m.noteIds).toHaveLength(0) // "Edinburgh" is not a match for the whole word "Ed"
+  })
+
   // BUG 1 (the "nothing to forget" report): the value lives only in a raw message, no fact.
   it('finds a value that exists ONLY in a message (no fact needed) and scrubs it surgically', async () => {
     const db = await makeTestDb()
