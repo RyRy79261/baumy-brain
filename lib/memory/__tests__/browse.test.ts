@@ -39,7 +39,7 @@ describe('dashboard memory browse', () => {
     await ensureRegistered(db, GROUP, 100)
     await reconcileFact(db, {
       groupId: GROUP,
-      fact: { subject: 'rent', predicate: 'due_day', object: 'friday' },
+      fact: { subject: 'recycling', predicate: 'due_day', object: 'friday' },
       authoredBy: null,
       trustLevel: 'untrusted',
     })
@@ -47,7 +47,7 @@ describe('dashboard memory browse', () => {
       { groupId: GROUP, content: 'bins go out tuesday', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
       { db, embed },
     )
-    expect((await listCurrentFacts(db, GROUP)).some((f) => f.subject === 'rent')).toBe(true)
+    expect((await listCurrentFacts(db, GROUP)).some((f) => f.subject === 'recycling')).toBe(true)
     expect((await listRecentMemories(db, GROUP)).some((m) => m.content.includes('bins'))).toBe(true)
   })
 })

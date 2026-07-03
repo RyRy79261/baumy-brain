@@ -16,7 +16,7 @@
 Baumy is a private Telegram bot that acts as the **house-management brain for a creative space /
 friends' event headquarters** — a household where guests stay over, friends run events out of the
 house as venue/HQ, people shop for builds and supplies, and coordination is **open-ended and
-deliberately unstructured** ("no distinct structure yet"). The house is **not** a rent/bills
+deliberately unstructured** ("no distinct structure yet"). The house is **not** a bills
 tracker; it is a place of guests, events, shopping runs, and standing arrangements. Housemates just
 talk; Baumy captures, recalls (with author attribution), answers the house questions it can ground,
 reminds the group, and runs the recurring lookups/audits it's asked to — grounded in what the house
@@ -388,7 +388,7 @@ later **directed** `@Baumy` request by an active member; `destination_chat_id = 
 [House group] Jules: what did Theo say about the gear budget for the shoot?
 Baumy: Two things from Theo:
        • 24 Jun — the shoot budget is €400 all-in, lighting rental included.
-       • 28 Jun — Rui's lending the softboxes, so we don't need to rent those.
+       • 28 Jun — Rui's lending the softboxes, so we don't need to hire those.
        That's all I have from Theo on it. Want the exact messages I've got saved?
 ```
 Mechanics: embed query → pgvector top-k over derived facts **and** verbatim messages, **filtered/boosted

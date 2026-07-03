@@ -80,7 +80,7 @@ export const handleTelegramMessage = inngest.createFunction(
           return
         }
         if (!report.body) {
-          const eg = report.hint === 'feature' ? '/feature a dark mode for the dashboard' : '/bug the rent reminder fired twice'
+          const eg = report.hint === 'feature' ? '/feature a dark mode for the dashboard' : '/bug the reminder fired twice'
           await sendToHouse(chatId, `Tell me what to file, like:\n${eg}`)
           return
         }

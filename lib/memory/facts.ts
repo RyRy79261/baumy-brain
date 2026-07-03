@@ -44,7 +44,7 @@ export function normalizeEntityName(raw: string): string {
 
 // Best trigram candidate for an incoming name (+ its kind), or null. strict_word_
 // similarity aligns to word boundaries (so "sink" matches the word in "kitchen sink"
-// but "rent" does not match "rest"); we take the max over both directions. The kind
+// but "bin" does not match "bit"); we take the max over both directions. The kind
 // guard is LENIENT about 'thing' — a typed 'person' still merges with a legacy
 // untyped 'thing' node (and upgrades it), so typing never fragments the graph.
 async function pickMergeCandidate(

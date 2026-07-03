@@ -40,12 +40,12 @@ describe('weeklyReport', () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     await captureMemory({ groupId: GROUP, content: 'we threw a big party on saturday', memoryType: 'chatter', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
-    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'pay rent', fireAt: new Date(Date.now() + 3 * 86_400_000), createdBy: null })
+    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'take the bins out', fireAt: new Date(Date.now() + 3 * 86_400_000), createdBy: null })
 
     const out = await weeklyReport(db, GROUP)
     expect(out).toBe('REPORT OK')
     expect(captured.prompt).toContain('big party') // recent note is grounded
-    expect(captured.prompt).toContain('pay rent') // upcoming reminder is grounded
+    expect(captured.prompt).toContain('take the bins out') // upcoming reminder is grounded
     expect(captured.prompt).toContain('TODAY:') // clock for relative dates
     expect(captured.system).toContain('WEEKLY HOUSE DIGEST')
   })

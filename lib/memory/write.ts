@@ -8,7 +8,7 @@ import type { Trust } from '@/lib/core/origin'
 
 // Consolidation (memory Phase 5): a new item this cosine-close to an existing active
 // one is treated as a restatement, not a new memory. Near-verbatim only — distinct
-// facts that merely read alike ("rent due friday" vs "…monday") sit well below this.
+// facts that merely read alike ("bin day friday" vs "…monday") sit well below this.
 const DEDUP_THRESHOLD = 0.97
 
 // Minimal registration so FK-bound memory writes succeed + display-name capture.

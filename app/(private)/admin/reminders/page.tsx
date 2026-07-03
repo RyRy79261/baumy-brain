@@ -21,7 +21,7 @@ export default async function RemindersPage() {
       <h1>Reminders</h1>
       {rows.length === 0 ? (
         <p style={{ color: '#888' }}>
-          No reminders yet — set one in chat: <em>&ldquo;remind us to pay rent friday&rdquo;</em>.
+          No reminders yet — set one in chat: <em>&ldquo;remind us to take the bins out friday&rdquo;</em>.
         </p>
       ) : (
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>

@@ -15,9 +15,9 @@ describe('response policy (kill-switch + reply gate)', () => {
   })
 
   it('replyAllowed: paused silences everything; the floor + mutes gate the rest', () => {
-    expect(replyAllowed({ ...base, global_enabled: false }, 0.99, 'rent?')).toBe(false) // kill-switch
-    expect(replyAllowed(base, 0.5, 'rent?')).toBe(false) // below the 0.7 floor
-    expect(replyAllowed(base, 0.9, 'rent?')).toBe(true)
-    expect(replyAllowed({ ...base, muted_topics: ['rent'] }, 0.9, 'when is RENT due')).toBe(false) // muted topic
+    expect(replyAllowed({ ...base, global_enabled: false }, 0.99, 'bins?')).toBe(false) // kill-switch
+    expect(replyAllowed(base, 0.5, 'bins?')).toBe(false) // below the 0.7 floor
+    expect(replyAllowed(base, 0.9, 'bins?')).toBe(true)
+    expect(replyAllowed({ ...base, muted_topics: ['bins'] }, 0.9, 'when do the BINS go out')).toBe(false) // muted topic
   })
 })

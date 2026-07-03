@@ -22,7 +22,7 @@ const { classify } = await import('@/lib/ai/classify')
 
 describe('classify (triage + router)', () => {
   it('returns the validated verdict incl. the response plan + model tier', async () => {
-    const v = await classify('rent is due friday')
+    const v = await classify('the bins go out friday')
     expect(v.intent).toBe('fact')
     expect(v.worthRemembering).toBe(true)
     expect(v.confidence).toBeCloseTo(0.88)

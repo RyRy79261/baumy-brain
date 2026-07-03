@@ -38,7 +38,7 @@ describe('memory store → recall (PGlite + pgvector)', () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, 100)
     await captureMemory(
-      { groupId: GROUP, content: 'rent is due friday', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
+      { groupId: GROUP, content: 'the plants get watered friday', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
       { db, embed },
     )
     await captureMemory(
@@ -46,9 +46,9 @@ describe('memory store → recall (PGlite + pgvector)', () => {
       { db, embed },
     )
 
-    const res = await retrieve('when is the rent due', { groupId: GROUP, floor: 0 }, { db, embed })
+    const res = await retrieve('when do the plants get watered', { groupId: GROUP, floor: 0 }, { db, embed })
     expect(res.length).toBeGreaterThan(0)
-    expect(res[0].content).toBe('rent is due friday')
+    expect(res[0].content).toBe('the plants get watered friday')
     expect(res[0].authoredBy).toBe('100')
   })
 
@@ -57,11 +57,11 @@ describe('memory store → recall (PGlite + pgvector)', () => {
     await ensureRegistered(db, GROUP, 100)
     await ensureRegistered(db, '-100other', 200)
     await captureMemory(
-      { groupId: '-100other', content: 'rent is due friday', memoryType: 'fact', authoredBy: '200', trustLevel: 'untrusted' },
+      { groupId: '-100other', content: 'the plants get watered friday', memoryType: 'fact', authoredBy: '200', trustLevel: 'untrusted' },
       { db, embed },
     )
 
-    const res = await retrieve('rent due', { groupId: GROUP, floor: 0 }, { db, embed })
+    const res = await retrieve('plants get watered', { groupId: GROUP, floor: 0 }, { db, embed })
     expect(res.length).toBe(0)
   })
 
@@ -110,24 +110,24 @@ describe('memory store → recall (PGlite + pgvector)', () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, 100)
     await captureMemory(
-      { groupId: GROUP, content: 'rent is due friday', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
+      { groupId: GROUP, content: 'the plants get watered friday', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
       { db, embed },
     )
     await captureMemory(
       { groupId: GROUP, content: 'we are out of oat milk', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
       { db, embed },
     )
-    // The raw query only reaches the rent note; the milk note is below the floor.
-    const base = await retrieve('when is the rent due', { groupId: GROUP, floor: 0.2 }, { db, embed })
+    // The raw query only reaches the plant note; the milk note is below the floor.
+    const base = await retrieve('when do the plants get watered', { groupId: GROUP, floor: 0.2 }, { db, embed })
     expect(base.some((r) => r.content.includes('oat milk'))).toBe(false)
     // An expansion probe ("grocery milk") pulls the milk note in via its lexical arm.
     const expanded = await retrieveExpanded(
-      'when is the rent due',
+      'when do the plants get watered',
       ['grocery shopping milk'],
       { groupId: GROUP, floor: 0.2 },
       { db, embed, embedMany },
     )
-    expect(expanded.some((r) => r.content.includes('rent is due'))).toBe(true)
+    expect(expanded.some((r) => r.content.includes('plants get watered'))).toBe(true)
     expect(expanded.some((r) => r.content.includes('oat milk'))).toBe(true)
   })
 

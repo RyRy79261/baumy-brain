@@ -17,11 +17,11 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     const t = 'untrusted' as const
-    expect(await reconcileFact(db, { groupId: GROUP, fact: F('rent', 'due_day', 'friday'), authoredBy: null, trustLevel: t })).toBe('add')
-    expect(await reconcileFact(db, { groupId: GROUP, fact: F('rent', 'due_day', 'friday'), authoredBy: null, trustLevel: t })).toBe('noop')
-    expect(await reconcileFact(db, { groupId: GROUP, fact: F('rent', 'due_day', 'monday'), authoredBy: null, trustLevel: t })).toBe('update')
+    expect(await reconcileFact(db, { groupId: GROUP, fact: F('bins', 'go_out', 'friday'), authoredBy: null, trustLevel: t })).toBe('add')
+    expect(await reconcileFact(db, { groupId: GROUP, fact: F('bins', 'go_out', 'friday'), authoredBy: null, trustLevel: t })).toBe('noop')
+    expect(await reconcileFact(db, { groupId: GROUP, fact: F('bins', 'go_out', 'monday'), authoredBy: null, trustLevel: t })).toBe('update')
 
-    const hits = await currentFactsForQuery(db, GROUP, 'when is the rent due')
+    const hits = await currentFactsForQuery(db, GROUP, 'when do the bins go out')
     expect(hits.some((h) => h.content.includes('monday'))).toBe(true)
     expect(hits.some((h) => h.content.includes('friday'))).toBe(false) // superseded → not current
   })
@@ -82,8 +82,8 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
     expect(await memberOf('charl')).toBe('77')
 
     // a THING is never bridged, even if it name-matches something
-    await reconcileFact(db, { groupId: GROUP, fact: F('rent', 'due_day', 'friday'), authoredBy: null, trustLevel: 'untrusted' })
-    expect(await memberOf('rent')).toBeNull()
+    await reconcileFact(db, { groupId: GROUP, fact: F('bins', 'go_out', 'friday'), authoredBy: null, trustLevel: 'untrusted' })
+    expect(await memberOf('bins')).toBeNull()
   })
 
   it('does NOT bridge an ambiguous name (two members share it)', async () => {
@@ -123,11 +123,11 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
     // attribute: a plain value → NO edge
     await reconcileFact(db, {
       groupId: GROUP,
-      fact: { subject: 'rent', predicate: 'due_day', object: 'friday', objectKind: 'value' },
+      fact: { subject: 'bins', predicate: 'go_out', object: 'friday', objectKind: 'value' },
       authoredBy: null,
       trustLevel: t,
     })
-    expect((await edgeOf('due_day')).obj).toBeNull()
+    expect((await edgeOf('go_out')).obj).toBeNull()
   })
 
   it('tags an evidence note with the person it is about (sentiment/notes, §3)', async () => {

@@ -43,7 +43,7 @@ describe('telegram webhook — the fast-ack spine', () => {
   })
 
   it('enqueues a valid house-group message and returns 200', async () => {
-    const res = await POST(req(houseMsg('rent is due friday')))
+    const res = await POST(req(houseMsg('the bins go out friday')))
     expect(res.status).toBe(200)
     expect(send).toHaveBeenCalledOnce()
     const sent = send.mock.calls[0]?.[0] as { id: string; name: string }

@@ -12,7 +12,7 @@ import {
 } from '@/lib/reminders/store'
 
 const GROUP = '-100rem'
-const mk = (fireAt: Date, content = 'pay rent') => ({ groupId: GROUP, deliverChatId: GROUP, content, fireAt, createdBy: '100' })
+const mk = (fireAt: Date, content = 'take the bins out') => ({ groupId: GROUP, deliverChatId: GROUP, content, fireAt, createdBy: '100' })
 
 describe('reminders store', () => {
   it('atomic claim: only the FIRST caller wins (exactly-once delivery)', async () => {

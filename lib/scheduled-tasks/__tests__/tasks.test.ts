@@ -66,7 +66,7 @@ describe('buildDigest — grounded from DB records', () => {
     await createReminder(db, {
       groupId: GROUP,
       deliverChatId: GROUP,
-      content: 'pay rent',
+      content: 'take the bins out',
       fireAt: new Date(Date.now() + 2 * 86_400_000),
       createdBy: '100',
     })
@@ -76,7 +76,7 @@ describe('buildDigest — grounded from DB records', () => {
     )
     const d = await buildDigest(db, GROUP)
     expect(d).toContain('House digest')
-    expect(d).toContain('pay rent')
+    expect(d).toContain('take the bins out')
     expect(d).toContain('Marta arrives friday')
   })
 

@@ -42,7 +42,7 @@ Owner reframe (cost-driven + intentional): members do **not** use Baumy as a per
 
 ## A4 — Proactive output → **digests + conversational reminders + event surfacing + on-demand audits.**
 - **Digests:** periodic house summaries, from memory (confirmed).
-- **Conversational (Slack-style) reminders:** "let us know a week before Tom arrives", "tell us when rent's due" → **house reminders delivered to the group.** Anchors:
+- **Conversational (Slack-style) reminders:** "let us know a week before Tom arrives", "tell us when the recycling's due" → **house reminders delivered to the group.** Anchors:
   - **Time-based** (absolute date/time or relative "in N days").
   - **Event-anchored** (offset like "a week before" a **dated event** captured in memory — guest arrival, bill due).
 - **Proactive event surfacing:** Baumy is "privy to" dated events in memory; a **scheduled Inngest scan** over dated facts surfaces upcoming ones (advance notice ~a week) → feeds digests + conservative nudges.
@@ -94,7 +94,7 @@ Core principle: the expensive model must NOT be reachable by a misclassified mes
 - **Single-tenant / personal project.** Baumy hosts only THIS house's data; owner does not want others' data. Others **self-host by forking** (own infra/keys). Keep `group_id` origin-scope as cheap hygiene (supports owner running a 2nd group), but **multi-tenant SaaS = NON-GOAL** (answers Q0).
 
 ## DOMAIN (reframe — refines cold-start/product) — **creative space / event HQ, NOT bills.**
-- House = a **creative space & friends' event headquarters**: guests staying over, friends running events out of the house as venue/HQ, shopping, open-ended coordination. NOT rent/bills tracking.
+- House = a **creative space & friends' event headquarters**: guests staying over, friends running events out of the house as venue/HQ, shopping, open-ended coordination. NOT recycling/bills tracking.
 - **Deliberately open/unstructured** ("no distinct structure yet") → strongly validates the schema-light memory-first substrate.
 - **Cold-start seeding** = owner brain-dumps the current baseline (housemates, standing arrangements, upcoming guests/events) — not a bills setup.
 
