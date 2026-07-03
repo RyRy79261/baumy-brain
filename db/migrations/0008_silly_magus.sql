@@ -1,0 +1,2 @@
+ALTER TABLE "baumy_memory_items" ADD COLUMN "about_entity_id" uuid;--> statement-breakpoint
+ALTER TABLE "baumy_memory_items" ADD CONSTRAINT "baumy_memory_items_about_entity_id_baumy_entities_id_fk" FOREIGN KEY ("about_entity_id") REFERENCES "public"."baumy_entities"("id") ON DELETE set null ON UPDATE no action;

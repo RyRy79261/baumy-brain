@@ -1,6 +1,6 @@
 import { and, eq, isNull, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
-import { entities, facts, members } from '@/db/schema'
+import { entities, facts, members, memoryItems } from '@/db/schema'
 import { encryptSecret } from '@/lib/core/crypto'
 import { scanSensitivity } from '@/lib/core/sensitivity'
 import type { Trust } from '@/lib/core/origin'
@@ -221,6 +221,27 @@ export async function reconcileFact(
     .set({ isCurrent: false, supersededBy: inserted.id, validTo: new Date(), invalidatedAt: new Date() })
     .where(eq(facts.id, existing.id))
   return 'update'
+}
+
+// Tag an evidence item with the PERSON it is ABOUT (memory v2 §3), so sentiment/notes
+// gather under that person for their profile + reflection. Uses the first person-subject
+// from extraction (the entity was just resolved by reconcileFact, so it exists). This is
+// pure linking — never a score, never volunteered; retrieval surfaces it only on request.
+export async function tagMemoryAboutPerson(
+  db: Database,
+  groupId: string,
+  memoryItemId: string,
+  extracted: ExtractedFact[],
+): Promise<void> {
+  const personFact = extracted.find((f) => f.subjectKind === 'person')
+  if (!personFact) return
+  const canonical = normalizeEntityName(personFact.subject)
+  const [ent] = await db
+    .select({ id: entities.id })
+    .from(entities)
+    .where(and(eq(entities.groupId, groupId), eq(entities.canonicalName, canonical)))
+    .limit(1)
+  if (ent) await db.update(memoryItems).set({ aboutEntityId: ent.id }).where(eq(memoryItems.id, memoryItemId))
 }
 
 // Current facts whose subject the query refers to — a lightweight structured lookup

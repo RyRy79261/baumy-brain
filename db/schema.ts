@@ -150,6 +150,10 @@ export const memoryItems = pgTable('baumy_memory_items', {
   memoryType: text('memory_type').notNull(), // free-form label
   content: text('content').notNull(),
   authoredBy: text('authored_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
+  // The person this note/observation is ABOUT (memory v2 §3) — sentiment/notes gather
+  // under a person for their profile + reflection. NULL for general memory. Attributed
+  // (authoredBy) + qualitative (content), NEVER a score.
+  aboutEntityId: uuid('about_entity_id').references(() => entities.id, { onDelete: 'set null' }),
   trustLevel: text('trust_level').notNull().default('untrusted'), // 'trusted'|'untrusted'|'quarantined'|'system'
   isSecure: boolean('is_secure').notNull().default(false),
   contentEncrypted: text('content_encrypted'), // AES-256-GCM base64(iv||tag||ct) when is_secure; plaintext content holds only a descriptor

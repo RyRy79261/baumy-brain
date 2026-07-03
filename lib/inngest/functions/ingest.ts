@@ -8,7 +8,7 @@ import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
 import { captureMemory, claimReply, ensureRegistered } from '@/lib/memory/write'
 import { retrieve, retrieveExpanded, type RetrievedMemory } from '@/lib/memory/retrieve'
 import { extractFacts } from '@/lib/ai/extract'
-import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
+import { reconcileFact, currentFactsForQuery, tagMemoryAboutPerson } from '@/lib/memory/facts'
 import { answer } from '@/lib/ai/reply'
 import { expandQuery } from '@/lib/ai/expand'
 import { rerank } from '@/lib/ai/rerank'
@@ -83,7 +83,7 @@ export const handleTelegramMessage = inngest.createFunction(
         // most, reminders/tasks next, questions middling, chatter least (memory v2 §5).
         const salience =
           verdict.intent === 'fact' ? 0.85 : verdict.intent === 'reminder' || verdict.intent === 'task' ? 0.7 : verdict.intent === 'question' ? 0.5 : 0.35
-        await captureMemory(
+        const memoryItemId = await captureMemory(
           { groupId: chatId, content: text ?? '', memoryType: verdict.intent, authoredBy, trustLevel: origin.memoryTrust, salience },
           { db },
         )
@@ -98,6 +98,8 @@ export const handleTelegramMessage = inngest.createFunction(
             const r = await reconcileFact(db, { groupId: chatId, fact: f, authoredBy, trustLevel: origin.memoryTrust })
             if (r === 'add' || r === 'update') learned = true
           }
+          // Tag this note with the person it's about (memory v2 §3) — attributed, never scored.
+          await tagMemoryAboutPerson(db, chatId, memoryItemId, facts)
         }
         return learned
       })) as boolean

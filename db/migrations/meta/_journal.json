@@ -57,6 +57,13 @@
       "when": 1783076160220,
       "tag": "0007_shocking_ted_forrester",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783076681833,
+      "tag": "0008_silly_magus",
+      "breakpoints": true
     }
   ]
 }
