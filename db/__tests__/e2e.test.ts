@@ -151,17 +151,17 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
       { groupId: GROUP, content: 'Robert Tables is crashing in the cave this week', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' },
       { db: h.db, embed },
     )
-    // the trigram / position() / similarity() match SQL runs on real pg_trgm
-    const m = await findMemoryToForget(h.db, GROUP, 'Robert Tables')
+    // exact ILIKE match on the value string runs on the real schema
+    const m = await findMemoryToForget(h.db, GROUP, { values: ['Robert Tables'], subject: '', attribute: '' })
     expect(m.factIds.length).toBeGreaterThanOrEqual(1)
     expect(m.facts.some((c) => c.label.includes('Robert Tables'))).toBe(true)
     expect(m.scrubValues).toContain('Robert Tables')
 
-    const res = await forgetMemory(h.db, GROUP, { factIds: m.factIds, scrubValues: m.scrubValues, noteIds: m.noteIds, mode: 'purge' })
+    const res = await forgetMemory(h.db, GROUP, { factIds: m.factIds, scrubValues: m.scrubValues, noteIds: m.noteIds, aliasHits: m.aliasHits, mode: 'purge' })
     expect(res.messagesScrubbed).toBeGreaterThanOrEqual(1)
     // fact gone from recall; a fresh search finds nothing left to forget
     expect(await currentFactsForQuery(h.db, GROUP, 'what is guest-bob full name')).toHaveLength(0)
-    expect((await findMemoryToForget(h.db, GROUP, 'Robert Tables')).facts).toHaveLength(0)
+    expect((await findMemoryToForget(h.db, GROUP, { values: ['Robert Tables'], subject: '', attribute: '' })).facts).toHaveLength(0)
     // the source message SURVIVED (active) with only the name scrubbed
     const note = await h.pool.query("SELECT content, is_active FROM baumy_memory_items WHERE content LIKE '%crashing in the cave%'")
     expect(note.rows[0].is_active).toBe(true)

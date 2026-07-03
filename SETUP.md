@@ -66,10 +66,17 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 | `BAUMY_TIMEZONE` | `Europe/Berlin` (default) |
 | `BAUMY_DAILY_SPEND_CAP` | `0.5` (default) |
 | `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` | **auto-injected** by the Vercel↔Inngest integration |
+| `GITHUB_TOKEN` | *(optional)* a token with **issues:write** on the repo below — enables `/bug` + `/feature` to file GitHub issues. Unset = the feature politely says it's not set up. |
+| `GITHUB_REPO` | *(optional)* `owner/name` the issues are filed to (e.g. `RyRy79261/baumy-brain`) — required alongside `GITHUB_TOKEN`. |
 
 > **Optional overrides — you normally set neither:** `BAUMY_HOUSE_CHAT_ID` pins the
 > house group (otherwise it's captured on bot-add) and `BAUMY_OWNER_ID` pins the
 > owner (otherwise it's whoever adds the bot). Leave both unset for the automatic flow.
+>
+> **Bug/feature reporting (optional):** set `GITHUB_TOKEN` (issues:write) + `GITHUB_REPO`
+> to let housemates `/bug …` or `/feature …` in the group or a DM — Baumy enriches the
+> message into a clean issue, shows a preview, and files it on a confirm tap. Then run
+> `node --experimental-strip-types scripts/set-commands.ts` so the commands show in the menu.
 
 > ⚠️ **Verify at build:** the default Claude model ids in `lib/ai/models.ts` are best-effort — confirm the current Anthropic ids and set the `BAUMY_*_MODEL` overrides if any have changed.
 

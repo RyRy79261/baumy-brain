@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { and, eq } from 'drizzle-orm'
 import { makeTestDb } from './pglite'
-import { facts, memoryItems, memoryEmbeddings } from '@/db/schema'
+import { entities, memoryItems } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
 import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/forget'
@@ -10,87 +10,122 @@ import { embedSync } from '@/lib/ai/embed'
 const GROUP = '-100forget'
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 4).toString('base64')
 const embed = async (t: string) => embedSync(t)
-const fullName = (subject: string, value: string) => ({ subject, subjectKind: 'person' as const, predicate: 'full_name', object: value })
+const person = (subject: string, predicate: string, object: string) => ({ subject, subjectKind: 'person' as const, predicate, object })
+const run = (db: Awaited<ReturnType<typeof makeTestDb>>, m: Awaited<ReturnType<typeof findMemoryToForget>>, mode: 'soft' | 'purge') =>
+  forgetMemory(db, GROUP, { factIds: m.factIds, scrubValues: m.scrubValues, noteIds: m.noteIds, aliasHits: m.aliasHits, mode })
 
-describe('deletion on request (forget) — facts are the unit, messages are scrubbed not deleted', () => {
+describe('deletion on request (forget) — exact value matching', () => {
   it('redactValues scrubs case-insensitively and keeps the surrounding text', () => {
     expect(redactValues("I'm Ryan, and madeleine goujon lives here", ['Madeleine Goujon'])).toBe("I'm Ryan, and [redacted] lives here")
   })
 
-  it('resolves a target to the fact + value to scrub + the messages that hold it', async () => {
+  // BUG 1 (the "nothing to forget" report): the value lives only in a raw message, no fact.
+  it('finds a value that exists ONLY in a message (no fact needed) and scrubs it surgically', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
-    await reconcileFact(db, { groupId: GROUP, fact: fullName('madeleine', 'Madeleine Goujon'), authoredBy: null, trustLevel: 'untrusted' })
-    const withVal = await captureMemory({ groupId: GROUP, content: 'Madeleine Goujon moved into front room 2', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
-    const without = await captureMemory({ groupId: GROUP, content: 'the bins go out on tuesday', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
-
-    const m = await findMemoryToForget(db, GROUP, 'Madeleine Goujon')
-    expect(m.factIds).toHaveLength(1)
-    expect(m.facts[0].label).toContain('Madeleine Goujon')
+    const noteId = await captureMemory(
+      { groupId: GROUP, content: "I'm Ryan, and Madeleine is Madeleine Goujon, she takes front room 2", memoryType: 'chatter', authoredBy: null, trustLevel: 'untrusted' },
+      { db, embed },
+    )
+    const m = await findMemoryToForget(db, GROUP, { values: ['Madeleine Goujon'], subject: '', attribute: '' })
     expect(m.scrubValues).toEqual(['Madeleine Goujon'])
-    expect(m.noteIds).toContain(withVal) // the message holding the value
-    expect(m.noteIds).not.toContain(without) // an unrelated message is never touched
+    expect(m.noteIds).toContain(noteId) // found by exact substring, no fact required
+
+    const res = await run(db, m, 'purge')
+    expect(res.messagesScrubbed).toBe(1)
+    const [note] = await db.select({ c: memoryItems.content }).from(memoryItems).where(eq(memoryItems.id, noteId))
+    expect(note.c).not.toContain('Madeleine Goujon')
+    expect(note.c).toContain('Ryan') // the rest of the message survives
+    expect(note.c).toContain('front room 2')
   })
 
-  it('PURGE scrubs ONLY the value from a multi-person source message, keeping the rest', async () => {
+  // BUG 2 (the "grabbing unrelated facts" report): a value that isn't stored matches NOTHING.
+  it('never grabs unrelated facts — exact matching, no fuzzy similarity', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
-    // ONE intro message that sources facts about MANY people — the exact collateral-damage case
-    const intro = "I'm Ryan Noble, Charl is Charl Jacobs, and Madeleine is Madeleine Goujon"
-    const noteId = await captureMemory({ groupId: GROUP, content: intro, memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
-    await reconcileFact(db, { groupId: GROUP, fact: fullName('madeleine', 'Madeleine Goujon'), authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(db, { groupId: GROUP, fact: person('ryan', 'reminder_for', 'roztoc festival tickets'), authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'house', predicate: 'mother_staying', object: 'no' }, authoredBy: null, trustLevel: 'untrusted' })
+    await captureMemory({ groupId: GROUP, content: 'add feature request and issue tracking via github', memoryType: 'chatter', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
 
-    const m = await findMemoryToForget(db, GROUP, "Madeleine's full name")
+    const m = await findMemoryToForget(db, GROUP, { values: ['Madeleine Goujon'], subject: '', attribute: '' })
+    expect(m.facts).toHaveLength(0) // NONE of the roztoc/github/mother rows are dragged in
+    expect(m.noteIds).toHaveLength(0)
+  })
+
+  it('resolves subject + attribute to the ONE exact fact value (not the whole person)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, { groupId: GROUP, fact: person('madeleine', 'full_name', 'Madeleine Goujon'), authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(db, { groupId: GROUP, fact: person('madeleine', 'room', 'front room 2'), authoredBy: null, trustLevel: 'untrusted' })
+    const noteId = await captureMemory({ groupId: GROUP, content: 'Madeleine Goujon has front room 2', memoryType: 'chatter', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+
+    const m = await findMemoryToForget(db, GROUP, { values: [], subject: 'Madeleine', attribute: 'full name' })
+    expect(m.facts).toHaveLength(1) // ONLY the full_name fact
+    expect(m.facts[0].label).toContain('Madeleine Goujon')
     expect(m.scrubValues).toContain('Madeleine Goujon')
     expect(m.noteIds).toContain(noteId)
-
-    const res = await forgetMemory(db, GROUP, { factIds: m.factIds, scrubValues: m.scrubValues, noteIds: m.noteIds, mode: 'purge' })
-    expect(res.facts).toBe(1)
-    expect(res.messagesScrubbed).toBe(1)
-
-    const [note] = await db.select({ content: memoryItems.content, active: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, noteId))
-    expect(note.active).toBe(true) // the MESSAGE SURVIVES
-    expect(note.content).not.toContain('Madeleine Goujon') // the name is scrubbed
-    expect(note.content).toContain('Ryan Noble') // everyone else's info is intact
-    expect(note.content).toContain('Charl Jacobs')
-    expect(note.content).toContain('[redacted]')
-    // the fact value is redacted too, and the stale vector is dropped for re-embedding
-    const [fact] = await db.select({ v: facts.objectValue }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'full_name')))
-    expect(fact.v).toBe('[redacted on request]')
-    expect(await db.select({ id: memoryEmbeddings.id }).from(memoryEmbeddings).where(eq(memoryEmbeddings.memoryItemId, noteId))).toHaveLength(0)
+    expect(m.facts.some((f) => f.label.includes('front room 2'))).toBe(false) // the room is NOT targeted
   })
 
-  it('SOFT hides the fact but leaves the source message completely untouched (reversible)', async () => {
+  it('PURGE scrubs only the value from a multi-person message, keeping the rest', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
-    const noteId = await captureMemory({ groupId: GROUP, content: 'Madeleine is Madeleine Goujon btw', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
-    await reconcileFact(db, { groupId: GROUP, fact: fullName('madeleine', 'Madeleine Goujon'), authoredBy: null, trustLevel: 'untrusted' })
+    const intro = "I'm Ryan Noble, Charl is Charl Jacobs, and Madeleine is Madeleine Goujon"
+    const noteId = await captureMemory({ groupId: GROUP, content: intro, memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    await reconcileFact(db, { groupId: GROUP, fact: person('madeleine', 'full_name', 'Madeleine Goujon'), authoredBy: null, trustLevel: 'untrusted' })
 
-    const m = await findMemoryToForget(db, GROUP, "Madeleine's full name")
-    const res = await forgetMemory(db, GROUP, { factIds: m.factIds, scrubValues: m.scrubValues, noteIds: m.noteIds, mode: 'soft' })
-    expect(res.messagesScrubbed).toBe(0) // soft NEVER touches a source message
-
-    expect(await currentFactsForQuery(db, GROUP, 'madeleine full name')).toHaveLength(0) // fact hidden
-    const [note] = await db.select({ content: memoryItems.content, active: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, noteId))
-    expect(note.active).toBe(true)
-    expect(note.content).toContain('Madeleine Goujon') // message intact + reversible
+    const m = await findMemoryToForget(db, GROUP, { values: ['Madeleine Goujon'], subject: '', attribute: '' })
+    await run(db, m, 'purge')
+    const [note] = await db.select({ c: memoryItems.content, a: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, noteId))
+    expect(note.a).toBe(true)
+    expect(note.c).not.toContain('Madeleine Goujon')
+    expect(note.c).toContain('Ryan Noble')
+    expect(note.c).toContain('Charl Jacobs')
   })
 
-  it('NEVER touches another house’s rows (group-scoped guard)', async () => {
+  it('drops the value as an entity alias but keeps the entity + other aliases', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, { groupId: GROUP, fact: person('madeleine', 'full_name', 'Madeleine Goujon'), authoredBy: null, trustLevel: 'untrusted' })
+    const [ent] = await db.select({ id: entities.id }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'madeleine')))
+    await db.update(entities).set({ aliases: ['madeleine goujon', 'mad'] }).where(eq(entities.id, ent.id))
+
+    const m = await findMemoryToForget(db, GROUP, { values: ['Madeleine Goujon'], subject: '', attribute: '' })
+    expect(m.aliasHits.some((h) => h.remove.includes('madeleine goujon'))).toBe(true)
+    const res = await run(db, m, 'purge')
+    expect(res.aliasesRemoved).toBe(1)
+    const [after] = await db.select({ aliases: entities.aliases }).from(entities).where(eq(entities.id, ent.id))
+    expect(after.aliases).toContain('mad') // the permitted alias stays
+    expect(after.aliases).not.toContain('madeleine goujon')
+  })
+
+  it('SOFT hides facts but leaves messages + aliases untouched (reversible)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, { groupId: GROUP, fact: person('madeleine', 'full_name', 'Madeleine Goujon'), authoredBy: null, trustLevel: 'untrusted' })
+    const noteId = await captureMemory({ groupId: GROUP, content: 'Madeleine is Madeleine Goujon btw', memoryType: 'chatter', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+
+    const m = await findMemoryToForget(db, GROUP, { values: ['Madeleine Goujon'], subject: '', attribute: '' })
+    const res = await run(db, m, 'soft')
+    expect(res.messagesScrubbed).toBe(0)
+    expect(res.aliasesRemoved).toBe(0)
+    expect(res.facts).toBe(1)
+    expect(await currentFactsForQuery(db, GROUP, 'madeleine full name')).toHaveLength(0) // fact hidden
+    const [note] = await db.select({ c: memoryItems.content }).from(memoryItems).where(eq(memoryItems.id, noteId))
+    expect(note.c).toContain('Madeleine Goujon') // message intact
+  })
+
+  it('NEVER touches another house’s rows (group-scoped)', async () => {
     const db = await makeTestDb()
     const OTHER = '-100other'
     await ensureRegistered(db, GROUP, null)
     await ensureRegistered(db, OTHER, null)
-    await reconcileFact(db, { groupId: OTHER, fact: fullName('madeleine', 'Madeleine Goujon'), authoredBy: null, trustLevel: 'untrusted' })
-    const otherNote = await captureMemory({ groupId: OTHER, content: 'Madeleine Goujon in the other house', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
-    const otherFact = (await db.select({ id: facts.id }).from(facts).where(eq(facts.groupId, OTHER)))[0]
+    const otherNote = await captureMemory({ groupId: OTHER, content: 'Madeleine Goujon in the other house', memoryType: 'chatter', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
 
-    // scoped to GROUP but handed OTHER's ids + value → no-op
-    const res = await forgetMemory(db, GROUP, { factIds: [otherFact.id], scrubValues: ['Madeleine Goujon'], noteIds: [otherNote], mode: 'purge' })
-    expect(res.facts).toBe(0)
+    // scoped to GROUP but handed OTHER's ids → no-op
+    const res = await forgetMemory(db, GROUP, { factIds: [], scrubValues: ['Madeleine Goujon'], noteIds: [otherNote], aliasHits: [], mode: 'purge' })
     expect(res.messagesScrubbed).toBe(0)
-    const [n] = await db.select({ c: memoryItems.content, a: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, otherNote))
-    expect(n.a).toBe(true)
-    expect(n.c).toContain('Madeleine Goujon') // untouched
+    const [n] = await db.select({ c: memoryItems.content }).from(memoryItems).where(eq(memoryItems.id, otherNote))
+    expect(n.c).toContain('Madeleine Goujon')
   })
 })

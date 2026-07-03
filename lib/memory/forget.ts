@@ -1,43 +1,51 @@
 import { and, eq, ilike, inArray, or, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
-import { facts, memoryItems, memoryEmbeddings } from '@/db/schema'
+import { entities, facts, memoryItems, memoryEmbeddings } from '@/db/schema'
+import { normalizeEntityName } from '@/lib/memory/facts'
 
-// Deletion on request (owner feature). The UNIT of forgetting is the FACT (the distilled
-// {subject,predicate,object} knowledge) — NOT the source message. A single message ("hi
-// I'm Ryan, Charl is Charl Jacobs, Madeleine is Madeleine Goujon…") sources many facts
-// about many people, so deleting that message to forget one name would nuke everyone
-// else's info. Instead we remove the FACT and, on a purge, SURGICALLY scrub just the
-// leaked value string out of the source messages — keeping the rest of each message.
+// Deletion on request (owner feature). The UNIT of forgetting is a concrete VALUE STRING
+// (a name, number, etc.) — resolved by the LLM, then matched EXACTLY (case-insensitive
+// substring) across facts, source messages, and entity aliases. There is deliberately NO
+// trigram/similarity matching: fuzzy matching both MISSED real values (note-only knowledge)
+// and grabbed unrelated facts. Source messages are provenance — never deleted; a purge
+// surgically scrubs just the value out of them, keeping the rest.
 //
 // Two modes, shown in the proposal before anything commits:
-//   soft  — hide the fact from recall (reversible, audited); source messages untouched.
-//   purge — redact the fact's value AND scrub that value from the source messages (keep
-//           the messages, re-embed), so the value is gone but its neighbours survive.
-// Golden rule holds: the LLM only picks a target DESCRIPTION; this code resolves it to
-// concrete rows + value strings, a human reviews, and only a confirm TAP runs the delete.
+//   soft  — hide matching facts (reversible, audited); messages + aliases untouched.
+//   purge — redact the fact value, scrub the value out of source messages, and drop it as
+//           an entity alias, so the value is gone but its neighbours + the person survive.
 export type ForgetMode = 'soft' | 'purge'
 export interface ForgetFact {
   id: string
   label: string
 }
+export interface AliasHit {
+  entityId: string
+  remove: string[]
+}
+export interface ForgetSpec {
+  /** Exact value strings the user named (verbatim). */
+  values: string[]
+  /** Person/thing to look a value up on (e.g. "Madeleine"), or ''. */
+  subject: string
+  /** Which detail to forget (e.g. "full name"), or ''. */
+  attribute: string
+}
 export interface ForgetMatches {
   factIds: string[]
-  /** Concrete value strings (from the matched facts) to scrub out of source messages on a purge. */
   scrubValues: string[]
-  /** Source messages that CONTAIN a scrub value — surgically redacted on a purge, never deleted. */
   noteIds: string[]
-  /** For the proposal card: the facts to be forgotten, shown individually. */
+  aliasHits: AliasHit[]
   facts: ForgetFact[]
 }
 
-const MATCH_LIMIT = 15
+const MATCH_LIMIT = 20
 
 function rowsOf(res: unknown): Record<string, unknown>[] {
   return Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
 }
 
-// Case-insensitively replace every occurrence of each value with "[redacted]", keeping
-// the surrounding text intact. Values are regex-escaped (they're data, not patterns).
+// Regex-escape a value (it's DATA, not a pattern) for case-insensitive replace.
 export function redactValues(content: string, values: string[]): string {
   let out = content
   for (const v of values) {
@@ -49,57 +57,91 @@ export function redactValues(content: string, values: string[]): string {
 }
 
 const likeEscape = (v: string) => v.replace(/[\\%_]/g, '\\$&')
+const labelFor = (subject: string, predicate: string, objectValue: string | null, isSecure: boolean) =>
+  `${subject} ${predicate.replace(/_/g, ' ')}${isSecure ? ' (secret)' : `: ${objectValue ?? ''}`}`
 
-// Resolve a target description to the exact facts to forget + the value strings to scrub
-// from source messages. Facts match structurally (subject/alias/value substring or
-// trigram), group-scoped + current only, ranked so the most on-target fact leads. Source
-// messages are found by CONTAINING a matched value (so we only ever touch a message that
-// actually holds the thing being forgotten). The confirm card shows the exact facts.
-export async function findMemoryToForget(db: Database, groupId: string, target: string): Promise<ForgetMatches> {
-  const q = target.trim().toLowerCase()
-  if (!q) return { factIds: [], scrubValues: [], noteIds: [], facts: [] }
+// Resolve a subject description to ONE entity (exact canonical or alias, normalised). No
+// fuzzy — a wrong entity would delete the wrong person's data.
+async function resolveSubjectEntity(db: Database, groupId: string, subject: string): Promise<string | null> {
+  const name = normalizeEntityName(subject)
+  if (!name) return null
+  const [row] = await db
+    .select({ id: entities.id })
+    .from(entities)
+    .where(
+      and(
+        eq(entities.groupId, groupId),
+        eq(entities.isActive, true),
+        or(eq(entities.canonicalName, name), sql`${name} = ANY(coalesce(${entities.aliases}, '{}'::text[]))`),
+      ),
+    )
+    .limit(1)
+  return row?.id ?? null
+}
 
-  const factRows = rowsOf(
-    await db.execute(sql`
-      SELECT f.id,
-             e.canonical_name AS subject,
-             f.predicate AS predicate,
-             f.object_value AS "objectValue",
-             f.is_secure AS "isSecure"
-      FROM baumy_facts f
-      JOIN baumy_entities e ON f.subject_entity_id = e.id
-      WHERE f.group_id = ${groupId} AND f.is_current = true AND length(e.canonical_name) > 0
-        AND (
-          position(e.canonical_name IN ${q}) > 0
-          OR EXISTS (SELECT 1 FROM unnest(coalesce(e.aliases, '{}'::text[])) a WHERE length(a) > 0 AND position(a IN ${q}) > 0)
-          OR (f.object_value IS NOT NULL AND position(lower(f.object_value) IN ${q}) > 0)
-          OR word_similarity(e.canonical_name, ${q}) >= 0.6
-          OR (f.object_value IS NOT NULL AND word_similarity(lower(f.object_value), ${q}) >= 0.6)
-        )
-      ORDER BY similarity(e.canonical_name || ' ' || replace(f.predicate, '_', ' ') || ' ' || coalesce(f.object_value, ''), ${q}) DESC,
-               f.recorded_at DESC
-      LIMIT ${MATCH_LIMIT}`),
-  )
-
-  const matched: ForgetFact[] = []
-  const factIds: string[] = []
-  const scrubSet = new Set<string>()
-  for (const r of factRows) {
-    factIds.push(String(r.id))
-    matched.push({
-      id: String(r.id),
-      label: `${r.subject as string} ${String(r.predicate).replace(/_/g, ' ')}${r.isSecure ? ' (secret)' : `: ${(r.objectValue as string | null) ?? ''}`}`,
-    })
-    // Only a non-secret, meaningful value is worth scrubbing from source text (a secret's
-    // plaintext is never stored in a note — capture keeps only a descriptor).
-    if (!r.isSecure && typeof r.objectValue === 'string' && r.objectValue.trim().length >= 2) scrubSet.add(r.objectValue)
+// Resolve a forget request to the EXACT facts / messages / aliases holding the value(s).
+// Value strings come from (a) what the user literally named and (b) a precise subject+
+// attribute lookup (e.g. subject "Madeleine" + attribute "full name" → the full_name fact's
+// value). Then every store is matched by EXACT substring on those values.
+export async function findMemoryToForget(db: Database, groupId: string, spec: ForgetSpec): Promise<ForgetMatches> {
+  const scrub = new Set<string>()
+  for (const v of spec.values) {
+    const t = v.trim()
+    if (t.length >= 2) scrub.add(t)
   }
-  const scrubValues = [...scrubSet]
 
-  // Source messages that literally contain a value being forgotten (for surgical purge).
+  const factIds = new Set<string>()
+  const factList: ForgetFact[] = []
+
+  // Precise subject+attribute lookup: only when an attribute is given, so we never grab a
+  // person's WHOLE record. All attribute words must appear in the fact (predicate+value).
+  const attrWords = spec.attribute.toLowerCase().split(/\s+/).filter((w) => w.length > 2)
+  if (spec.subject && attrWords.length) {
+    const entId = await resolveSubjectEntity(db, groupId, spec.subject)
+    if (entId) {
+      const [ent] = await db.select({ name: entities.canonicalName }).from(entities).where(eq(entities.id, entId))
+      const rows = await db
+        .select({ id: facts.id, predicate: facts.predicate, objectValue: facts.objectValue, isSecure: facts.isSecure })
+        .from(facts)
+        .where(and(eq(facts.groupId, groupId), eq(facts.subjectEntityId, entId), eq(facts.isCurrent, true)))
+      for (const r of rows) {
+        const hay = `${r.predicate.replace(/_/g, ' ')} ${r.objectValue ?? ''}`.toLowerCase()
+        if (attrWords.every((w) => hay.includes(w))) {
+          factIds.add(r.id)
+          factList.push({ id: r.id, label: labelFor(ent?.name ?? spec.subject, r.predicate, r.objectValue, r.isSecure) })
+          if (!r.isSecure && r.objectValue && r.objectValue.trim().length >= 2) scrub.add(r.objectValue)
+        }
+      }
+    }
+  }
+
+  const scrubValues = [...scrub]
   let noteIds: string[] = []
+  let aliasHits: AliasHit[] = []
+
   if (scrubValues.length) {
-    const rows = await db
+    // Facts whose stored VALUE contains a scrub string (exact substring, case-insensitive).
+    const valueMatches = or(...scrubValues.map((v) => ilike(facts.objectValue, `%${likeEscape(v)}%`)))
+    const factRows = await db
+      .select({ id: facts.id, predicate: facts.predicate, objectValue: facts.objectValue, isSecure: facts.isSecure, subjectEntityId: facts.subjectEntityId })
+      .from(facts)
+      .where(and(eq(facts.groupId, groupId), eq(facts.isCurrent, true), valueMatches))
+      .limit(MATCH_LIMIT)
+    // resolve subject names for labels
+    const subjIds = [...new Set(factRows.map((r) => r.subjectEntityId).filter((x): x is string => !!x))]
+    const names = new Map<string, string>()
+    if (subjIds.length) {
+      const ents = await db.select({ id: entities.id, name: entities.canonicalName }).from(entities).where(inArray(entities.id, subjIds))
+      for (const e of ents) names.set(e.id, e.name)
+    }
+    for (const r of factRows) {
+      if (factIds.has(r.id)) continue
+      factIds.add(r.id)
+      factList.push({ id: r.id, label: labelFor(r.subjectEntityId ? (names.get(r.subjectEntityId) ?? '') : '', r.predicate, r.objectValue, r.isSecure) })
+    }
+
+    // Source messages that literally contain a value (for surgical purge — never delete).
+    const noteRows = await db
       .select({ id: memoryItems.id })
       .from(memoryItems)
       .where(
@@ -109,26 +151,39 @@ export async function findMemoryToForget(db: Database, groupId: string, target: 
           or(...scrubValues.map((v) => ilike(memoryItems.content, `%${likeEscape(v)}%`))),
         ),
       )
-    noteIds = rows.map((r) => r.id)
+    noteIds = noteRows.map((r) => r.id)
+
+    // Entity aliases equal to a value → drop them (keep the entity + other aliases).
+    const normSet = new Set(scrubValues.map((v) => normalizeEntityName(v)).filter((v) => v.length >= 2))
+    const aliasRows = rowsOf(
+      await db.execute(sql`
+        SELECT id, aliases FROM baumy_entities
+        WHERE group_id = ${groupId} AND is_active = true AND aliases IS NOT NULL AND array_length(aliases, 1) > 0`),
+    )
+    for (const r of aliasRows) {
+      const aliases = (r.aliases as string[] | null) ?? []
+      const remove = aliases.filter((a) => normSet.has(a))
+      if (remove.length) aliasHits.push({ entityId: String(r.id), remove })
+    }
   }
 
-  return { factIds, scrubValues, noteIds, facts: matched }
+  return { factIds: [...factIds], scrubValues, noteIds, aliasHits, facts: factList }
 }
 
 // Execute a confirmed forget. Group-scoped WHERE guards make it impossible to touch
-// another house's rows even if an id were spoofed. Facts: soft = hide (bitemporal close +
-// deleted_at); purge = also redact the plaintext value + secret ciphertext. Source
-// messages are NEVER deleted — on a purge we surgically scrub the value strings out of
-// their content (keeping everything else) and drop their embeddings so the re-embed sweep
-// re-vectorises the redacted text; on a soft delete they are left completely untouched.
+// another house's rows even with a spoofed id. Facts: soft = hide (bitemporal close +
+// deleted_at); purge = also redact the value + secret. Source messages are NEVER deleted —
+// purge surgically scrubs the value strings out and drops their embeddings so the re-embed
+// sweep re-vectorises the redacted text. Aliases equal to a value are dropped on purge.
 export async function forgetMemory(
   db: Database,
   groupId: string,
-  input: { factIds: string[]; scrubValues: string[]; noteIds: string[]; mode: ForgetMode },
-): Promise<{ facts: number; messagesScrubbed: number }> {
+  input: { factIds: string[]; scrubValues: string[]; noteIds: string[]; aliasHits: AliasHit[]; mode: ForgetMode },
+): Promise<{ facts: number; messagesScrubbed: number; aliasesRemoved: number }> {
   const now = new Date()
   let f = 0
   let messagesScrubbed = 0
+  let aliasesRemoved = 0
 
   if (input.factIds.length) {
     const base = { isCurrent: false, deletedAt: now, invalidatedAt: now, validTo: now }
@@ -141,7 +196,7 @@ export async function forgetMemory(
     f = res.length
   }
 
-  // Surgical source-message scrub — PURGE ONLY, and only the matched value strings.
+  // Surgical message scrub (purge only) — never deletes a message.
   if (input.mode === 'purge' && input.noteIds.length && input.scrubValues.length) {
     const notes = await db
       .select({ id: memoryItems.id, content: memoryItems.content })
@@ -155,13 +210,24 @@ export async function forgetMemory(
         scrubbedIds.push(nt.id)
       }
     }
-    if (scrubbedIds.length) {
-      // Drop the stale vectors (they still encode the removed value) — the re-embed sweep
-      // regenerates them from the now-redacted content. Lexical (content_tsv) updates itself.
-      await db.delete(memoryEmbeddings).where(inArray(memoryEmbeddings.memoryItemId, scrubbedIds))
-    }
+    if (scrubbedIds.length) await db.delete(memoryEmbeddings).where(inArray(memoryEmbeddings.memoryItemId, scrubbedIds))
     messagesScrubbed = scrubbedIds.length
   }
 
-  return { facts: f, messagesScrubbed }
+  // Drop the value as an entity alias (purge only) — keeps the entity + its other aliases.
+  // Independent of message scrubbing (a value can be an alias with no message holding it).
+  if (input.mode === 'purge' && input.aliasHits.length) {
+    for (const h of input.aliasHits) {
+      const [ent] = await db.select({ aliases: entities.aliases }).from(entities).where(and(eq(entities.id, h.entityId), eq(entities.groupId, groupId)))
+      if (!ent) continue
+      const current = ent.aliases ?? []
+      const next = current.filter((a) => !h.remove.includes(a))
+      if (next.length !== current.length) {
+        await db.update(entities).set({ aliases: next }).where(eq(entities.id, h.entityId))
+        aliasesRemoved += current.length - next.length
+      }
+    }
+  }
+
+  return { facts: f, messagesScrubbed, aliasesRemoved }
 }

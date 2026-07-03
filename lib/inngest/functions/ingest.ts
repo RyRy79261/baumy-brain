@@ -16,6 +16,9 @@ import { rerank } from '@/lib/ai/rerank'
 import { extractReminder } from '@/lib/ai/reminder-extract'
 import { extractForget } from '@/lib/ai/forget-extract'
 import { findMemoryToForget, type ForgetMode } from '@/lib/memory/forget'
+import { enrichIssue, formatIssueBody } from '@/lib/ai/issue-enrich'
+import { issuesConfigured, labelsFor } from '@/lib/github/issues'
+import { parseReportCommand } from '@/lib/pipeline/report'
 import { createPendingAction } from '@/lib/confirm/store'
 import { parseWhen } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
@@ -62,6 +65,37 @@ export const handleTelegramMessage = inngest.createFunction(
       roster,
       houseChatId,
     )
+
+    // Bug/feature report (/bug, /feature, /issue, /report) → enrich into a clean GitHub
+    // issue and file it on a confirm tap. Explicit slash command, works in the house group
+    // OR a member DM, from an authenticated house member only. Runs before the DM-command
+    // path (so /bug in a DM isn't "Unknown command") and independent of the pause switch.
+    const report = parseReportCommand(text ?? '')
+    if (report && fromId != null && roster.isMember(fromId)) {
+      await step.run('report', async () => {
+        const db = createHttpDb()
+        if (!issuesConfigured()) {
+          await sendToHouse(chatId, "I'd file that, but issue reporting isn't wired up yet — the house owner needs to add a GitHub token. 🐈‍⬛")
+          return
+        }
+        if (!report.body) {
+          const eg = report.hint === 'feature' ? '/feature a dark mode for the dashboard' : '/bug the rent reminder fired twice'
+          await sendToHouse(chatId, `Tell me what to file, like:\n${eg}`)
+          return
+        }
+        const reporter = (await memberDisplayNames(db)).get(String(fromId)) ?? 'a housemate'
+        const enriched = await enrichIssue(report.body, report.hint)
+        const pid = await createPendingAction(db, {
+          groupId: chatId,
+          actionType: 'github.issue',
+          payload: { title: enriched.title, body: formatIssueBody(enriched, reporter), labels: labelsFor(enriched.type), type: enriched.type },
+          requestedBy: String(fromId),
+        })
+        const kind = enriched.type === 'feature' ? '✨ Feature' : '🐛 Bug'
+        await sendConfirmCard(chatId, `${kind}: ${enriched.title}\n\n${enriched.summary}\n\nFile this as a GitHub issue?`, pid)
+      })
+      return { updateId, decision: 'report' as const }
+    }
 
     // Member-DM commands (house-management). Deterministic; no classify/LLM.
     if (origin.lane === 'member_dm' && (text ?? '').trim().startsWith('/')) {
@@ -168,32 +202,47 @@ export const handleTelegramMessage = inngest.createFunction(
         if (decision === 'forget') {
           const speaker = fromId != null ? ((await memberDisplayNames(db)).get(String(fromId)) ?? null) : null
           const ex = await extractForget(text ?? '', speaker)
-          if (ex.isForget && ex.target) {
-            const matches = await findMemoryToForget(db, chatId, ex.target)
+          if (ex.isForget) {
+            const matches = await findMemoryToForget(db, chatId, { values: ex.values, subject: ex.subject, attribute: ex.attribute })
             await reactToMessage(chatId, messageId, null)
-            if (matches.facts.length === 0) {
-              await sendToHouse(chatId, `Nothing about "${ex.target}" in my memory — so nothing to forget 😼`)
+            const mode: ForgetMode = ex.permanent ? 'purge' : 'soft'
+            const aliasCount = matches.aliasHits.reduce((n, h) => n + h.remove.length, 0)
+            const hasFacts = matches.facts.length > 0
+            const hasScrub = matches.noteIds.length > 0 || aliasCount > 0
+            // soft can only HIDE facts; purge also scrubs messages + aliases. If this mode
+            // can't act on what we found, say why (or ask) rather than a misleading proposal.
+            if (!hasFacts && !(mode === 'purge' && hasScrub)) {
+              if (mode === 'soft' && hasScrub) {
+                await sendToHouse(chatId, `That's only in past messages, not a fact I can just hide — say "permanently forget it" and I'll scrub it out for good. 😼`)
+              } else if (ex.values.length === 0 && !ex.subject) {
+                await sendToHouse(chatId, `What exactly should I forget? Name the specific thing — a name, number, that kind of thing 😼`)
+              } else {
+                await sendToHouse(chatId, `Nothing like that in my memory, so nothing to forget 😼`)
+              }
               return
             }
-            const mode: ForgetMode = ex.permanent ? 'purge' : 'soft'
             const pid = await createPendingAction(db, {
               groupId: chatId,
               actionType: 'memory.forget',
-              payload: { mode, factIds: matches.factIds, scrubValues: matches.scrubValues, noteIds: matches.noteIds, summary: ex.target },
+              payload: {
+                mode,
+                factIds: matches.factIds,
+                scrubValues: matches.scrubValues,
+                noteIds: matches.noteIds,
+                aliasHits: matches.aliasHits,
+                summary: ex.values.join(', ') || [ex.subject, ex.attribute].filter(Boolean).join(' ') || 'that',
+              },
               requestedBy: fromId != null ? String(fromId) : null,
             })
-            const list = matches.facts.map((c) => `• ${c.label}`).join('\n')
-            let msg: string
+            const lines: string[] = matches.facts.map((c) => `• ${c.label}`)
             if (mode === 'purge') {
-              const scrub =
-                matches.noteIds.length && matches.scrubValues.length
-                  ? `\n\n…and scrub ${matches.scrubValues.map((v) => `"${v}"`).join(', ')} out of ${matches.noteIds.length} stored message${matches.noteIds.length === 1 ? '' : 's'} (keeping the rest).`
-                  : ''
-              msg = `I'll permanently forget (no undo):\n${list}${scrub}\n\nTap to confirm.`
-            } else {
-              msg = `I'll forget (hidden, reversible):\n${list}\n\nTap to confirm.`
+              if (matches.noteIds.length && matches.scrubValues.length) {
+                lines.push(`• scrub ${matches.scrubValues.map((v) => `"${v}"`).join(', ')} out of ${matches.noteIds.length} message${matches.noteIds.length === 1 ? '' : 's'} (keeping the rest)`)
+              }
+              if (aliasCount) lines.push(`• drop ${aliasCount} alias${aliasCount === 1 ? '' : 'es'}`)
             }
-            await sendConfirmCard(chatId, msg, pid)
+            const head = mode === 'purge' ? "I'll permanently forget (no undo):" : "I'll forget (hidden, reversible):"
+            await sendConfirmCard(chatId, `${head}\n${lines.join('\n')}\n\nTap to confirm.`, pid)
             return
           }
           // Classifier flagged forget but it wasn't one → fall through to a normal reply.

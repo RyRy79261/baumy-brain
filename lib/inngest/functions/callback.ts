@@ -3,7 +3,8 @@ import { createHttpDb } from '@/db/client'
 import { loadRoster } from '@/lib/identity/roster'
 import { resolvePendingAction } from '@/lib/confirm/store'
 import { createReminder } from '@/lib/reminders/store'
-import { forgetMemory, type ForgetMode } from '@/lib/memory/forget'
+import { forgetMemory, type ForgetMode, type AliasHit } from '@/lib/memory/forget'
+import { createIssue } from '@/lib/github/issues'
 import { writeAudit } from '@/lib/audit'
 import { answerCallback, editMessageText } from '@/lib/telegram/client'
 
@@ -69,22 +70,52 @@ export const handleCallbackQuery = inngest.createFunction(
       // The TAP is the wall: the delete targets the exact fact ids + value strings resolved
       // at propose time (payload), scoped to this house, and runs only now. Facts are
       // removed; source messages are only surgically scrubbed on a purge, never deleted.
-      const p = action.payload as { mode: ForgetMode; factIds: string[]; scrubValues: string[]; noteIds: string[]; summary: string }
+      const p = action.payload as {
+        mode: ForgetMode
+        factIds: string[]
+        scrubValues: string[]
+        noteIds: string[]
+        aliasHits: AliasHit[]
+        summary: string
+      }
       const res = await forgetMemory(db, chatId, {
         factIds: p.factIds ?? [],
         scrubValues: p.scrubValues ?? [],
         noteIds: p.noteIds ?? [],
+        aliasHits: p.aliasHits ?? [],
         mode: p.mode,
       })
-      await writeAudit(db, 'memory.forget', String(fromId), p.summary ?? null, { mode: p.mode, facts: res.facts, messagesScrubbed: res.messagesScrubbed })
+      await writeAudit(db, 'memory.forget', String(fromId), p.summary ?? null, {
+        mode: p.mode,
+        facts: res.facts,
+        messagesScrubbed: res.messagesScrubbed,
+        aliasesRemoved: res.aliasesRemoved,
+      })
       const verb = p.mode === 'purge' ? 'Purged' : 'Forgotten'
-      const detail =
-        res.messagesScrubbed > 0
-          ? `${res.facts} fact${res.facts === 1 ? '' : 's'} + scrubbed ${res.messagesScrubbed} message${res.messagesScrubbed === 1 ? '' : 's'}`
-          : `${res.facts} fact${res.facts === 1 ? '' : 's'}`
+      const bits = [
+        `${res.facts} fact${res.facts === 1 ? '' : 's'}`,
+        res.messagesScrubbed ? `scrubbed ${res.messagesScrubbed} message${res.messagesScrubbed === 1 ? '' : 's'}` : '',
+        res.aliasesRemoved ? `${res.aliasesRemoved} alias${res.aliasesRemoved === 1 ? '' : 'es'}` : '',
+      ].filter(Boolean)
+      const detail = bits.join(' + ')
       await answerCallback(callbackId, verb)
       if (messageId) await editMessageText(chatId, messageId, `${p.mode === 'purge' ? '🔥' : '🧽'} ${verb} — ${detail}.`)
       return { confirmed: id, forgot: res.facts, scrubbed: res.messagesScrubbed }
+    }
+
+    if (action.actionType === 'github.issue') {
+      // File the enriched report as a GitHub issue (details resolved at propose time).
+      const p = action.payload as { title: string; body: string; labels: string[]; type: string }
+      const issue = await createIssue({ title: p.title, body: p.body, labels: p.labels })
+      await writeAudit(db, 'github.issue', String(fromId), p.title, { type: p.type, number: issue?.number ?? null })
+      if (issue) {
+        await answerCallback(callbackId, 'Filed')
+        if (messageId) await editMessageText(chatId, messageId, `✅ Filed #${issue.number} — ${issue.url}`)
+      } else {
+        await answerCallback(callbackId, "Couldn't file")
+        if (messageId) await editMessageText(chatId, messageId, "⚠️ Couldn't file that — GitHub isn't set up or the API errored. Nothing was posted.")
+      }
+      return { confirmed: id, issue: issue?.number ?? null }
     }
 
     await answerCallback(callbackId, 'Done')
