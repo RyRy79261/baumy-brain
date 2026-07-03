@@ -133,3 +133,10 @@ export async function claimReply(db: Database, updateId: number): Promise<boolea
     .returning({ updateId: replies.updateId })
   return rows.length > 0
 }
+
+// Release a claim so a transient failure can be retried. The claim autocommits (neon-http)
+// and the send is fallible with no sweeper backstop, so without this a single Telegram/LLM
+// hiccup permanently drops the reply. Best-effort delete of the claim row.
+export async function releaseReply(db: Database, updateId: number): Promise<void> {
+  await db.delete(replies).where(eq(replies.updateId, updateId))
+}
