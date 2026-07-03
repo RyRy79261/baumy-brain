@@ -19,11 +19,15 @@ export async function requireAdmin(): Promise<{ uid: string } | null> {
   return session
 }
 
-// Stricter gate for OWNER-only surfaces (privileged config: grants, response policy,
-// scheduled tasks that cost budget). Re-checks the live owner role, never the cookie.
+// Stricter gate for OWNER-only surfaces (privileged config: grants, response policy).
+// Re-checks the live owner role + grant, never the cookie. Loads the roster ONCE (the old
+// requireAdmin→loadRoster + a second loadRoster read the DB twice and could disagree under
+// a transient error).
 export async function requireOwner(): Promise<{ uid: string } | null> {
-  const session = await requireAdmin()
+  const jar = await cookies()
+  const session = verifySession(jar.get(SESSION_COOKIE)?.value)
   if (!session) return null
   const roster = await loadRoster(createHttpDb())
-  return roster.isOwner(Number(session.uid)) ? session : null
+  const uid = Number(session.uid)
+  return roster.canAccessDashboard(uid) && roster.isOwner(uid) ? session : null
 }
