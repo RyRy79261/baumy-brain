@@ -33,7 +33,9 @@ export function verifySession(token: string | undefined | null): { uid: string }
 
   try {
     const data = JSON.parse(Buffer.from(payload, 'base64url').toString()) as { uid: string; exp: number }
-    if (typeof data.uid !== 'string' || data.exp < nowSec()) return null
+    // Guard exp's type: a missing/NaN exp makes `exp < nowSec()` false → a token that never
+    // expires. Require a real number.
+    if (typeof data.uid !== 'string' || typeof data.exp !== 'number' || data.exp < nowSec()) return null
     return { uid: data.uid }
   } catch {
     return null
