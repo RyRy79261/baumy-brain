@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, lte, ne, sql } from 'drizzle-orm'
 import { generateText } from 'ai'
+import { DateTime } from 'luxon'
 import { type Database } from '@/db/client'
 import { reminders, memoryItems } from '@/db/schema'
 import { resolveModel } from '@/lib/ai/registry'
@@ -8,6 +9,7 @@ import { retrieve } from '@/lib/memory/retrieve'
 import { currentFactsForQuery } from '@/lib/memory/facts'
 import { buildDigest } from '@/lib/reports/digest'
 import { houseToday } from '@/lib/core/clock'
+import { houseTz } from '@/lib/env'
 
 // On-demand house reports (owner feature): a slash command generates a formatted report
 // from house memory. LLM-formatted (the data is free-form facts + notes) but grounded
@@ -26,7 +28,7 @@ export function parseHouseReport(text: string | null | undefined): HouseReport |
 function rowsOf(res: unknown): Record<string, unknown>[] {
   return Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
 }
-const fmtDate = (d: Date | string) => new Date(d).toISOString().slice(0, 10)
+const fmtDate = (d: Date | string) => DateTime.fromJSDate(new Date(d)).setZone(houseTz()).toISODate() ?? '' // house-local date, not UTC
 
 // "What's been happening": recent notes + what's coming up (reminders), written as a short
 // friendly digest. Falls back to the deterministic buildDigest on any model failure.

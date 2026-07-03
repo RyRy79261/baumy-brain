@@ -97,5 +97,6 @@ export async function dueScheduled(db: Database, before: Date, limit = 100) {
     })
     .from(reminders)
     .where(and(eq(reminders.status, 'scheduled'), lte(reminders.fireAt, before)))
+    .orderBy(reminders.fireAt) // earliest-due first, so a >limit backlog drains in order
     .limit(limit)
 }

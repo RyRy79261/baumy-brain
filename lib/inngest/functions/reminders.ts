@@ -28,10 +28,11 @@ export const reminderArm = inngest.createFunction(
   },
 )
 
-// Deliver (task-graph R3): sleep until fire_at, then atomically claim + send once.
-// Cancelled reminders cancel the sleeping run via cancelOn.
+// Deliver (task-graph R3): sleep until fire_at, then atomically claim + send once. A
+// cancelled reminder is gated out by claimReminder (it only claims status='scheduled'), so
+// the sleeping run harmlessly no-ops — no cancel event is needed or emitted.
 export const reminderDeliver = inngest.createFunction(
-  { id: 'reminder-deliver', cancelOn: [{ event: 'reminder/cancelled', match: 'data.reminderId' }] },
+  { id: 'reminder-deliver' },
   { event: 'reminder/arm.due' },
   async ({ event, step }) => {
     const { reminderId } = event.data
@@ -50,11 +51,13 @@ export const reminderDeliver = inngest.createFunction(
       if (!(await claimReminder(db, reminderId))) return // another path already claimed it
       try {
         await sendToHouse(row.deliverChatId, `⏰ ${row.content}`)
-        await markSent(db, reminderId)
       } catch (e) {
-        await releaseReminder(db, reminderId) // send failed → back to scheduled so it retries (never zero-fire)
+        await releaseReminder(db, reminderId) // SEND failed → back to scheduled so it retries (never zero-fire)
         throw e
       }
+      // Sent OK. markSent SEPARATELY — a failure here must NOT release (that would re-send);
+      // it leaves the row 'firing' for the stale-firing reaper to resolve, avoiding a double-send.
+      await markSent(db, reminderId)
     })
     return { delivered: reminderId }
   },
@@ -73,15 +76,15 @@ export const reminderSweeper = inngest.createFunction(
       const overdue = await dueScheduled(db, new Date())
       let count = 0
       for (const r of overdue) {
-        if (await claimReminder(db, r.id)) {
-          try {
-            await sendToHouse(r.deliverChatId, `⏰ ${r.content}`)
-            await markSent(db, r.id)
-            count++
-          } catch {
-            await releaseReminder(db, r.id) // failed → return to scheduled for the next sweep
-          }
+        if (!(await claimReminder(db, r.id))) continue
+        try {
+          await sendToHouse(r.deliverChatId, `⏰ ${r.content}`)
+        } catch {
+          await releaseReminder(db, r.id) // send failed → return to scheduled for the next sweep
+          continue
         }
+        await markSent(db, r.id) // failure leaves it 'firing' for the reaper, not an immediate re-send
+        count++
       }
       return count
     })
