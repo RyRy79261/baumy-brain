@@ -21,6 +21,7 @@ const READ_THRESHOLD = 0.6 // word_similarity to surface a fact for a query on r
 
 export interface ExtractedFact {
   subject: string
+  subjectKind?: 'person' | 'place' | 'org' | 'event' | 'thing'
   predicate: string
   object: string
 }
@@ -40,57 +41,75 @@ export function normalizeEntityName(raw: string): string {
   return n.length > 0 ? n : raw.trim().toLowerCase()
 }
 
-// Best same-kind trigram candidate for an incoming name, or null. strict_word_
-// similarity aligns to word boundaries (so "sink" matches the word in "kitchen
-// sink" but "rent" does not match "rest"); we take the max over both directions.
+// Best trigram candidate for an incoming name (+ its kind), or null. strict_word_
+// similarity aligns to word boundaries (so "sink" matches the word in "kitchen sink"
+// but "rent" does not match "rest"); we take the max over both directions. The kind
+// guard is LENIENT about 'thing' — a typed 'person' still merges with a legacy
+// untyped 'thing' node (and upgrades it), so typing never fragments the graph.
 async function pickMergeCandidate(
   db: Database,
   groupId: string,
   kind: string,
   name: string,
-): Promise<string | null> {
+): Promise<{ id: string; kind: string } | null> {
   const res = await db.execute(sql`
-    SELECT id,
+    SELECT id, kind,
            greatest(strict_word_similarity(canonical_name, ${name}), strict_word_similarity(${name}, canonical_name)) AS s
     FROM baumy_entities
-    WHERE group_id = ${groupId} AND kind = ${kind} AND is_active = true
+    WHERE group_id = ${groupId} AND is_active = true
+      AND (kind = ${kind} OR kind = 'thing' OR ${kind} = 'thing')
       AND greatest(strict_word_similarity(canonical_name, ${name}), strict_word_similarity(${name}, canonical_name)) >= ${MERGE_THRESHOLD}
     ORDER BY s DESC
     LIMIT 1`)
   const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
-  return rows.length ? String(rows[0].id) : null
+  return rows.length ? { id: String(rows[0].id), kind: String(rows[0].kind) } : null
+}
+
+// Promote a legacy untyped node to a specific kind once we learn it (person/place/…);
+// never downgrades a specific kind back to 'thing'.
+async function upgradeKind(db: Database, id: string, current: string, next: string): Promise<void> {
+  if (current === 'thing' && next !== 'thing') {
+    await db.update(entities).set({ kind: next }).where(eq(entities.id, id))
+  }
 }
 
 // Resolve a subject surface form to a single canonical entity: exact canonical →
-// exact alias → conservative same-kind trigram merge (recording the surface form as
-// an alias so it resolves exactly next time) → create new.
-async function resolveEntity(db: Database, groupId: string, rawName: string): Promise<string> {
+// exact alias → conservative trigram merge (recording the surface form as an alias so
+// it resolves exactly next time) → create new. `kind` types the node (memory v2 §1);
+// a resolved node is upgraded thing→specific when we learn what it is.
+async function resolveEntity(db: Database, groupId: string, rawName: string, kind = 'thing'): Promise<string> {
   const name = normalizeEntityName(rawName)
-  const kind = 'thing' // extraction is kind-agnostic today; the guard is ready for when it isn't
 
   const [exact] = await db
-    .select({ id: entities.id })
+    .select({ id: entities.id, kind: entities.kind })
     .from(entities)
     .where(and(eq(entities.groupId, groupId), eq(entities.canonicalName, name)))
     .limit(1)
-  if (exact) return exact.id
+  if (exact) {
+    await upgradeKind(db, exact.id, exact.kind, kind)
+    return exact.id
+  }
 
   const [aliasHit] = await db
-    .select({ id: entities.id })
+    .select({ id: entities.id, kind: entities.kind })
     .from(entities)
     .where(and(eq(entities.groupId, groupId), sql`${name} = ANY(coalesce(${entities.aliases}, '{}'::text[]))`))
     .limit(1)
-  if (aliasHit) return aliasHit.id
+  if (aliasHit) {
+    await upgradeKind(db, aliasHit.id, aliasHit.kind, kind)
+    return aliasHit.id
+  }
 
   const merged = await pickMergeCandidate(db, groupId, kind, name)
   if (merged) {
+    await upgradeKind(db, merged.id, merged.kind, kind)
     // `name` is guaranteed absent from this entity's aliases (the exact-alias probe
     // above scanned every entity), so a plain append never duplicates.
     await db
       .update(entities)
       .set({ aliases: sql`array_append(coalesce(${entities.aliases}, '{}'::text[]), ${name})` })
-      .where(eq(entities.id, merged))
-    return merged
+      .where(eq(entities.id, merged.id))
+    return merged.id
   }
 
   const [row] = await db
@@ -111,7 +130,7 @@ export async function reconcileFact(
   // Quarantined (forwarded/bot) content NEVER becomes a fact (injection wall #7).
   if (input.trustLevel === 'quarantined') return 'rejected'
 
-  const subjectId = await resolveEntity(db, input.groupId, input.fact.subject)
+  const subjectId = await resolveEntity(db, input.groupId, input.fact.subject, input.fact.subjectKind ?? 'thing')
   const predicate = input.fact.predicate.trim().toLowerCase()
 
   // Secure-value detection considers the whole triple (the secret marker usually

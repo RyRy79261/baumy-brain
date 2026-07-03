@@ -11,6 +11,9 @@ export const extractedFacts = z.object({
     .array(
       z.object({
         subject: z.string().min(1).max(80),
+        // What the SUBJECT is — people are first-class (memory v2 §1). Free choice of
+        // the five kinds; 'thing' is the safe default when unsure.
+        subjectKind: z.enum(['person', 'place', 'org', 'event', 'thing']).optional(),
         predicate: z.string().min(1).max(60),
         object: z.string().min(1).max(200),
       }),

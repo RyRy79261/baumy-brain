@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { and, eq } from 'drizzle-orm'
 import { makeTestDb } from './pglite'
+import { entities } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
 
@@ -36,6 +38,29 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
     const hits = await currentFactsForQuery(db, GROUP, 'is the sink fixed?')
     expect(hits.some((h) => h.content.includes('fixed'))).toBe(true)
     expect(hits.some((h) => h.content.includes('leaking'))).toBe(false)
+  })
+
+  it('types a named human as kind=person and upgrades a legacy thing node (no fragmentation)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const t = 'untrusted' as const
+    const kindOf = async () =>
+      db.select({ id: entities.id, kind: entities.kind }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'zuzana')))
+
+    // legacy untyped mention first
+    await reconcileFact(db, { groupId: GROUP, fact: F('zuzana', 'arrives_on', 'friday'), authoredBy: null, trustLevel: t })
+    expect((await kindOf())[0].kind).toBe('thing')
+
+    // later we learn she's a person → the SAME node upgrades, no second entity
+    await reconcileFact(db, {
+      groupId: GROUP,
+      fact: { subject: 'zuzana', subjectKind: 'person', predicate: 'is', object: 'a nurse' },
+      authoredBy: null,
+      trustLevel: t,
+    })
+    const rows = await kindOf()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].kind).toBe('person')
   })
 
   it('does NOT merge distinct entities (precision on write)', async () => {
