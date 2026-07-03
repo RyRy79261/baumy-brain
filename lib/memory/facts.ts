@@ -217,11 +217,15 @@ export async function reconcileFact(
   // Contradiction: only a fact of >= trust may overwrite the incumbent.
   if (rank(input.trustLevel) < rank(existing.trustLevel)) return 'rejected'
 
+  // Supersede atomically-enough WITHOUT a transaction (the http driver has none): CLOSE the
+  // incumbent FIRST, then insert the new current row. If the run dies between these two
+  // autocommitted writes, the retry sees NO current incumbent and cleanly re-ADDs — so there
+  // are never two is_current rows (which could persistently surface a stale value). The brief
+  // window where the fact has no current value self-heals on the retry.
+  const now = new Date()
+  await db.update(facts).set({ isCurrent: false, validTo: now, invalidatedAt: now }).where(eq(facts.id, existing.id))
   const [inserted] = await db.insert(facts).values(newValues).returning({ id: facts.id })
-  await db
-    .update(facts)
-    .set({ isCurrent: false, supersededBy: inserted.id, validTo: new Date(), invalidatedAt: new Date() })
-    .where(eq(facts.id, existing.id))
+  await db.update(facts).set({ supersededBy: inserted.id }).where(eq(facts.id, existing.id))
   return 'update'
 }
 
