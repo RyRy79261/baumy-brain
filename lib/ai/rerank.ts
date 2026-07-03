@@ -15,7 +15,7 @@ const rerankSchema = z.object({
 export async function rerank(
   query: string,
   memories: RetrievedMemory[],
-  model: LanguageModel = resolveModel('classify'),
+  model: LanguageModel = resolveModel('assess'),
 ): Promise<RetrievedMemory[]> {
   if (memories.length <= 1) return memories
   const items = memories.map((m, i) => `[${i}] ${m.content}`).join('\n')

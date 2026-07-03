@@ -15,7 +15,7 @@ const expansionSchema = z.object({
 
 export async function expandQuery(
   query: string,
-  model: LanguageModel = resolveModel('classify'),
+  model: LanguageModel = resolveModel('assess'),
 ): Promise<string[]> {
   const { object } = await generateObject({
     model,
