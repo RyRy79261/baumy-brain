@@ -9,7 +9,7 @@ import { TRIAGE_SYSTEM } from './prompts'
 // IS an injection firewall: a fully-compromised model can at most return these enums.
 export const classifierVerdict = z.object({
   worthRemembering: z.boolean(),
-  intent: z.enum(['chatter', 'fact', 'question', 'reminder', 'task']),
+  intent: z.enum(['chatter', 'fact', 'question', 'reminder', 'task', 'forget']),
   needsReply: z.boolean(),
   confidence: z.number().min(0).max(1),
   respond: z.enum(['ignore', 'react', 'answer']),

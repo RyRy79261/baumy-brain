@@ -5,6 +5,7 @@ import { entities } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
+import { findMemoryToForget, forgetMemory } from '@/lib/memory/forget'
 import { createReminder, claimReminder, markSent, releaseReminder } from '@/lib/reminders/store'
 import { loadResponsePolicy, setGlobalEnabled } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
@@ -142,6 +143,24 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     await setGlobalEnabled(h.db, false)
     expect((await loadResponsePolicy(h.db)).global_enabled).toBe(false)
     await setGlobalEnabled(h.db, true)
+  })
+
+  it('forget on request: find matches → purge redacts value + drops the vector (real SQL)', async () => {
+    await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'guest-bob', subjectKind: 'person', predicate: 'full_name', object: 'Robert Tables' }, authoredBy: null, trustLevel: 'trusted' })
+    await captureMemory(
+      { groupId: GROUP, content: 'Robert Tables is crashing in the cave this week', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' },
+      { db: h.db, embed },
+    )
+    // the trigram / position() match SQL runs on real pg_trgm
+    const m = await findMemoryToForget(h.db, GROUP, 'Robert Tables', { db: h.db, embed })
+    expect(m.factIds.length).toBeGreaterThanOrEqual(1)
+    expect(m.candidates.some((c) => c.content.includes('Robert Tables'))).toBe(true)
+
+    await forgetMemory(h.db, GROUP, { factIds: m.factIds, noteIds: m.noteIds, mode: 'purge' })
+    // recall no longer surfaces it, and a fresh search finds nothing to forget
+    expect(await currentFactsForQuery(h.db, GROUP, 'what is guest-bob full name')).toHaveLength(0)
+    const after = await findMemoryToForget(h.db, GROUP, 'Robert Tables', { db: h.db, embed })
+    expect(after.candidates).toHaveLength(0)
   })
 
   it('dashboard grant is live on the real roster (revoke takes effect immediately)', async () => {

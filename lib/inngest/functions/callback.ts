@@ -3,6 +3,8 @@ import { createHttpDb } from '@/db/client'
 import { loadRoster } from '@/lib/identity/roster'
 import { resolvePendingAction } from '@/lib/confirm/store'
 import { createReminder } from '@/lib/reminders/store'
+import { forgetMemory, type ForgetMode } from '@/lib/memory/forget'
+import { writeAudit } from '@/lib/audit'
 import { answerCallback, editMessageText } from '@/lib/telegram/client'
 
 // Deterministic confirm handler (security Stage D / B4). A callback_query is a
@@ -61,6 +63,19 @@ export const handleCallbackQuery = inngest.createFunction(
       await answerCallback(callbackId, 'Reminder set')
       if (messageId) await editMessageText(chatId, messageId, `✅ Reminder set — "${p.content}" on ${p.resolvedLocal}.`)
       return { confirmed: id, reminderId: rid }
+    }
+
+    if (action.actionType === 'memory.forget') {
+      // The TAP is the wall: the delete targets the exact row ids resolved at propose
+      // time (payload), scoped to this house, and runs only now. Every delete is audited.
+      const p = action.payload as { mode: ForgetMode; factIds: string[]; noteIds: string[]; summary: string }
+      const res = await forgetMemory(db, chatId, { factIds: p.factIds ?? [], noteIds: p.noteIds ?? [], mode: p.mode })
+      const total = res.facts + res.notes
+      await writeAudit(db, 'memory.forget', String(fromId), p.summary ?? null, { mode: p.mode, facts: res.facts, notes: res.notes })
+      const verb = p.mode === 'purge' ? 'Purged' : 'Forgotten'
+      await answerCallback(callbackId, verb)
+      if (messageId) await editMessageText(chatId, messageId, `${p.mode === 'purge' ? '🔥' : '🧽'} ${verb} — ${total} thing${total === 1 ? '' : 's'} gone.`)
+      return { confirmed: id, forgot: total }
     }
 
     await answerCallback(callbackId, 'Done')
