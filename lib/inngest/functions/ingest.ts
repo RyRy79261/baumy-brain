@@ -15,7 +15,6 @@ import { rerank } from '@/lib/ai/rerank'
 import { extractReminder } from '@/lib/ai/reminder-extract'
 import { extractForget } from '@/lib/ai/forget-extract'
 import { findMemoryToForget, type ForgetMode } from '@/lib/memory/forget'
-import { embed } from '@/lib/ai/embed'
 import { createPendingAction } from '@/lib/confirm/store'
 import { parseWhen } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
@@ -169,9 +168,9 @@ export const handleTelegramMessage = inngest.createFunction(
           const speaker = fromId != null ? ((await memberDisplayNames(db)).get(String(fromId)) ?? null) : null
           const ex = await extractForget(text ?? '', speaker)
           if (ex.isForget && ex.target) {
-            const matches = await findMemoryToForget(db, chatId, ex.target, { db, embed })
+            const matches = await findMemoryToForget(db, chatId, ex.target)
             await reactToMessage(chatId, messageId, null)
-            if (matches.candidates.length === 0) {
+            if (matches.facts.length === 0) {
               await sendToHouse(chatId, `Nothing about "${ex.target}" in my memory — so nothing to forget 😼`)
               return
             }
@@ -179,13 +178,21 @@ export const handleTelegramMessage = inngest.createFunction(
             const pid = await createPendingAction(db, {
               groupId: chatId,
               actionType: 'memory.forget',
-              payload: { mode, factIds: matches.factIds, noteIds: matches.noteIds, summary: ex.target },
+              payload: { mode, factIds: matches.factIds, scrubValues: matches.scrubValues, noteIds: matches.noteIds, summary: ex.target },
               requestedBy: fromId != null ? String(fromId) : null,
             })
-            const list = matches.candidates.map((c) => `• ${c.content}`).join('\n')
-            const verb = mode === 'purge' ? 'permanently forget (no undo)' : 'forget'
-            const n = matches.candidates.length
-            await sendConfirmCard(chatId, `I'll ${verb} ${n === 1 ? 'this' : `these ${n}`}:\n${list}\n\nTap to confirm.`, pid)
+            const list = matches.facts.map((c) => `• ${c.label}`).join('\n')
+            let msg: string
+            if (mode === 'purge') {
+              const scrub =
+                matches.noteIds.length && matches.scrubValues.length
+                  ? `\n\n…and scrub ${matches.scrubValues.map((v) => `"${v}"`).join(', ')} out of ${matches.noteIds.length} stored message${matches.noteIds.length === 1 ? '' : 's'} (keeping the rest).`
+                  : ''
+              msg = `I'll permanently forget (no undo):\n${list}${scrub}\n\nTap to confirm.`
+            } else {
+              msg = `I'll forget (hidden, reversible):\n${list}\n\nTap to confirm.`
+            }
+            await sendConfirmCard(chatId, msg, pid)
             return
           }
           // Classifier flagged forget but it wasn't one → fall through to a normal reply.

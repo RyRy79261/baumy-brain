@@ -1,51 +1,63 @@
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, ilike, inArray, or, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { facts, memoryItems, memoryEmbeddings } from '@/db/schema'
-import { retrieve } from './retrieve'
 
-// Deletion on request (owner feature). Two modes, both chosen by the requester's phrasing
-// and shown in the proposal BEFORE anything commits:
-//   soft  — hide from all recall/reflection/digests but keep the row (reversible, audited).
-//   purge — redact the stored text/value + drop the embedding (right-to-be-forgotten).
-// The golden rule holds: the LLM only picks a DESCRIPTION of what to forget; this code
-// resolves it to concrete row ids, a human reviews the exact list, and only a confirm TAP
-// (functions/callback.ts) runs forgetMemory. Group text never deletes anything on its own.
+// Deletion on request (owner feature). The UNIT of forgetting is the FACT (the distilled
+// {subject,predicate,object} knowledge) — NOT the source message. A single message ("hi
+// I'm Ryan, Charl is Charl Jacobs, Madeleine is Madeleine Goujon…") sources many facts
+// about many people, so deleting that message to forget one name would nuke everyone
+// else's info. Instead we remove the FACT and, on a purge, SURGICALLY scrub just the
+// leaked value string out of the source messages — keeping the rest of each message.
+//
+// Two modes, shown in the proposal before anything commits:
+//   soft  — hide the fact from recall (reversible, audited); source messages untouched.
+//   purge — redact the fact's value AND scrub that value from the source messages (keep
+//           the messages, re-embed), so the value is gone but its neighbours survive.
+// Golden rule holds: the LLM only picks a target DESCRIPTION; this code resolves it to
+// concrete rows + value strings, a human reviews, and only a confirm TAP runs the delete.
 export type ForgetMode = 'soft' | 'purge'
-export interface ForgetCandidate {
-  kind: 'fact' | 'note'
+export interface ForgetFact {
   id: string
-  content: string
+  label: string
 }
 export interface ForgetMatches {
   factIds: string[]
+  /** Concrete value strings (from the matched facts) to scrub out of source messages on a purge. */
+  scrubValues: string[]
+  /** Source messages that CONTAIN a scrub value — surgically redacted on a purge, never deleted. */
   noteIds: string[]
-  candidates: ForgetCandidate[]
-}
-export interface ForgetDeps {
-  db: Database
-  embed: (t: string) => Promise<number[]>
+  /** For the proposal card: the facts to be forgotten, shown individually. */
+  facts: ForgetFact[]
 }
 
-const MATCH_LIMIT = 12 // proposal stays reviewable; the human confirms the exact list
-const NOTE_FLOOR = 0.3
+const MATCH_LIMIT = 15
 
 function rowsOf(res: unknown): Record<string, unknown>[] {
   return Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
 }
 
-// What Baumy WOULD recall for this target — the exact set it proposes to forget. Facts
-// match structurally (subject/alias/value substring or trigram); notes match via the same
-// hybrid recall used for answers. Group-scoped + current/active only. The returned
-// candidates and the {factIds,noteIds} to delete are the SAME rows, so the confirm card
-// shows precisely what the tap will remove.
-export async function findMemoryToForget(
-  db: Database,
-  groupId: string,
-  target: string,
-  deps: ForgetDeps,
-): Promise<ForgetMatches> {
+// Case-insensitively replace every occurrence of each value with "[redacted]", keeping
+// the surrounding text intact. Values are regex-escaped (they're data, not patterns).
+export function redactValues(content: string, values: string[]): string {
+  let out = content
+  for (const v of values) {
+    if (!v) continue
+    const re = new RegExp(v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+    out = out.replace(re, '[redacted]')
+  }
+  return out
+}
+
+const likeEscape = (v: string) => v.replace(/[\\%_]/g, '\\$&')
+
+// Resolve a target description to the exact facts to forget + the value strings to scrub
+// from source messages. Facts match structurally (subject/alias/value substring or
+// trigram), group-scoped + current only, ranked so the most on-target fact leads. Source
+// messages are found by CONTAINING a matched value (so we only ever touch a message that
+// actually holds the thing being forgotten). The confirm card shows the exact facts.
+export async function findMemoryToForget(db: Database, groupId: string, target: string): Promise<ForgetMatches> {
   const q = target.trim().toLowerCase()
-  if (!q) return { factIds: [], noteIds: [], candidates: [] }
+  if (!q) return { factIds: [], scrubValues: [], noteIds: [], facts: [] }
 
   const factRows = rowsOf(
     await db.execute(sql`
@@ -64,51 +76,59 @@ export async function findMemoryToForget(
           OR word_similarity(e.canonical_name, ${q}) >= 0.6
           OR (f.object_value IS NOT NULL AND word_similarity(lower(f.object_value), ${q}) >= 0.6)
         )
-      ORDER BY f.recorded_at DESC
+      ORDER BY similarity(e.canonical_name || ' ' || replace(f.predicate, '_', ' ') || ' ' || coalesce(f.object_value, ''), ${q}) DESC,
+               f.recorded_at DESC
       LIMIT ${MATCH_LIMIT}`),
   )
-  const factCands: ForgetCandidate[] = factRows.map((r) => ({
-    kind: 'fact',
-    id: String(r.id),
-    content: `${r.subject as string} ${String(r.predicate).replace(/_/g, ' ')}${r.isSecure ? ' (secret)' : `: ${(r.objectValue as string | null) ?? ''}`}`,
-  }))
 
-  // Notes via the normal recall path (best-effort — a retrieval hiccup just means fewer
-  // note candidates, never a crash). Secure notes show a placeholder, never the value.
-  let noteCands: ForgetCandidate[] = []
-  try {
-    const mems = await retrieve(target, { groupId, k: MATCH_LIMIT, floor: NOTE_FLOOR }, deps)
-    noteCands = mems.map((m) => ({
-      kind: 'note',
-      id: m.id,
-      content: m.isSecure ? '🔒 a stored secret' : m.content.length > 120 ? `${m.content.slice(0, 117)}…` : m.content,
-    }))
-  } catch (err) {
-    console.error('findMemoryToForget: note retrieval failed (proposing facts only):', err)
+  const matched: ForgetFact[] = []
+  const factIds: string[] = []
+  const scrubSet = new Set<string>()
+  for (const r of factRows) {
+    factIds.push(String(r.id))
+    matched.push({
+      id: String(r.id),
+      label: `${r.subject as string} ${String(r.predicate).replace(/_/g, ' ')}${r.isSecure ? ' (secret)' : `: ${(r.objectValue as string | null) ?? ''}`}`,
+    })
+    // Only a non-secret, meaningful value is worth scrubbing from source text (a secret's
+    // plaintext is never stored in a note — capture keeps only a descriptor).
+    if (!r.isSecure && typeof r.objectValue === 'string' && r.objectValue.trim().length >= 2) scrubSet.add(r.objectValue)
+  }
+  const scrubValues = [...scrubSet]
+
+  // Source messages that literally contain a value being forgotten (for surgical purge).
+  let noteIds: string[] = []
+  if (scrubValues.length) {
+    const rows = await db
+      .select({ id: memoryItems.id })
+      .from(memoryItems)
+      .where(
+        and(
+          eq(memoryItems.groupId, groupId),
+          eq(memoryItems.isActive, true),
+          or(...scrubValues.map((v) => ilike(memoryItems.content, `%${likeEscape(v)}%`))),
+        ),
+      )
+    noteIds = rows.map((r) => r.id)
   }
 
-  // Cap the combined list, then derive the delete-ids FROM the shown candidates so the
-  // proposal and the commit target byte-for-byte the same rows.
-  const candidates = [...factCands, ...noteCands].slice(0, MATCH_LIMIT)
-  return {
-    factIds: candidates.filter((c) => c.kind === 'fact').map((c) => c.id),
-    noteIds: candidates.filter((c) => c.kind === 'note').map((c) => c.id),
-    candidates,
-  }
+  return { factIds, scrubValues, noteIds, facts: matched }
 }
 
 // Execute a confirmed forget. Group-scoped WHERE guards make it impossible to touch
-// another house's rows even if an id were spoofed. soft = hide (bitemporal close +
-// deleted_at marker / is_active=false); purge = redact plaintext + secret + drop the
-// embedding so nothing can resurface it. Returns how many of each were affected.
+// another house's rows even if an id were spoofed. Facts: soft = hide (bitemporal close +
+// deleted_at); purge = also redact the plaintext value + secret ciphertext. Source
+// messages are NEVER deleted — on a purge we surgically scrub the value strings out of
+// their content (keeping everything else) and drop their embeddings so the re-embed sweep
+// re-vectorises the redacted text; on a soft delete they are left completely untouched.
 export async function forgetMemory(
   db: Database,
   groupId: string,
-  input: { factIds: string[]; noteIds: string[]; mode: ForgetMode },
-): Promise<{ facts: number; notes: number }> {
+  input: { factIds: string[]; scrubValues: string[]; noteIds: string[]; mode: ForgetMode },
+): Promise<{ facts: number; messagesScrubbed: number }> {
   const now = new Date()
   let f = 0
-  let n = 0
+  let messagesScrubbed = 0
 
   if (input.factIds.length) {
     const base = { isCurrent: false, deletedAt: now, invalidatedAt: now, validTo: now }
@@ -121,19 +141,27 @@ export async function forgetMemory(
     f = res.length
   }
 
-  if (input.noteIds.length) {
-    const set = input.mode === 'purge' ? { isActive: false, content: '[redacted on request]', contentEncrypted: null } : { isActive: false }
-    const res = await db
-      .update(memoryItems)
-      .set(set)
+  // Surgical source-message scrub — PURGE ONLY, and only the matched value strings.
+  if (input.mode === 'purge' && input.noteIds.length && input.scrubValues.length) {
+    const notes = await db
+      .select({ id: memoryItems.id, content: memoryItems.content })
+      .from(memoryItems)
       .where(and(eq(memoryItems.groupId, groupId), inArray(memoryItems.id, input.noteIds)))
-      .returning({ id: memoryItems.id })
-    n = res.length
-    if (input.mode === 'purge' && n > 0) {
-      // Drop the vectors too — a purged note must not survive in the embedding space.
-      await db.delete(memoryEmbeddings).where(inArray(memoryEmbeddings.memoryItemId, input.noteIds))
+    const scrubbedIds: string[] = []
+    for (const nt of notes) {
+      const redacted = redactValues(nt.content, input.scrubValues)
+      if (redacted !== nt.content) {
+        await db.update(memoryItems).set({ content: redacted }).where(eq(memoryItems.id, nt.id))
+        scrubbedIds.push(nt.id)
+      }
     }
+    if (scrubbedIds.length) {
+      // Drop the stale vectors (they still encode the removed value) — the re-embed sweep
+      // regenerates them from the now-redacted content. Lexical (content_tsv) updates itself.
+      await db.delete(memoryEmbeddings).where(inArray(memoryEmbeddings.memoryItemId, scrubbedIds))
+    }
+    messagesScrubbed = scrubbedIds.length
   }
 
-  return { facts: f, notes: n }
+  return { facts: f, messagesScrubbed }
 }
