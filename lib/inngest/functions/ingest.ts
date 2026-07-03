@@ -230,13 +230,14 @@ export const handleTelegramMessage = inngest.createFunction(
         // Always starts on Sonnet; the model self-escalates to Opus only if it needs to.
         const { text: reply, answered } = await answer(text ?? '', grounding)
         // Graduated honest-miss: send WORDS when it answered, or when the miss is
-        // itself informative (grounding was blank → "we've never mentioned that"). A
-        // plain miss with adjacent-but-unhelpful memory gets a 👎, not a wall of text.
-        if (answered || grounding.length === 0) {
+        // itself informative (grounding was blank → "we've never mentioned that"). A bare
+        // 👎 is only for an AMBIENT miss (adjacent-but-unhelpful memory) — a message that
+        // @-mentions Baumy directly ALWAYS gets words, never a dismissive thumbs-down.
+        if (answered || grounding.length === 0 || directed) {
           await sendToHouse(chatId, reply)
           await reactToMessage(chatId, messageId, null) // 👀 → gone; the words are the reply
         } else {
-          await reactToMessage(chatId, messageId, '👎') // 👀 → 👎: asked, nothing in the records
+          await reactToMessage(chatId, messageId, '👎') // 👀 → 👎: ambient ask, nothing in the records
         }
       })
     } else if (canSpeak && reminderSet) {
