@@ -79,8 +79,12 @@ export const handleTelegramMessage = inngest.createFunction(
         const db = createHttpDb()
         // Never attribute quarantined (forwarded/bot) content to a housemate.
         const authoredBy = origin.memoryTrust === 'quarantined' || fromId == null ? null : String(fromId)
+        // Salience from the classifier signal (no extra LLM call): durable facts matter
+        // most, reminders/tasks next, questions middling, chatter least (memory v2 §5).
+        const salience =
+          verdict.intent === 'fact' ? 0.85 : verdict.intent === 'reminder' || verdict.intent === 'task' ? 0.7 : verdict.intent === 'question' ? 0.5 : 0.35
         await captureMemory(
-          { groupId: chatId, content: text ?? '', memoryType: verdict.intent, authoredBy, trustLevel: origin.memoryTrust },
+          { groupId: chatId, content: text ?? '', memoryType: verdict.intent, authoredBy, trustLevel: origin.memoryTrust, salience },
           { db },
         )
         // M2: distil structured facts + trust-gated reconcile into the knowledge

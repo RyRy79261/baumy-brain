@@ -154,6 +154,25 @@ describe('memory store → recall (PGlite + pgvector)', () => {
     expect(hit?.id).toBe(id2)
   })
 
+  it('salience re-ranks equally-relevant memories (de-noise, never deletion)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 100)
+    // Two equally-relevant notes to "oat milk" (embedSync: same shared tokens). The
+    // high-salience one is OLDER, the low-salience one NEWER — so if salience wins,
+    // it beat the recency tiebreak. And crucially, NEITHER is dropped.
+    await captureMemory(
+      { groupId: GROUP, content: 'buy oat milk', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted', salience: 0.9 },
+      { db, embed },
+    )
+    await captureMemory(
+      { groupId: GROUP, content: 'get oat milk', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted', salience: 0.2 },
+      { db, embed },
+    )
+    const res = await retrieve('oat milk', { groupId: GROUP, floor: 0 }, { db, embed })
+    expect(res).toHaveLength(2) // lossless — both kept
+    expect(res[0].content).toBe('buy oat milk') // higher salience ranks first despite being older
+  })
+
   it('a similarity floor filters out unrelated items (honest miss)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, 100)

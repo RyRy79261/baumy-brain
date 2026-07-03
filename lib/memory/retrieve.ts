@@ -13,6 +13,7 @@ const RRF_K = 60 // standard RRF damping constant
 const CANDIDATES = 50 // per-probe candidate pool feeding the fusion
 const RECENCY_HALFLIFE_DAYS = 30 // recency decay half-life
 const RECENCY_WEIGHT = 0.25 // max fractional score boost for a brand-new memory (relevance still dominates)
+const SALIENCE_FLOOR = 0.6 // a low-salience item still keeps 60% weight — de-noise chatter, NEVER suppress (memory v2 §5)
 
 export interface RetrievedMemory {
   id: string
@@ -44,6 +45,7 @@ export interface RetrieveDeps {
 // similarity and age (for cross-probe fusion + recency composition upstream).
 interface ProbeRow extends RetrievedMemory {
   rrf: number
+  salience: number
 }
 
 async function runHybrid(
@@ -94,6 +96,7 @@ async function runHybrid(
            mi.is_secure AS "isSecure",
            mi.content_encrypted AS "contentEncrypted",
            mi.created_at AS "createdAt",
+           mi.salience AS "salience",
            f.sim AS "similarity",
            f.rrf AS "rrf"
     FROM fused f
@@ -117,6 +120,7 @@ async function runHybrid(
     contentEncrypted: (r.contentEncrypted ?? null) as string | null,
     createdAt: r.createdAt ? new Date(r.createdAt as string).toISOString() : undefined,
     rrf: Number(r.rrf),
+    salience: r.salience == null ? 0.5 : Number(r.salience),
   }))
 }
 
@@ -128,14 +132,16 @@ function recencyDecay(createdAt?: string): number {
   return Math.pow(0.5, ageDays / RECENCY_HALFLIFE_DAYS)
 }
 
-// Blend a fusion score with a gentle recency boost (relevance dominates; recency
-// only breaks near-ties toward what the house said most recently).
-function compose(score: number, createdAt?: string): number {
-  return score * (1 + RECENCY_WEIGHT * recencyDecay(createdAt))
+// Blend a fusion score with a gentle recency boost + a salience factor (memory v2 §5).
+// Relevance dominates; recency breaks near-ties toward what was said most recently; a
+// low-salience row (chatter) is down-WEIGHTED to SALIENCE_FLOOR at worst, never dropped.
+function compose(score: number, createdAt?: string, salience = 0.5): number {
+  const sal = SALIENCE_FLOOR + (1 - SALIENCE_FLOOR) * Math.min(1, Math.max(0, salience))
+  return score * (1 + RECENCY_WEIGHT * recencyDecay(createdAt)) * sal
 }
 
 function strip(r: ProbeRow): RetrievedMemory {
-  const { rrf: _rrf, ...rest } = r
+  const { rrf: _rrf, salience: _sal, ...rest } = r
   return rest
 }
 
@@ -151,7 +157,7 @@ export async function retrieve(
   const vec = await embedFn(query)
   const rows = await runHybrid(db, vec, query, opts.groupId, opts.floor ?? 0.2)
   return rows
-    .map((r) => ({ r, s: compose(r.rrf, r.createdAt) }))
+    .map((r) => ({ r, s: compose(r.rrf, r.createdAt, r.salience) }))
     .sort((a, b) => b.s - a.s)
     .slice(0, opts.k ?? 8)
     .map((x) => strip(x.r))
@@ -192,7 +198,7 @@ export async function retrieveExpanded(
   }
 
   return [...acc.values()]
-    .map((e) => ({ row: e.row, s: compose(e.score, e.row.createdAt) }))
+    .map((e) => ({ row: e.row, s: compose(e.score, e.row.createdAt, e.row.salience) }))
     .sort((a, b) => b.s - a.s)
     .slice(0, opts.k ?? 8)
     .map((x) => strip(x.row))
