@@ -4,84 +4,93 @@ import { makeTestDb } from './pglite'
 import { facts, memoryItems, memoryEmbeddings } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
-import { retrieve } from '@/lib/memory/retrieve'
-import { findMemoryToForget, forgetMemory } from '@/lib/memory/forget'
+import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/forget'
 import { embedSync } from '@/lib/ai/embed'
 
 const GROUP = '-100forget'
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 4).toString('base64')
 const embed = async (t: string) => embedSync(t)
+const fullName = (subject: string, value: string) => ({ subject, subjectKind: 'person' as const, predicate: 'full_name', object: value })
 
-describe('deletion on request (forget)', () => {
-  it('finds the facts + notes that match a target', async () => {
-    const db = await makeTestDb()
-    await ensureRegistered(db, GROUP, null)
-    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'lena', subjectKind: 'person', predicate: 'full_name', object: 'Lena Okafor' }, authoredBy: null, trustLevel: 'untrusted' })
-    await captureMemory({ groupId: GROUP, content: 'Lena Okafor just moved into front room 2', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
-
-    const m = await findMemoryToForget(db, GROUP, 'Lena Okafor', { db, embed })
-    expect(m.factIds).toHaveLength(1) // the full_name fact
-    expect(m.noteIds.length).toBeGreaterThanOrEqual(1) // the evidence note
-    expect(m.candidates.some((c) => c.content.includes('Lena Okafor'))).toBe(true)
-    // the shown candidates and the delete-ids are the SAME rows
-    expect(m.factIds.length + m.noteIds.length).toBe(m.candidates.length)
+describe('deletion on request (forget) — facts are the unit, messages are scrubbed not deleted', () => {
+  it('redactValues scrubs case-insensitively and keeps the surrounding text', () => {
+    expect(redactValues("I'm Ryan, and lena okafor lives here", ['Lena Okafor'])).toBe("I'm Ryan, and [redacted] lives here")
   })
 
-  it('SOFT delete hides a fact + note from recall but keeps the rows', async () => {
+  it('resolves a target to the fact + value to scrub + the messages that hold it', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
-    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'lena', subjectKind: 'person', predicate: 'full_name', object: 'Lena Okafor' }, authoredBy: null, trustLevel: 'untrusted' })
-    const noteId = await captureMemory({ groupId: GROUP, content: 'Lena Okafor lives here', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    await reconcileFact(db, { groupId: GROUP, fact: fullName('lena', 'Lena Okafor'), authoredBy: null, trustLevel: 'untrusted' })
+    const withVal = await captureMemory({ groupId: GROUP, content: 'Lena Okafor moved into front room 2', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    const without = await captureMemory({ groupId: GROUP, content: 'the bins go out on tuesday', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
 
-    const m = await findMemoryToForget(db, GROUP, 'Lena Okafor', { db, embed })
-    const res = await forgetMemory(db, GROUP, { factIds: m.factIds, noteIds: m.noteIds, mode: 'soft' })
+    const m = await findMemoryToForget(db, GROUP, 'Lena Okafor')
+    expect(m.factIds).toHaveLength(1)
+    expect(m.facts[0].label).toContain('Lena Okafor')
+    expect(m.scrubValues).toEqual(['Lena Okafor'])
+    expect(m.noteIds).toContain(withVal) // the message holding the value
+    expect(m.noteIds).not.toContain(without) // an unrelated message is never touched
+  })
+
+  it('PURGE scrubs ONLY the value from a multi-person source message, keeping the rest', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    // ONE intro message that sources facts about MANY people — the exact collateral-damage case
+    const intro = "I'm Ryan Noble, Felix is Felix Brandt, and Lena is Lena Okafor"
+    const noteId = await captureMemory({ groupId: GROUP, content: intro, memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    await reconcileFact(db, { groupId: GROUP, fact: fullName('lena', 'Lena Okafor'), authoredBy: null, trustLevel: 'untrusted' })
+
+    const m = await findMemoryToForget(db, GROUP, "Lena's full name")
+    expect(m.scrubValues).toContain('Lena Okafor')
+    expect(m.noteIds).toContain(noteId)
+
+    const res = await forgetMemory(db, GROUP, { factIds: m.factIds, scrubValues: m.scrubValues, noteIds: m.noteIds, mode: 'purge' })
     expect(res.facts).toBe(1)
-    expect(res.notes).toBeGreaterThanOrEqual(1)
+    expect(res.messagesScrubbed).toBe(1)
 
-    // gone from recall …
-    expect(await currentFactsForQuery(db, GROUP, 'what is lena full name')).toHaveLength(0)
-    expect((await retrieve('Lena Okafor', { groupId: GROUP, floor: 0 }, { db, embed })).length).toBe(0)
-    // … but the rows still exist (reversible / audit)
-    const [note] = await db.select({ active: memoryItems.isActive, content: memoryItems.content }).from(memoryItems).where(eq(memoryItems.id, noteId))
-    expect(note.active).toBe(false)
-    expect(note.content).toContain('Lena Okafor') // soft keeps the text
-  })
-
-  it('PURGE redacts the fact value, the note content, AND drops the embedding', async () => {
-    const db = await makeTestDb()
-    await ensureRegistered(db, GROUP, null)
-    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'lena', subjectKind: 'person', predicate: 'full_name', object: 'Lena Okafor' }, authoredBy: null, trustLevel: 'untrusted' })
-    const noteId = await captureMemory({ groupId: GROUP, content: 'Lena Okafor phone stuff', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
-
-    const m = await findMemoryToForget(db, GROUP, 'Lena Okafor', { db, embed })
-    await forgetMemory(db, GROUP, { factIds: m.factIds, noteIds: m.noteIds, mode: 'purge' })
-
-    // the plaintext is GONE from the DB, not just hidden
+    const [note] = await db.select({ content: memoryItems.content, active: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, noteId))
+    expect(note.active).toBe(true) // the MESSAGE SURVIVES
+    expect(note.content).not.toContain('Lena Okafor') // the name is scrubbed
+    expect(note.content).toContain('Ryan Noble') // everyone else's info is intact
+    expect(note.content).toContain('Felix Brandt')
+    expect(note.content).toContain('[redacted]')
+    // the fact value is redacted too, and the stale vector is dropped for re-embedding
     const [fact] = await db.select({ v: facts.objectValue }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'full_name')))
     expect(fact.v).toBe('[redacted on request]')
-    const [note] = await db.select({ c: memoryItems.content }).from(memoryItems).where(eq(memoryItems.id, noteId))
-    expect(note.c).not.toContain('Lena Okafor')
-    // and the vector is deleted so it can't resurface semantically
-    const embs = await db.select({ id: memoryEmbeddings.id }).from(memoryEmbeddings).where(eq(memoryEmbeddings.memoryItemId, noteId))
-    expect(embs).toHaveLength(0)
+    expect(await db.select({ id: memoryEmbeddings.id }).from(memoryEmbeddings).where(eq(memoryEmbeddings.memoryItemId, noteId))).toHaveLength(0)
   })
 
-  it('NEVER deletes another house’s rows (group-scoped WHERE guard)', async () => {
+  it('SOFT hides the fact but leaves the source message completely untouched (reversible)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const noteId = await captureMemory({ groupId: GROUP, content: 'Lena is Lena Okafor btw', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    await reconcileFact(db, { groupId: GROUP, fact: fullName('lena', 'Lena Okafor'), authoredBy: null, trustLevel: 'untrusted' })
+
+    const m = await findMemoryToForget(db, GROUP, "Lena's full name")
+    const res = await forgetMemory(db, GROUP, { factIds: m.factIds, scrubValues: m.scrubValues, noteIds: m.noteIds, mode: 'soft' })
+    expect(res.messagesScrubbed).toBe(0) // soft NEVER touches a source message
+
+    expect(await currentFactsForQuery(db, GROUP, 'lena full name')).toHaveLength(0) // fact hidden
+    const [note] = await db.select({ content: memoryItems.content, active: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, noteId))
+    expect(note.active).toBe(true)
+    expect(note.content).toContain('Lena Okafor') // message intact + reversible
+  })
+
+  it('NEVER touches another house’s rows (group-scoped guard)', async () => {
     const db = await makeTestDb()
     const OTHER = '-100other'
     await ensureRegistered(db, GROUP, null)
     await ensureRegistered(db, OTHER, null)
-    // a fact + note in the OTHER house
-    await reconcileFact(db, { groupId: OTHER, fact: { subject: 'lena', subjectKind: 'person', predicate: 'full_name', object: 'Lena Okafor' }, authoredBy: null, trustLevel: 'untrusted' })
-    const otherNote = await captureMemory({ groupId: OTHER, content: 'Lena Okafor note in other house', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    await reconcileFact(db, { groupId: OTHER, fact: fullName('lena', 'Lena Okafor'), authoredBy: null, trustLevel: 'untrusted' })
+    const otherNote = await captureMemory({ groupId: OTHER, content: 'Lena Okafor in the other house', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
     const otherFact = (await db.select({ id: facts.id }).from(facts).where(eq(facts.groupId, OTHER)))[0]
 
-    // attempt to forget the OTHER house's ids while scoped to GROUP → no-op
-    const res = await forgetMemory(db, GROUP, { factIds: [otherFact.id], noteIds: [otherNote], mode: 'purge' })
+    // scoped to GROUP but handed OTHER's ids + value → no-op
+    const res = await forgetMemory(db, GROUP, { factIds: [otherFact.id], scrubValues: ['Lena Okafor'], noteIds: [otherNote], mode: 'purge' })
     expect(res.facts).toBe(0)
-    expect(res.notes).toBe(0)
-    const [stillThere] = await db.select({ c: memoryItems.content, a: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, otherNote))
-    expect(stillThere.a).toBe(true)
-    expect(stillThere.c).toContain('Lena Okafor') // untouched
+    expect(res.messagesScrubbed).toBe(0)
+    const [n] = await db.select({ c: memoryItems.content, a: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, otherNote))
+    expect(n.a).toBe(true)
+    expect(n.c).toContain('Lena Okafor') // untouched
   })
 })
