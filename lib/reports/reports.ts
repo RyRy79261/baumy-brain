@@ -6,7 +6,7 @@ import { resolveModel } from '@/lib/ai/registry'
 import { WEEKLY_REPORT_SYSTEM, GUEST_REPORT_SYSTEM } from '@/lib/ai/prompts'
 import { retrieve } from '@/lib/memory/retrieve'
 import { currentFactsForQuery } from '@/lib/memory/facts'
-import { buildDigest } from '@/lib/scheduled-tasks/digest'
+import { buildDigest } from '@/lib/reports/digest'
 import { houseToday } from '@/lib/core/clock'
 
 // On-demand house reports (owner feature): a slash command generates a formatted report
