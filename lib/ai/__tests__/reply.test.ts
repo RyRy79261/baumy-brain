@@ -32,10 +32,10 @@ const mem = (content: string, authoredBy: string | null) => ({
 
 describe('groundedReply — retrieval-grounded, tool-less, self-assessing', () => {
   it('feeds retrieved memory into the prompt + returns text and escalate', async () => {
-    const out = await groundedReply('when is rent due', [mem('rent is due friday', '100')])
+    const out = await groundedReply('when do the bins go out', [mem('the bins go out friday', '100')])
     expect(out.text).toBe('MOCK REPLY')
     expect(out.escalate).toBe(false)
-    expect(captured.prompt).toContain('rent is due friday')
+    expect(captured.prompt).toContain('the bins go out friday')
     expect(captured.prompt).toContain('from 100')
     expect(captured.system).toContain('NEVER invent')
   })
@@ -47,7 +47,7 @@ describe('groundedReply — retrieval-grounded, tool-less, self-assessing', () =
 
   it('surfaces the answered signal (knows vs. miss)', async () => {
     gen.mockResolvedValueOnce({ object: { reply: 'friday', answered: true, needsStrongerModel: false } })
-    expect((await groundedReply('when is rent', [mem('rent friday', '1')])).answered).toBe(true)
+    expect((await groundedReply('when are the bins out', [mem('bins friday', '1')])).answered).toBe(true)
     gen.mockResolvedValueOnce({ object: { reply: 'no idea, never come up', answered: false, needsStrongerModel: false } })
     expect((await groundedReply('what is the door code', [])).answered).toBe(false)
   })

@@ -5,14 +5,14 @@ const cos = (a: number[], b: number[]) => a.reduce((s, x, i) => s + x * b[i], 0)
 
 describe('embedSync — deterministic lexical embedder (tests / fallback)', () => {
   it('produces a unit-normalized vector of EMBED_DIM', () => {
-    const v = embedSync('rent is due friday')
+    const v = embedSync('the bins go out friday')
     expect(v).toHaveLength(EMBED_DIM)
     expect(Math.sqrt(v.reduce((s, x) => s + x * x, 0))).toBeCloseTo(1, 5)
   })
   it('is deterministic and scores related > unrelated', () => {
     expect(embedSync('wifi password')).toEqual(embedSync('wifi password'))
-    const q = embedSync('when is the rent due')
-    expect(cos(q, embedSync('rent is due on friday'))).toBeGreaterThan(cos(q, embedSync('we are out of oat milk')))
+    const q = embedSync('when do the bins go out')
+    expect(cos(q, embedSync('the bins go out on friday'))).toBeGreaterThan(cos(q, embedSync('we are out of oat milk')))
   })
 })
 

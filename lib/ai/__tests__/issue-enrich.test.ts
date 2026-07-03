@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 
 const gen = vi.fn(async (_a?: unknown) => ({
-  object: { type: 'bug', title: 'Rent reminder fires twice', summary: 'The rent reminder fired twice in one evening.', stepsToReproduce: ['set a rent reminder', 'wait for it'], severity: 'medium' },
+  object: { type: 'bug', title: 'Bin reminder fires twice', summary: 'The bin reminder fired twice in one evening.', stepsToReproduce: ['set a bin reminder', 'wait for it'], severity: 'medium' },
 }))
 vi.mock('ai', async (importOriginal) => {
   const actual = await importOriginal<typeof import('ai')>()
@@ -12,7 +12,7 @@ const { enrichIssue, formatIssueBody } = await import('@/lib/ai/issue-enrich')
 
 describe('enrichIssue + formatIssueBody', () => {
   it('returns the structured, faithful issue', async () => {
-    const e = await enrichIssue('the rent reminder fired twice', 'bug')
+    const e = await enrichIssue('the bin reminder fired twice', 'bug')
     expect(e.type).toBe('bug')
     expect(e.title).toContain('twice')
   })

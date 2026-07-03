@@ -9,7 +9,7 @@ describe('prefilter — high-precision noise drop', () => {
   })
 
   it('KEEPS memory-worthy short messages (never over-drops)', () => {
-    for (const m of ['rent fri', 'code 4821', 'wifi is baumy123', 'Tom arrives sat', 'bins thursday']) {
+    for (const m of ['recycling fri', 'code 4821', 'wifi is baumy123', 'Tom arrives sat', 'bins thursday']) {
       expect(prefilter(m).keep, m).toBe(true)
     }
   })

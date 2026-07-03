@@ -31,7 +31,7 @@ describe('extractFacts — speaker-aware (resolves first person)', () => {
 
   it('an ordinary message finishes in ONE pass (no needless probe)', async () => {
     gen.mockResolvedValueOnce({ object: { facts: facts('s', 3) } })
-    const out = await extractFacts('rent due friday')
+    const out = await extractFacts('recycling goes out friday')
     expect(out.facts).toHaveLength(3)
     expect(gen).toHaveBeenCalledTimes(1) // 3 < PROBE_AGAIN → drained immediately
   })

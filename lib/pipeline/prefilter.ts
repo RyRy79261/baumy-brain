@@ -1,6 +1,6 @@
 // Deterministic pre-filter (task-graph I2). Drops obvious noise BEFORE any paid
 // LLM call — the primary cost lever. HIGH-PRECISION only: never drop a message
-// that could be memory-worthy ("rent fri", "code 4821"). Pure.
+// that could be memory-worthy ("bins fri", "code 4821"). Pure.
 
 const PURE_NOISE =
   /^\s*(ok|okay|k|lol|lmao+|ha(ha)+|hah|nice|cool|thx|thanks|ty|yep|yeah|yup|nope|no|yes|same|true|fair|👍|🙏|😂|❤️?|👌|🔥|💯)\s*[.!?]*\s*$/iu
