@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { eq } from 'drizzle-orm'
 import { makeTestDb, fakeEmbed } from './pglite'
+import { members } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve, retrieveExpanded } from '@/lib/memory/retrieve'
 import { decryptSecret } from '@/lib/core/crypto'
@@ -10,6 +12,26 @@ const embedMany = async (ts: string[]) => ts.map(fakeEmbed)
 
 // Secure-value capture needs the app-side key (lib/core/crypto.ts).
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64')
+
+describe('ensureRegistered — display-name capture (numbers → names)', () => {
+  it('backfills a member name from message profile, refreshes it, never nulls it', async () => {
+    const db = await makeTestDb()
+    const nameOf = async () =>
+      (await db.select({ n: members.displayName }).from(members).where(eq(members.telegramUserId, '100')))[0]?.n
+
+    await ensureRegistered(db, GROUP, 100) // first sighting, no profile name → bare id
+    expect(await nameOf()).toBeNull()
+
+    await ensureRegistered(db, GROUP, 100, 'Ryan Noble') // a message carries the name → backfilled
+    expect(await nameOf()).toBe('Ryan Noble')
+
+    await ensureRegistered(db, GROUP, 100, 'Ryan') // profile name changed → refreshed
+    expect(await nameOf()).toBe('Ryan')
+
+    await ensureRegistered(db, GROUP, 100) // a nameless message must NOT wipe the captured name
+    expect(await nameOf()).toBe('Ryan')
+  })
+})
 
 describe('memory store → recall (PGlite + pgvector)', () => {
   it('recalls the semantically-matching item first', async () => {

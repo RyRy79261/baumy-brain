@@ -11,6 +11,11 @@ type Events = {
       chatId: string
       chatType: string
       fromId: number | null
+      // Sender's Telegram profile name/handle, so ordinary group activity captures a
+      // display name (previously only join/leave events did → members showed as raw ids).
+      fromFirstName?: string | null
+      fromLastName?: string | null
+      fromUsername?: string | null
       text: string | null
       isBot: boolean
       isForwarded: boolean

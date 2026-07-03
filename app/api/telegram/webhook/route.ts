@@ -65,6 +65,10 @@ export async function POST(req: Request): Promise<Response> {
         chatId: String(msg.chat.id),
         chatType: msg.chat.type,
         fromId: msg.from?.id ?? null,
+        // Profile name/handle → member display name downstream (so people aren't raw ids).
+        fromFirstName: msg.from?.first_name ?? null,
+        fromLastName: msg.from?.last_name ?? null,
+        fromUsername: msg.from?.username ?? null,
         text: msg.text ?? null,
         // Trust signals resolved downstream: bot-origin / forwarded → quarantined.
         isBot: msg.from?.is_bot === true,

@@ -24,4 +24,28 @@ describe('extractFacts — speaker-aware (resolves first person)', () => {
     await extractFacts('bins go out tuesday')
     expect(captured.prompt).toContain('SPEAKER: a housemate')
   })
+
+  // Regression: an intro dump legitimately yields 12+ facts. A schema `.max(8)` made
+  // generateObject THROW (AI_NoObjectGeneratedError), crash-looping capture so Baumy
+  // learned nothing. Now the cap is a code-side slice and extraction is best-effort.
+  it('keeps a rich message with many facts (no hard array cap) instead of throwing', async () => {
+    const many = Array.from({ length: 14 }, (_, i) => ({ subject: `s${i}`, predicate: 'p', object: `o${i}`, subjectKind: 'person' as const }))
+    gen.mockResolvedValueOnce({ object: { facts: many } })
+    const out = await extractFacts('big house intro with lots of facts')
+    expect(out.facts).toHaveLength(14)
+  })
+
+  it('caps a runaway/adversarial spew at MAX_FACTS via slice (not a throw)', async () => {
+    const spew = Array.from({ length: 50 }, (_, i) => ({ subject: `s${i}`, predicate: 'p', object: `o${i}` }))
+    gen.mockResolvedValueOnce({ object: { facts: spew } })
+    const out = await extractFacts('spam')
+    expect(out.facts).toHaveLength(30)
+  })
+
+  it('is BEST-EFFORT: an extraction failure degrades to no facts and NEVER throws', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    gen.mockRejectedValueOnce(new Error('schema mismatch / model hiccup'))
+    await expect(extractFacts('anything at all')).resolves.toEqual({ facts: [] })
+    err.mockRestore()
+  })
 })
