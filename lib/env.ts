@@ -61,6 +61,7 @@ export function assertServerEnv(): void {
   }
 }
 
-export const houseChatId = (): string => process.env.BAUMY_HOUSE_CHAT_ID ?? ''
+// The house chat id is resolved from house_config (getHouseChatId), with BAUMY_HOUSE_CHAT_ID
+// only as an optional pin — so there is deliberately no env-only helper for it here.
 export const houseTz = (): string => process.env.BAUMY_TIMEZONE ?? 'Europe/Berlin'
 export const dailySpendCapUsd = (): number => Number(process.env.BAUMY_DAILY_SPEND_CAP ?? '0.5')

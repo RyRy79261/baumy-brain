@@ -16,10 +16,3 @@ export const MODELS: Record<Role, { provider: 'anthropic'; id: string }> = {
   // bumps Sonnet → Opus for that turn only. Also the scheduled-task deliberative tier.
   advisor: { provider: 'anthropic', id: process.env.BAUMY_ADVISOR_MODEL ?? 'claude-opus-4-8' },
 }
-
-// Anthropic reasoning models reject temperature/top_p/top_k (HTTP 400).
-// Gate sampling params behind this; unknown → omit (safe default).
-const SAMPLING_OK = /haiku|sonnet|opus-4-[0-6](?!\d)/i
-export function modelAcceptsSampling(id: string): boolean {
-  return SAMPLING_OK.test(id)
-}

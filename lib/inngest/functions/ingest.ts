@@ -69,7 +69,7 @@ export const handleTelegramMessage = inngest.createFunction(
       houseChatId,
     )
 
-    // Bug/feature report (/bug, /feature, /issue, /report) → enrich into a clean GitHub
+    // Bug/feature report (/bug, /feature) → enrich into a clean GitHub
     // issue and file it on a confirm tap. Explicit slash command, works in the house group
     // OR a member DM, from an authenticated house member only. Runs before the DM-command
     // path (so /bug in a DM isn't "Unknown command") and independent of the pause switch.

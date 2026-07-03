@@ -7,12 +7,12 @@ describe('pending actions (human-confirm wall)', () => {
     const db = await makeTestDb()
     const id = await createPendingAction(db, {
       groupId: '-100',
-      actionType: 'reminder.create',
+      actionType: 'memory.forget',
       payload: { content: 'take the bins out' },
       requestedBy: '100',
     })
     const first = await resolvePendingAction(db, id, 'confirmed')
-    expect(first?.actionType).toBe('reminder.create')
+    expect(first?.actionType).toBe('memory.forget')
     expect((first?.payload as { content: string }).content).toBe('take the bins out')
     // a second confirm (double-tap / retry) is a no-op
     expect(await resolvePendingAction(db, id, 'confirmed')).toBeNull()
@@ -22,7 +22,7 @@ describe('pending actions (human-confirm wall)', () => {
     const db = await makeTestDb()
     const id = await createPendingAction(db, {
       groupId: '-100',
-      actionType: 'reminder.create',
+      actionType: 'memory.forget',
       payload: {},
       requestedBy: '100',
       ttlSec: -1, // already expired
@@ -34,7 +34,7 @@ describe('pending actions (human-confirm wall)', () => {
     const db = await makeTestDb()
     const id = await createPendingAction(db, {
       groupId: '-100',
-      actionType: 'reminder.create',
+      actionType: 'memory.forget',
       payload: {},
       requestedBy: '100',
     })

@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { resolveModel } from './registry'
 import { EXPAND_QUERY_SYSTEM } from './prompts'
 
-// Query expansion / HyDE (memory Phase 4). One cheap Haiku pass turns a question
+// Query expansion / HyDE (memory Phase 4). One Sonnet ('assess' tier) pass turns a question
 // into extra search probes — paraphrases + a hypothetical answer sentence — so
 // retrieval no longer hinges on the asker's exact wording. generateObject forces a
 // validated shape (the structured output is itself an injection firewall). Used on

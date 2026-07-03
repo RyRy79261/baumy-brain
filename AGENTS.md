@@ -15,8 +15,10 @@ cause a privileged effect. Preserve this in every change.
 
 - **Next.js 15** (App Router) + **React 19** + **TypeScript**, flat root layout, `@/*` → `./`.
 - **Language models = Anthropic only** (`@ai-sdk/*` + `ai` SDK). Roles (`lib/ai/models.ts`):
-  classify/reply = Haiku, assess = Sonnet, advisor = Opus; the reply path self-escalates up that
-  ladder. **Do not add another language-model vendor.**
+  classify = Haiku (routing/triage ONLY); reply = assess = Sonnet (all reasoning + memory
+  ops); advisor = Opus. The reply path self-escalates Sonnet→Opus when it signals it needs
+  more; the other Sonnet ops (extract/expand/rerank/reflect/forget) are fixed-tier.
+  **Do not add another language-model vendor.**
 - **Embeddings = Voyage `voyage-3.5-lite`** (512-dim), a plain fetch in `lib/ai/embed.ts` (needs
   `VOYAGE_API_KEY`). Anthropic ships no embedding model, so Voyage is the one deliberate exception
   to "Anthropic only" — not OpenAI. `embedSync` (a deterministic lexical hash) is a **tests/
