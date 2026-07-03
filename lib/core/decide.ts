@@ -5,11 +5,11 @@ import { isAllowed } from './policy'
 // verdict; this deterministic function DISPOSES the action, clamped by the
 // action↔origin policy. Untrusted group text can never escalate beyond
 // capture / answer / reminder; scheduled tasks + config/admin need a member/owner DM.
-export type Decision = 'drop' | 'capture' | 'reply' | 'reminder' | 'task'
+export type Decision = 'drop' | 'capture' | 'reply' | 'reminder' | 'task' | 'forget'
 
 export interface Verdict {
   worthRemembering: boolean
-  intent: 'chatter' | 'fact' | 'question' | 'reminder' | 'task'
+  intent: 'chatter' | 'fact' | 'question' | 'reminder' | 'task' | 'forget'
   needsReply: boolean
   confidence: number
 }
@@ -33,6 +33,9 @@ export function decide(origin: Origin, v: Verdict, th: Thresholds = DEFAULT_THRE
   // Each branch is gated by BOTH the classifier intent AND the deterministic policy.
   if (v.intent === 'task' && isAllowed(origin, 'create_scheduled_task') && conf >= th.task) return 'task'
   if (v.intent === 'reminder' && isAllowed(origin, 'create_reminder') && conf >= th.reminder) return 'reminder'
+  // "forget X" only PROPOSES a deletion (allowed like answering); the actual delete is
+  // gated behind a confirm TAP downstream, so group text can never delete on its own.
+  if (v.intent === 'forget' && isAllowed(origin, 'answer') && conf >= th.reply) return 'forget'
   if (v.needsReply && v.intent === 'question' && isAllowed(origin, 'answer') && conf >= th.reply) return 'reply'
   if (v.worthRemembering && isAllowed(origin, 'capture') && conf >= th.capture) return 'capture'
   return 'drop'

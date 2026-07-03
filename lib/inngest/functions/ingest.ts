@@ -13,6 +13,10 @@ import { answer } from '@/lib/ai/reply'
 import { expandQuery } from '@/lib/ai/expand'
 import { rerank } from '@/lib/ai/rerank'
 import { extractReminder } from '@/lib/ai/reminder-extract'
+import { extractForget } from '@/lib/ai/forget-extract'
+import { findMemoryToForget, type ForgetMode } from '@/lib/memory/forget'
+import { embed } from '@/lib/ai/embed'
+import { createPendingAction } from '@/lib/confirm/store'
 import { parseWhen } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
 import { loadRoster, memberDisplayNames } from '@/lib/identity/roster'
@@ -21,7 +25,7 @@ import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
 import { loadResponsePolicy, replyAllowed } from '@/lib/policy'
 import { isDirectedAtBaumy } from '@/lib/pipeline/directed'
-import { sendToHouse, getBotUsername, reactToMessage } from '@/lib/telegram/client'
+import { sendToHouse, sendConfirmCard, getBotUsername, reactToMessage } from '@/lib/telegram/client'
 
 // The reactive ingest pipeline (architecture D10): record-inbound → pre-filter →
 // origin (real roster) → member-DM commands OR classify → write-gate → act.
@@ -78,7 +82,9 @@ export const handleTelegramMessage = inngest.createFunction(
     // still remembered (previously it was silently forgotten). Returns whether a durable
     // FACT was learned (add/update) — that earns a 🧠 acknowledgement below.
     let learnedFact = false
-    if (shouldCapture(origin, verdict)) {
+    // Never capture a "forget X" request — storing "delete Madeleine Goujon" would just
+    // re-add the very thing being deleted. The forget flow handles it below instead.
+    if (shouldCapture(origin, verdict) && verdict.intent !== 'forget') {
       learnedFact = (await step.run('capture', async () => {
         const db = createHttpDb()
         // Never attribute quarantined (forwarded/bot) content to a housemate.
@@ -144,8 +150,10 @@ export const handleTelegramMessage = inngest.createFunction(
     // the model picks the tier and self-escalates. 👀 while thinking, swapped for the
     // words. A set reminder gets at least a 👍. Kill-switch silences everything.
     const canSpeak = origin.lane === 'house' && policy.global_enabled
+    // A "forget X" request always gets a response (a proposal or an honest miss).
     const wantAnswer =
-      canSpeak && (directed || (verdict.respond === 'answer' && replyAllowed(policy, verdict.confidence, text ?? '')))
+      canSpeak &&
+      (directed || decision === 'forget' || (verdict.respond === 'answer' && replyAllowed(policy, verdict.confidence, text ?? '')))
 
     if (wantAnswer) {
       await step.run('reply', async () => {
@@ -153,6 +161,35 @@ export const handleTelegramMessage = inngest.createFunction(
         if (chatId !== houseChatId) return // belt-and-suspenders: house group only (E2)
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
         await reactToMessage(chatId, messageId, '👀') // seen — thinking
+
+        // Forget-request path: PROPOSE a deletion (nothing is deleted until a member taps
+        // the confirm button — functions/callback.ts). The LLM only describes what to
+        // forget; this code resolves it to concrete rows for the human to review.
+        if (decision === 'forget') {
+          const speaker = fromId != null ? ((await memberDisplayNames(db)).get(String(fromId)) ?? null) : null
+          const ex = await extractForget(text ?? '', speaker)
+          if (ex.isForget && ex.target) {
+            const matches = await findMemoryToForget(db, chatId, ex.target, { db, embed })
+            await reactToMessage(chatId, messageId, null)
+            if (matches.candidates.length === 0) {
+              await sendToHouse(chatId, `Nothing about "${ex.target}" in my memory — so nothing to forget 😼`)
+              return
+            }
+            const mode: ForgetMode = ex.permanent ? 'purge' : 'soft'
+            const pid = await createPendingAction(db, {
+              groupId: chatId,
+              actionType: 'memory.forget',
+              payload: { mode, factIds: matches.factIds, noteIds: matches.noteIds, summary: ex.target },
+              requestedBy: fromId != null ? String(fromId) : null,
+            })
+            const list = matches.candidates.map((c) => `• ${c.content}`).join('\n')
+            const verb = mode === 'purge' ? 'permanently forget (no undo)' : 'forget'
+            const n = matches.candidates.length
+            await sendConfirmCard(chatId, `I'll ${verb} ${n === 1 ? 'this' : `these ${n}`}:\n${list}\n\nTap to confirm.`, pid)
+            return
+          }
+          // Classifier flagged forget but it wasn't one → fall through to a normal reply.
+        }
         // Deep (broad history search) only for real questions; clamp a stray 'deep'.
         const startTier = verdict.intent === 'question' ? verdict.tier : verdict.tier === 'deep' ? 'think' : verdict.tier
         const deep = startTier === 'deep'

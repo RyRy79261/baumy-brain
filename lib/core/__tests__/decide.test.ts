@@ -47,6 +47,14 @@ describe('decide — confidence gate + write-gate', () => {
     const ignored = resolveOriginParts({ chatId: '-999', fromId: 5, text: 'x', isPrivate: false }, roster)
     expect(decide(ignored, V({ worthRemembering: true, intent: 'fact' }))).toBe('drop')
   })
+  it('routes a confident "forget X" to the forget action (which only PROPOSES a delete)', () => {
+    expect(decide(houseOrigin(), V({ intent: 'forget' }))).toBe('forget')
+    // low-confidence forget falls through (no proposal on a shaky read)
+    expect(decide(houseOrigin(), V({ intent: 'forget', confidence: 0.2 }))).toBe('drop')
+    // an ignored origin can never even propose a delete
+    const ignored = resolveOriginParts({ chatId: '-999', fromId: 5, text: 'x', isPrivate: false }, roster)
+    expect(decide(ignored, V({ intent: 'forget' }))).toBe('drop')
+  })
 })
 
 describe('shouldCapture — remembering is orthogonal to the action', () => {
