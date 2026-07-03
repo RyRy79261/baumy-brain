@@ -65,7 +65,8 @@ export const telegramUpdates = pgTable('baumy_telegram_updates', {
   updateId: bigint('update_id', { mode: 'number' }).primaryKey(),
   chatId: text('chat_id'),
   status: text('status').notNull().default('received'), // 'received'|'processed'|'dead_letter'
-  raw: jsonb('raw'),
+  raw: jsonb('raw'), // intentionally left NULL — the message body is NOT persisted here (privacy: it can contain a secret and nothing reads it); this row exists only for update_id dedup
+
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
 })
 

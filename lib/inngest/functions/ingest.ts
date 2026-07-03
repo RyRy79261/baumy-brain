@@ -5,7 +5,7 @@ import { resolveOriginParts } from '@/lib/core/origin'
 import { decide, shouldCapture } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
-import { captureMemory, claimReply, ensureRegistered } from '@/lib/memory/write'
+import { captureMemory, claimReply, releaseReply, ensureRegistered } from '@/lib/memory/write'
 import { retrieve, retrieveExpanded, type RetrievedMemory } from '@/lib/memory/retrieve'
 import { extractFacts } from '@/lib/ai/extract'
 import { reconcileFact, currentFactsForQuery, tagMemoryAboutPerson } from '@/lib/memory/facts'
@@ -49,10 +49,11 @@ export const handleTelegramMessage = inngest.createFunction(
 
     await step.run('record-inbound', async () => {
       const db = createHttpDb()
-      await db
-        .insert(telegramUpdates)
-        .values({ updateId, chatId, raw: event.data as unknown as Record<string, unknown> })
-        .onConflictDoNothing()
+      // Idempotency record ONLY — do NOT persist the message body. `raw` is never read, and
+      // the text can contain a secret (wifi/door/bank), so storing it here would keep that
+      // plaintext at rest forever (the encryption layer exists precisely to avoid that).
+      // update_id + chat_id are all the dedup needs.
+      await db.insert(telegramUpdates).values({ updateId, chatId }).onConflictDoNothing()
       if (chatId === houseChatId) await ensureRegistered(db, chatId, fromId, fromName)
     })
 
@@ -210,7 +211,19 @@ export const handleTelegramMessage = inngest.createFunction(
         if (chatId !== houseChatId) return // belt-and-suspenders: house group only (E2)
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
         await reactToMessage(chatId, messageId, '👀') // seen — thinking
+        // The claim autocommitted (neon-http) before the fallible work below (LLM/send) and
+        // there is NO reply sweeper backstop — so on any error, release the claim (the
+        // Inngest retry then re-claims + re-sends) and clear the stranded 👀 before rethrowing.
+        try {
+          await runReplyBody()
+        } catch (err) {
+          await releaseReply(db, updateId).catch(() => {})
+          await reactToMessage(chatId, messageId, null)
+          throw err
+        }
 
+        // Hoisted so the try/catch above can guard it; captures db + the message context.
+        async function runReplyBody() {
         // Forget-request path: PROPOSE a deletion (nothing is deleted until a member taps
         // the confirm button — functions/callback.ts). The LLM only describes what to
         // forget; this code resolves it to concrete rows for the human to review.
@@ -303,8 +316,11 @@ export const handleTelegramMessage = inngest.createFunction(
         // (Anthropic server-side tool), blending in house memory. Fires ONLY on the
         // classifier's webSearch gate — never on a normal question — so it stays rare and
         // cost-bounded. Any failure/empty result falls through to a memory-only reply.
+        // EXFIL WALL: web search is the one TOOL-enabled generation, so it must NEVER
+        // receive decrypted secrets — feed it the non-secret memory only (pre-decrypt
+        // `combined`, secure rows dropped), so a "google my wifi password" can't leak it.
         if (verdict.webSearch) {
-          const ws = await webSearchAnswer(text ?? '', grounding)
+          const ws = await webSearchAnswer(text ?? '', combined.filter((m) => !m.isSecure))
           if (ws.searched && ws.text) {
             await sendToHouse(chatId, ws.text)
             await reactToMessage(chatId, messageId, null) // 👀 → gone; the words are the reply
@@ -323,6 +339,7 @@ export const handleTelegramMessage = inngest.createFunction(
         } else {
           await reactToMessage(chatId, messageId, '👎') // 👀 → 👎: ambient ask, nothing in the records
         }
+        } // runReplyBody
       })
     } else if (canSpeak && reminderSet) {
       await reactToMessage(chatId, messageId, '👍') // reminder confirmed
