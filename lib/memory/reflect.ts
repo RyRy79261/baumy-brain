@@ -10,7 +10,7 @@ export const PROFILE_PREDICATE = 'profile'
 
 // Minimum current facts a person needs before a profile is worth synthesising — below
 // this there's nothing to consolidate.
-const MIN_FACTS = 2
+export const MIN_FACTS = 2
 
 function rowsOf(res: unknown): Record<string, unknown>[] {
   return Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])

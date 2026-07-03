@@ -79,7 +79,7 @@ export async function guestReport(db: Database, groupId: string, now: Date = new
         AND (
           f.predicate ILIKE '%stay%' OR f.predicate ILIKE '%sleep%' OR f.predicate ILIKE '%room%'
           OR f.predicate ILIKE '%arriv%' OR f.predicate ILIKE '%visit%' OR f.predicate ILIKE '%guest%'
-          OR f.object_value ILIKE '%room%' OR f.object_value ILIKE '%cave%' OR f.object_value ILIKE '%bedroom%'
+          OR f.object_value ~* '\y(room|bedroom|cave|lounge)\y'  -- whole words: not "mushroom"/"concave"
         )
       LIMIT 30`),
   )

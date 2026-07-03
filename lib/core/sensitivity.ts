@@ -23,6 +23,13 @@ const DESCRIPTORS: string[] = [
   'a card number',
 ]
 
+// Invariant: PATTERNS[i] ↔ DESCRIPTORS[i]. A new pattern without a matching descriptor would
+// return descriptor:undefined, which capture would then STORE + embed as a secret's content —
+// fail loud at load instead.
+if (PATTERNS.length !== DESCRIPTORS.length) {
+  throw new Error('[baumy/sensitivity] PATTERNS and DESCRIPTORS must stay index-parallel')
+}
+
 export interface SensitivityResult {
   isSecure: boolean
   /** Index of the matching pattern, or -1. */

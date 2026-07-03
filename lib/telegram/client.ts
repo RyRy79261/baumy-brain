@@ -92,11 +92,12 @@ export async function getGroupAdminIds(chatId: string): Promise<Set<string>> {
 // Baumy detection uses the bot's REAL name, never a hardcoded guess.
 let cachedUsername: string | null = null
 export async function getBotUsername(): Promise<string> {
-  if (cachedUsername !== null) return cachedUsername
+  if (cachedUsername) return cachedUsername // only a NON-empty success is cached
   try {
-    cachedUsername = ((await getMe()).username ?? '').toLowerCase()
+    const u = ((await getMe()).username ?? '').toLowerCase()
+    if (u) cachedUsername = u // cache on success only — never poison-cache '' from a transient getMe failure
+    return u
   } catch {
-    cachedUsername = ''
+    return '' // transient — leave the cache empty so the next call retries
   }
-  return cachedUsername
 }

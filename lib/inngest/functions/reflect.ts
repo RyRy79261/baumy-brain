@@ -3,7 +3,7 @@ import { createHttpDb } from '@/db/client'
 import { getHouseChatId } from '@/lib/identity/house'
 import { reconcileFact } from '@/lib/memory/facts'
 import { reflectPerson } from '@/lib/ai/reflect'
-import { pickPeopleToReflect, gatherPersonMaterial, PROFILE_PREDICATE } from '@/lib/memory/reflect'
+import { pickPeopleToReflect, gatherPersonMaterial, PROFILE_PREDICATE, MIN_FACTS } from '@/lib/memory/reflect'
 
 // Sleep-time reflection (memory v2 §4) — the "it learns" step. On a slow cron (not the
 // hot path), Baumy consolidates what it already knows: for each person with fresh
@@ -35,7 +35,7 @@ export const reflectSweep = inngest.createFunction(
       const did = (await step.run(`reflect:${p.id}`, async () => {
         const db = createHttpDb()
         const { facts, notes } = await gatherPersonMaterial(db, groupId, p.id)
-        if (facts.length < 2) return false // guard: nothing durable to consolidate
+        if (facts.length < MIN_FACTS) return false // guard: nothing durable to consolidate
         const profile = await reflectPerson(p.name, facts, notes)
         if (!profile) return false
         // Store as a system-trust profile fact; reconcileFact supersedes the prior one.
