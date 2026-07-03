@@ -18,3 +18,12 @@ export async function requireAdmin(): Promise<{ uid: string } | null> {
   if (!roster.canAccessDashboard(Number(session.uid))) return null
   return session
 }
+
+// Stricter gate for OWNER-only surfaces (privileged config: grants, response policy,
+// scheduled tasks that cost budget). Re-checks the live owner role, never the cookie.
+export async function requireOwner(): Promise<{ uid: string } | null> {
+  const session = await requireAdmin()
+  if (!session) return null
+  const roster = await loadRoster(createHttpDb())
+  return roster.isOwner(Number(session.uid)) ? session : null
+}
