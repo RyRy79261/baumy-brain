@@ -26,6 +26,9 @@ export interface CaptureInput {
   memoryType: string
   authoredBy: string | null
   trustLevel: Trust
+  /** How much this matters (0..1) — a RANKING signal only (memory v2 §5), never a
+   *  delete policy. Durable facts score high, chatter low; default 0.5 if unset. */
+  salience?: number
 }
 
 export interface MemoryDeps {
@@ -79,6 +82,7 @@ export async function captureMemory(input: CaptureInput, deps?: Partial<MemoryDe
       trustLevel: input.trustLevel,
       isSecure: sens.isSecure,
       contentEncrypted,
+      salience: Math.min(1, Math.max(0, input.salience ?? 0.5)),
     })
     .returning({ id: memoryItems.id })
 
