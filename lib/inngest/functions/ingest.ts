@@ -30,6 +30,10 @@ export const handleTelegramMessage = inngest.createFunction(
   { event: 'telegram/message.received' },
   async ({ event, step }) => {
     const { updateId, messageId, chatId, fromId, text, chatType, isBot, isForwarded, replyToBot } = event.data
+    // Prefer the human name (first[+last]); fall back to @username. Backfills members
+    // that were only ever seen as a raw id (so Baumy can attribute a name, not digits).
+    const fromName =
+      [event.data.fromFirstName, event.data.fromLastName].filter(Boolean).join(' ') || event.data.fromUsername || null
     // House group id from house_config (captured on bot-add); env override wins.
     const houseChatId = await getHouseChatId(createHttpDb())
     // Owner-configurable response policy (kill-switch / confidence floor / mutes).
@@ -41,7 +45,7 @@ export const handleTelegramMessage = inngest.createFunction(
         .insert(telegramUpdates)
         .values({ updateId, chatId, raw: event.data as unknown as Record<string, unknown> })
         .onConflictDoNothing()
-      if (chatId === houseChatId) await ensureRegistered(db, chatId, fromId)
+      if (chatId === houseChatId) await ensureRegistered(db, chatId, fromId, fromName)
     })
 
     const pf = prefilter(text)

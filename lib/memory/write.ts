@@ -11,12 +11,27 @@ import type { Trust } from '@/lib/core/origin'
 // facts that merely read alike ("rent due friday" vs "…monday") sit well below this.
 const DEDUP_THRESHOLD = 0.97
 
-// Minimal registration so FK-bound memory writes succeed. Full B10 member
-// auto-discovery + bootstrap arrive with the auth phase; this is idempotent.
-export async function ensureRegistered(db: Database, groupId: string, fromId: number | null): Promise<void> {
+// Minimal registration so FK-bound memory writes succeed + display-name capture.
+// Idempotent: registers the member by id and, when the message carries a profile name,
+// backfills/refreshes their display name so grounding + reflection attribute a NAME
+// rather than a raw Telegram id ("numbers not faces"). Never touches role/isActive
+// (that's the roster's job) — a plain message only fills in the name.
+export async function ensureRegistered(
+  db: Database,
+  groupId: string,
+  fromId: number | null,
+  fromName?: string | null,
+): Promise<void> {
   await db.insert(telegramChats).values({ chatId: groupId, kind: 'house_group', isPrimary: true }).onConflictDoNothing()
-  if (fromId != null) {
-    await db.insert(members).values({ telegramUserId: String(fromId), groupId }).onConflictDoNothing()
+  if (fromId == null) return
+  const id = String(fromId)
+  if (fromName) {
+    await db
+      .insert(members)
+      .values({ telegramUserId: id, groupId, displayName: fromName })
+      .onConflictDoUpdate({ target: members.telegramUserId, set: { displayName: fromName } })
+  } else {
+    await db.insert(members).values({ telegramUserId: id, groupId }).onConflictDoNothing()
   }
 }
 
