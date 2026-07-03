@@ -1,6 +1,8 @@
 import { and, desc, eq, gte, lte, ne } from 'drizzle-orm'
+import { DateTime } from 'luxon'
 import { type Database } from '@/db/client'
 import { reminders, memoryItems } from '@/db/schema'
+import { houseTz } from '@/lib/env'
 
 // Build a grounded house digest FROM DB records (never chat recall): upcoming
 // reminders + recently-noted items. Deterministic — no LLM, so it's cheap, safe,
@@ -40,7 +42,7 @@ export async function buildDigest(db: Database, groupId: string, now: Date = new
   const lines: string[] = ['🌳 House digest']
   if (upcoming.length > 0) {
     lines.push('', 'Coming up:')
-    for (const u of upcoming) lines.push(`• ${u.content} — ${new Date(u.fireAt).toISOString().slice(0, 10)}`)
+    for (const u of upcoming) lines.push(`• ${u.content} — ${DateTime.fromJSDate(new Date(u.fireAt)).setZone(houseTz()).toISODate() ?? ''}`)
   }
   if (recent.length > 0) {
     lines.push('', 'Recently noted:')

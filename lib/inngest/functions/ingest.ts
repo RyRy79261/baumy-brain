@@ -313,9 +313,14 @@ export const handleTelegramMessage = inngest.createFunction(
         ]
         // Disclosure discretion (memory-core #15): a secure value is decrypted ONLY
         // here, to answer a direct question — never volunteered / in digests.
-        const grounding = combined.map((m) =>
-          m.isSecure && m.contentEncrypted ? { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` } : m,
-        )
+        const grounding = combined.map((m) => {
+          if (!(m.isSecure && m.contentEncrypted)) return m
+          try {
+            return { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` }
+          } catch {
+            return m // one undecryptable blob must not fail the whole reply — keep its descriptor
+          }
+        })
         // Explicit online-lookup request ("look it up", "google it") → search the web
         // (Anthropic server-side tool), blending in house memory. Fires ONLY on the
         // classifier's webSearch gate — never on a normal question — so it stays rare and

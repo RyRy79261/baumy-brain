@@ -1,4 +1,4 @@
-import { generateObject, generateText, type LanguageModel } from 'ai'
+import { generateObject, generateText, NoObjectGeneratedError, TypeValidationError, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { resolveModel } from './registry'
 import { REPLY_SYSTEM, REPLY_SYSTEM_TEXT } from './prompts'
@@ -30,11 +30,17 @@ export async function groundedReply(
   try {
     const { object } = await generateObject({ model, schema: answerSchema, system: REPLY_SYSTEM, prompt })
     return { text: object.reply, escalate: object.needsStrongerModel, answered: object.answered }
-  } catch {
-    // A model occasionally malforms the structured object (e.g. wraps it under an
-    // extra key) — that must NEVER swallow a user-facing reply. Fall back to plain
-    // text with the same grounding; forgo self-escalation. Treat as answered (we got
-    // words — send them; never downgrade a malformed-object fallback to a 👎 miss).
+  } catch (err) {
+    // ONLY a malformed structured object (model wraps it under an extra key, etc.) should
+    // fall back — a transient API/network error must rethrow so the caller can retry rather
+    // than waste a second paid call that fails the same way.
+    const isObjectError =
+      NoObjectGeneratedError.isInstance(err) ||
+      TypeValidationError.isInstance(err) ||
+      (err instanceof Error && /no object generated|did not match schema|type validation/i.test(err.message))
+    if (!isObjectError) throw err
+    // Fall back to plain text with the same grounding; forgo self-escalation. Treat as
+    // answered (we got words — send them; never downgrade a malformed-object fallback to 👎).
     const { text } = await generateText({ model, system: REPLY_SYSTEM_TEXT, prompt })
     return { text: text.trim(), escalate: false, answered: true }
   }
