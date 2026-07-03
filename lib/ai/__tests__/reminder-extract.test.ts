@@ -1,13 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
 
+const gen = vi.fn(async () => ({ object: { isReminder: true, whenText: 'in 3 days', content: 'pay rent' } }))
 vi.mock('ai', async (importOriginal) => {
   const actual = await importOriginal<typeof import('ai')>()
-  return {
-    ...actual,
-    generateObject: vi.fn(async () => ({
-      object: { isReminder: true, whenText: 'in 3 days', content: 'pay rent' },
-    })),
-  }
+  return { ...actual, generateObject: (...a: unknown[]) => gen(...(a as [])) }
 })
 
 const { extractReminder } = await import('@/lib/ai/reminder-extract')
@@ -18,5 +14,12 @@ describe('extractReminder', () => {
     expect(r.isReminder).toBe(true)
     expect(r.whenText).toBe('in 3 days')
     expect(r.content).toBe('pay rent')
+  })
+
+  it('is BEST-EFFORT: a malformed object degrades to not-a-reminder, never throws', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    gen.mockRejectedValueOnce(new Error('AI_NoObjectGeneratedError'))
+    await expect(extractReminder('remind us to buy milk tomorrow')).resolves.toEqual({ isReminder: false, whenText: '', content: '' })
+    err.mockRestore()
   })
 })
