@@ -12,15 +12,26 @@ export const reminderExtraction = z.object({
 })
 export type ReminderExtraction = z.infer<typeof reminderExtraction>
 
+// Safe result when extraction fails — treat the message as NOT a reminder, so the
+// pipeline continues to the reply/reaction instead of crash-looping the function.
+const NOT_A_REMINDER: ReminderExtraction = { isReminder: false, whenText: '', content: '' }
+
 export async function extractReminder(
   text: string,
   model: LanguageModel = resolveModel('assess'),
 ): Promise<ReminderExtraction> {
-  const { object } = await generateObject({
-    model,
-    schema: reminderExtraction,
-    system: EXTRACT_REMINDER_SYSTEM,
-    prompt: `MESSAGE (data): ${text}`,
-  })
-  return object
+  // BEST-EFFORT: a malformed object (AI_NoObjectGeneratedError) must never crash-loop
+  // ingest — worst case we miss one reminder; the reply/reaction still fires.
+  try {
+    const { object } = await generateObject({
+      model,
+      schema: reminderExtraction,
+      system: EXTRACT_REMINDER_SYSTEM,
+      prompt: `MESSAGE (data): ${text}`,
+    })
+    return object
+  } catch (err) {
+    console.error('extractReminder failed — treating as not-a-reminder:', err)
+    return NOT_A_REMINDER
+  }
 }
