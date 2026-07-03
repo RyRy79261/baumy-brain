@@ -4,9 +4,11 @@ import { MODELS, type Role } from './models'
 
 // Only Anthropic is used for language models; embeddings are local + in-process
 // (lib/ai/embed.ts), so there is NO OpenAI/second-vendor dependency.
-const anthropic = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+// Exported so provider-native server tools (e.g. Anthropic web search) can be built
+// from the SAME configured instance — still Anthropic-only, no new vendor.
+export const anthropicProvider = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-export const registry = createProviderRegistry({ anthropic })
+export const registry = createProviderRegistry({ anthropic: anthropicProvider })
 
 // Resolve a language model for a routing role. Never inline ids at call sites.
 export function resolveModel(role: Role) {

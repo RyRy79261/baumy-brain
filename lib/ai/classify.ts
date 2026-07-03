@@ -15,6 +15,8 @@ export const classifierVerdict = z.object({
   respond: z.enum(['ignore', 'react', 'answer']),
   reaction: z.enum(['👍', '🔥', '🎉', '🤯']).nullable(),
   tier: z.enum(['quick', 'think', 'deep']),
+  // True ONLY when the member explicitly asks to look something up online / search the web.
+  webSearch: z.boolean(),
 })
 export type ClassifierVerdict = z.infer<typeof classifierVerdict>
 
@@ -29,6 +31,7 @@ const SAFE_VERDICT: ClassifierVerdict = {
   respond: 'ignore',
   reaction: null,
   tier: 'quick',
+  webSearch: false,
 }
 
 export async function classify(
