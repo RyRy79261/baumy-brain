@@ -177,7 +177,7 @@ export const handleTelegramMessage = inngest.createFunction(
       reminderSet = await step.run('reminder', async () => {
         const db = createHttpDb()
         const ex = await extractReminder(text ?? '')
-        if (!ex.isReminder) return false
+        if (!ex.isReminder || !ex.content.trim()) return false // empty content would post a bare "⏰"
         const parsed = parseWhen(ex.whenText, houseTz()) // resolve "9am" in the house timezone
         if (!parsed) return false
         const id = await createReminder(db, {
