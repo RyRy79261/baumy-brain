@@ -56,16 +56,15 @@ export async function editMessageText(chatId: string, messageId: number, text: s
   await api().editMessageText(chatId, messageId, text, NO_PREVIEW)
 }
 
-// Best-effort emoji reaction — Baumy's lightweight ack (👀 seen, 👍 noted) on a
-// message instead of always sending a line. Pass null to CLEAR the reaction (swap
-// the eyes out once it answers). Never breaks the pipeline on failure.
-export async function reactToMessage(
-  chatId: string,
-  messageId: number,
-  emoji: ReactionTypeEmoji['emoji'] | null,
-): Promise<void> {
+// Best-effort emoji reaction — Baumy's lightweight ack (👀 seen, 🧠 learned it, 👎 no
+// idea) on a message instead of always sending a line. Pass null to CLEAR the reaction
+// (swap the eyes out once it answers). Takes a plain string so functional signals like
+// 🧠 (not in Telegram's default reaction set) can be attempted; if the group doesn't
+// allow that emoji Telegram just 400s and this swallows it. Never breaks the pipeline.
+export async function reactToMessage(chatId: string, messageId: number, emoji: string | null): Promise<void> {
   try {
-    await api().setMessageReaction(chatId, messageId, emoji ? [{ type: 'emoji', emoji }] : [])
+    const reactions = emoji ? [{ type: 'emoji' as const, emoji: emoji as ReactionTypeEmoji['emoji'] }] : []
+    await api().setMessageReaction(chatId, messageId, reactions)
   } catch {
     // reactions are cosmetic; a failure (perms, unsupported emoji) must not throw
   }

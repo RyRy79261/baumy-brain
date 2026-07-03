@@ -24,7 +24,8 @@ const REPLY_GROUNDING = [
 // Grounded conversational reply (the model writes the words + self-assesses escalation).
 export const REPLY_SYSTEM = [
   ...REPLY_GROUNDING,
-  'Put your reply in "reply". Set "needsStrongerModel" to true ONLY if answering this genuinely needs deeper reasoning or a wider search than you can do well right now — otherwise false, which is the usual case.',
+  'Put your reply in "reply". Set "answered" to true if you actually answered the QUESTION from memory (or it needed no memory — greeting/banter); set it to false when you are ADMITTING you do not have the info (a miss). When the MEMORY block is empty and you are missing, say so plainly and note the house has never mentioned anything like it.',
+  'Set "needsStrongerModel" to true ONLY if answering this genuinely needs deeper reasoning or a wider search than you can do well right now — otherwise false, which is the usual case.',
 ].join(' ')
 
 // Plain-text fallback voice — same grounding, no object fields. Used if structured
