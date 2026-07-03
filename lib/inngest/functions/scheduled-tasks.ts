@@ -7,6 +7,7 @@ import { dueTasks, recordRun } from '@/lib/scheduled-tasks/store'
 import { computeNextRun } from '@/lib/scheduled-tasks/cadence'
 import { buildDigest } from '@/lib/scheduled-tasks/digest'
 import { sendToHouse } from '@/lib/telegram/client'
+import { houseTz } from '@/lib/env'
 
 // The SINGLE shared scheduled-task dispatcher (scheduled-tasks.md ST2). Inngest
 // crons are static, so one hourly cron fans out over the durable table — there
@@ -24,7 +25,7 @@ export const scheduledTaskDispatch = inngest.createFunction(
             ? await buildDigest(db, t.groupId)
             : await deliberate(t.prompt, resolveModel(t.modelTier === 'advisor' ? 'advisor' : 'assess'))
         await sendToHouse(t.groupId, text)
-        const next = computeNextRun(t.cadence, DateTime.now())
+        const next = computeNextRun(t.cadence, DateTime.now(), houseTz())
         await recordRun(db, t.id, next, (t.untilExpiry as Date | null) ?? null)
       }
       return due.length

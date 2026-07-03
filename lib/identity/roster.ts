@@ -105,14 +105,22 @@ export async function listActiveMembers(
   return rows.filter((r) => r.active).map((r) => ({ id: r.id, name: r.name, role: r.role, dashboard: r.dashboard }))
 }
 
-// Parse a chat_member update (a HOUSEMATE's status change, not the bot's).
-export function parseChatMember(update: unknown): { userId: string | null; status: string | null; name: string | null } {
+// Parse a chat_member update (a HOUSEMATE's status change, not the bot's). Returns the
+// event's chat id too, so the caller can enforce the house lane (a housemate leaving a
+// DIFFERENT shared group must not deactivate them in the house).
+export function parseChatMember(update: unknown): { userId: string | null; status: string | null; name: string | null; chatId: string | null } {
   const u = update as {
-    chat_member?: { new_chat_member?: { user?: { id?: number; first_name?: string; username?: string }; status?: string } }
+    chat_member?: { chat?: { id?: number }; new_chat_member?: { user?: { id?: number; first_name?: string; username?: string }; status?: string } }
   }
-  const ncm = u.chat_member?.new_chat_member
-  if (!ncm?.user?.id) return { userId: null, status: null, name: null }
-  return { userId: String(ncm.user.id), status: ncm.status ?? null, name: ncm.user.first_name ?? ncm.user.username ?? null }
+  const cm = u.chat_member
+  const ncm = cm?.new_chat_member
+  if (!ncm?.user?.id) return { userId: null, status: null, name: null, chatId: null }
+  return {
+    userId: String(ncm.user.id),
+    status: ncm.status ?? null,
+    name: ncm.user.first_name ?? ncm.user.username ?? null,
+    chatId: cm?.chat?.id != null ? String(cm.chat.id) : null,
+  }
 }
 
 // Parse a my_chat_member update: was the BOT added, and by whom (→ owner = inviter)?

@@ -50,9 +50,16 @@ export const handleChatMember = inngest.createFunction(
   { event: 'telegram/chat_member' },
   async ({ event, step }) =>
     step.run('apply', async () => {
-      const { userId, status, name } = parseChatMember(event.data.raw)
+      const { userId, status, name, chatId } = parseChatMember(event.data.raw)
       if (!userId || !status) return { ignored: true }
       const db = createHttpDb()
+
+      // House-lane guard (mirror handleMyChatMember): only a status change in the HOUSE
+      // group may (de)activate a housemate. Otherwise, if the bot is admin in any second
+      // group shared with a housemate, their leaving/joining THERE would silently
+      // deactivate/reactivate them here.
+      const houseChatId = await getHouseChatId(db)
+      if (!houseChatId || chatId !== houseChatId) return { ignored: 'not-house' }
 
       if (status === 'left' || status === 'kicked' || status === 'banned') {
         await deactivateMember(db, userId)
@@ -60,8 +67,7 @@ export const handleChatMember = inngest.createFunction(
         return { deactivated: userId }
       }
       if (status === 'member' || status === 'administrator' || status === 'creator') {
-        const houseChatId = await getHouseChatId(db)
-        if (houseChatId) await upsertMember(db, houseChatId, userId, name)
+        await upsertMember(db, houseChatId, userId, name)
         return { active: userId }
       }
       return { ignored: status }

@@ -25,6 +25,7 @@ import { parseWhen } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
 import { loadRoster, memberDisplayNames } from '@/lib/identity/roster'
 import { getHouseChatId } from '@/lib/identity/house'
+import { houseTz } from '@/lib/env'
 import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
 import { loadResponsePolicy, replyAllowed } from '@/lib/policy'
@@ -106,7 +107,10 @@ export const handleTelegramMessage = inngest.createFunction(
       await step.run('house-report', async () => {
         const db = createHttpDb()
         await reactToMessage(chatId, messageId, '👀') // seen — putting it together
-        const md = reportView === 'guests' ? await guestReport(db, chatId) : await weeklyReport(db, chatId)
+        // READ scope is always the house group (all memory/facts are keyed there) — in a
+        // member DM, chatId is the private chat, which holds nothing. Reply to chatId.
+        const scope = houseChatId || chatId
+        const md = reportView === 'guests' ? await guestReport(db, scope) : await weeklyReport(db, scope)
         await sendToHouse(chatId, md)
         await reactToMessage(chatId, messageId, null)
       })
@@ -174,7 +178,7 @@ export const handleTelegramMessage = inngest.createFunction(
         const db = createHttpDb()
         const ex = await extractReminder(text ?? '')
         if (!ex.isReminder) return false
-        const parsed = parseWhen(ex.whenText)
+        const parsed = parseWhen(ex.whenText, houseTz()) // resolve "9am" in the house timezone
         if (!parsed) return false
         const id = await createReminder(db, {
           groupId: chatId,
