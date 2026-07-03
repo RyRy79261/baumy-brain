@@ -37,3 +37,12 @@ export function decide(origin: Origin, v: Verdict, th: Thresholds = DEFAULT_THRE
   if (v.worthRemembering && isAllowed(origin, 'capture') && conf >= th.capture) return 'capture'
   return 'drop'
 }
+
+// Remembering is ORTHOGONAL to the primary action: a message can be a reminder AND
+// carry durable house facts ("Zuzana arrives 10pm, staying in my room"). decide()
+// returns ONE action, so gating capture on decision==='capture' silently forgot the
+// facts in reminder/task/reply messages. Capture whenever it is worth remembering.
+export function shouldCapture(origin: Origin, v: Verdict, th: Thresholds = DEFAULT_THRESHOLDS): boolean {
+  if (origin.lane === 'ignore') return false
+  return v.worthRemembering && isAllowed(origin, 'capture') && clampConfidence(v.confidence) >= th.capture
+}

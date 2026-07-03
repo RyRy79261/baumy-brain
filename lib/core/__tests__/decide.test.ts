@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { resolveOriginParts, type Roster } from '@/lib/core/origin'
-import { decide, type Verdict } from '@/lib/core/decide'
+import { decide, shouldCapture, type Verdict } from '@/lib/core/decide'
 
 const HOUSE = '-1001234567890'
 beforeAll(() => {
@@ -46,6 +46,22 @@ describe('decide — confidence gate + write-gate', () => {
   it('an ignored origin always drops', () => {
     const ignored = resolveOriginParts({ chatId: '-999', fromId: 5, text: 'x', isPrivate: false }, roster)
     expect(decide(ignored, V({ worthRemembering: true, intent: 'fact' }))).toBe('drop')
+  })
+})
+
+describe('shouldCapture — remembering is orthogonal to the action', () => {
+  it('a reminder that is also a durable fact IS still captured (the Zuzana bug)', () => {
+    const v = V({ intent: 'reminder', worthRemembering: true })
+    // decide() routes it to the reminder action…
+    expect(decide(houseOrigin(), v)).toBe('reminder')
+    // …but it must ALSO be remembered, not silently dropped from memory.
+    expect(shouldCapture(houseOrigin(), v)).toBe(true)
+  })
+  it('does not capture chatter not worth remembering, or below the floor, or an ignored origin', () => {
+    expect(shouldCapture(houseOrigin(), V({ worthRemembering: false }))).toBe(false)
+    expect(shouldCapture(houseOrigin(), V({ worthRemembering: true, confidence: 0.2 }))).toBe(false)
+    const ignored = resolveOriginParts({ chatId: '-999', fromId: 5, text: 'x', isPrivate: false }, roster)
+    expect(shouldCapture(ignored, V({ worthRemembering: true }))).toBe(false)
   })
 })
 

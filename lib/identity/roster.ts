@@ -83,6 +83,13 @@ export async function setDashboardAccess(db: Database, userId: string, allow: bo
   return rows.length > 0
 }
 
+// telegram_user_id → display name, for resolving authors (memory attribution +
+// first-person pronoun resolution: "my room" said by Charl → "Charl's room").
+export async function memberDisplayNames(db: Database): Promise<Map<string, string>> {
+  const rows = await db.select({ id: members.telegramUserId, name: members.displayName }).from(members)
+  return new Map(rows.filter((r): r is { id: string; name: string } => !!r.name).map((r) => [r.id, r.name]))
+}
+
 export async function listActiveMembers(
   db: Database,
 ): Promise<Array<{ id: string; name: string | null; role: string; dashboard: boolean }>> {

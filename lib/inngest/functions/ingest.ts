@@ -2,7 +2,7 @@ import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { telegramUpdates } from '@/db/schema'
 import { resolveOriginParts } from '@/lib/core/origin'
-import { decide } from '@/lib/core/decide'
+import { decide, shouldCapture } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
 import { captureMemory, claimReply, ensureRegistered } from '@/lib/memory/write'
@@ -15,7 +15,7 @@ import { rerank } from '@/lib/ai/rerank'
 import { extractReminder } from '@/lib/ai/reminder-extract'
 import { parseWhen } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
-import { loadRoster } from '@/lib/identity/roster'
+import { loadRoster, memberDisplayNames } from '@/lib/identity/roster'
 import { getHouseChatId } from '@/lib/identity/house'
 import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
@@ -69,8 +69,10 @@ export const handleTelegramMessage = inngest.createFunction(
     // "Directed at Baumy" uses the bot's REAL @username (getMe, cached), not a guess.
     const directed = isDirectedAtBaumy(text ?? null, replyToBot === true, await getBotUsername())
 
-    // Capture (evidence + facts) — independent of whether we also reply.
-    if (decision === 'capture') {
+    // Capture (evidence + facts) — ORTHOGONAL to the reply/reminder/task action, so a
+    // reminder that also states a fact ("Zuzana arrives 10pm, staying in my room") is
+    // still remembered (previously it was silently forgotten).
+    if (shouldCapture(origin, verdict)) {
       await step.run('capture', async () => {
         const db = createHttpDb()
         // Never attribute quarantined (forwarded/bot) content to a housemate.
@@ -80,9 +82,11 @@ export const handleTelegramMessage = inngest.createFunction(
           { db },
         )
         // M2: distil structured facts + trust-gated reconcile into the knowledge
-        // graph. Quarantined content never writes a fact (injection wall).
+        // graph. Quarantined content never writes a fact (injection wall). The
+        // speaker's name lets first-person references resolve ("my room" → their room).
         if (origin.memoryTrust !== 'quarantined') {
-          const { facts } = await extractFacts(text ?? '')
+          const speaker = authoredBy ? ((await memberDisplayNames(db)).get(authoredBy) ?? null) : null
+          const { facts } = await extractFacts(text ?? '', speaker)
           for (const f of facts) {
             await reconcileFact(db, { groupId: chatId, fact: f, authoredBy, trustLevel: origin.memoryTrust })
           }
@@ -159,9 +163,12 @@ export const handleTelegramMessage = inngest.createFunction(
           memories = await retrieve(text ?? '', { groupId: chatId, k: 8, floor: 0.2 }, { db })
         }
         const factHits = await currentFactsForQuery(db, chatId, text ?? '', deep ? 15 : 5)
+        // Show authors by NAME (not raw id) so the model can attribute + resolve
+        // first-person pronouns in retrieved notes ("from Charl … my room" → Charl's).
+        const names = await memberDisplayNames(db)
         const combined = [
           ...factHits.map((f, i) => ({ id: `fact:${i}`, memoryType: 'fact', authoredBy: null, similarity: 1, ...f })),
-          ...memories,
+          ...memories.map((m) => ({ ...m, authoredBy: m.authoredBy ? (names.get(m.authoredBy) ?? m.authoredBy) : null })),
         ]
         // Disclosure discretion (memory-core #15): a secure value is decrypted ONLY
         // here, to answer a direct question — never volunteered / in digests.
