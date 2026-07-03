@@ -175,8 +175,8 @@ export const handleTelegramMessage = inngest.createFunction(
         const grounding = combined.map((m) =>
           m.isSecure && m.contentEncrypted ? { ...m, content: `${m.content}: ${decryptSecret(m.contentEncrypted)}` } : m,
         )
-        // Start at the triage tier; the model self-escalates only if it needs to.
-        const { text: reply } = await answer(text ?? '', grounding, startTier)
+        // Always starts on Sonnet; the model self-escalates to Opus only if it needs to.
+        const { text: reply } = await answer(text ?? '', grounding)
         await sendToHouse(chatId, reply)
         await reactToMessage(chatId, messageId, null) // swap the 👀 out — the words are the reply
       })

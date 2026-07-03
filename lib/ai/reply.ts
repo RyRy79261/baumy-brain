@@ -51,18 +51,18 @@ export async function groundedReply(
   }
 }
 
-// Self-advising escalation ladder: Haiku → Sonnet → Opus. The triage tier sets the
-// STARTING model (quick=Haiku; think/deep=Sonnet, with Opus as the advisor); if a
-// model says it needs more brainpower, we bump up one tier (capped at Opus) and
-// re-answer over the same grounding.
-const LADDER = ['reply', 'assess', 'advisor'] as const // Haiku, Sonnet, Opus
+// Self-advising escalation ladder: Sonnet → Opus. EVERY reply starts on Sonnet (the
+// primary reasoning model); if a model signals it needs more brainpower, we bump to
+// the Opus advisor for that turn and re-answer over the same grounding. Haiku is NOT
+// on this ladder — it only does upstream triage/routing. The triage tier still drives
+// retrieval DEPTH upstream (deep = expansion + broad search), not the reply model.
+const LADDER = ['reply', 'advisor'] as const // Sonnet → Opus
 
 export async function answer(
   query: string,
   memories: RetrievedMemory[],
-  startTier: 'quick' | 'think' | 'deep',
 ): Promise<{ text: string; usedTier: (typeof LADDER)[number] }> {
-  let idx = startTier === 'quick' ? 0 : 1 // think/deep start at Sonnet; Opus advises
+  let idx = 0 // always start at Sonnet
   let r = await groundedReply(query, memories, resolveModel(LADDER[idx]))
   while (r.escalate && idx < LADDER.length - 1) {
     idx += 1

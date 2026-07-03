@@ -14,7 +14,7 @@ export type ReminderExtraction = z.infer<typeof reminderExtraction>
 
 export async function extractReminder(
   text: string,
-  model: LanguageModel = resolveModel('classify'),
+  model: LanguageModel = resolveModel('assess'),
 ): Promise<ReminderExtraction> {
   const { object } = await generateObject({
     model,

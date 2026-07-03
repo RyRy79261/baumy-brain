@@ -56,19 +56,26 @@ describe('groundedReply — retrieval-grounded, tool-less, self-assessing', () =
   })
 })
 
-describe('answer — self-advising escalation ladder (Haiku → Sonnet → Opus)', () => {
-  it('bumps to a stronger model when a model asks for one', async () => {
-    gen.mockResolvedValueOnce({ object: { reply: 'over my head', needsStrongerModel: true } }) // Haiku
-    gen.mockResolvedValueOnce({ object: { reply: 'FINAL', needsStrongerModel: false } }) // Sonnet
-    const r = await answer('a hard one', [], 'quick')
+describe('answer — self-advising escalation ladder (Sonnet → Opus)', () => {
+  it('starts on Sonnet and bumps to Opus when the model asks for one', async () => {
+    gen.mockResolvedValueOnce({ object: { reply: 'over my head', needsStrongerModel: true } }) // Sonnet
+    gen.mockResolvedValueOnce({ object: { reply: 'FINAL', needsStrongerModel: false } }) // Opus
+    const r = await answer('a hard one', [])
     expect(r.text).toBe('FINAL')
-    expect(r.usedTier).toBe('assess') // escalated Haiku → Sonnet
+    expect(r.usedTier).toBe('advisor') // escalated Sonnet → Opus
+  })
+
+  it('answers on Sonnet without escalating when it does not need to', async () => {
+    gen.mockResolvedValueOnce({ object: { reply: 'got it', needsStrongerModel: false } })
+    const r = await answer('an easy one', [])
+    expect(r.text).toBe('got it')
+    expect(r.usedTier).toBe('reply') // stayed on Sonnet
   })
 
   it('caps at Opus even if it keeps asking', async () => {
     gen.mockResolvedValue({ object: { reply: 'still want more', needsStrongerModel: true } })
-    const r = await answer('impossible', [], 'quick')
-    expect(r.usedTier).toBe('advisor') // Haiku → Sonnet → Opus, then stop
+    const r = await answer('impossible', [])
+    expect(r.usedTier).toBe('advisor') // Sonnet → Opus, then stop
     gen.mockReset()
   })
 })
