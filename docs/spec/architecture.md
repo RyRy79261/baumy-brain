@@ -3,6 +3,12 @@
 > Workstream: `architecture` — build-ready spec for the Baumy Brain scaffold, deploy topology, and request lifecycle.
 > Verified against current official sources as of **2026-07-01**; reconciled to the owner decision log (`00-decisions.md`) on **2026-07-02**. Reference repos (`camp-404`, `ops-board`) are read-only sources to lift-and-rename; **zero foreign identifiers may survive into the Baumy codebase** (clean-room rule).
 
+> **⚠️ As-built corrections (2026-07-03).** This is the original design spec; two details below
+> are now superseded by the shipped code — trust **`README.md`** (architecture + diagrams) and
+> **`AGENTS.md`** (live invariants) over this doc where they differ:
+> - **Next.js 15** (App Router), React 19 — not Next 16 (the pinned 2026 versions didn't exist at build; current-real equivalents were used).
+> - **Auth is a signed HMAC session cookie** (`BAUMY_SESSION_SECRET`, `lib/auth/session.ts`) minted from a Telegram magic-link — **Better Auth is NOT used** (it was a spec-generation artifact; do not reintroduce it). Everything else about the login flow (Telegram-native, owner = inviter, `can_access_dashboard` gate) is accurate.
+
 ---
 
 ## Overview

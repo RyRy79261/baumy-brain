@@ -57,11 +57,17 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
 - **Trust tiers:** forwarded / bot-origin content → `quarantined`; it is never attributed to a
   housemate and never grounds a reply or writes a fact. Native group text is `untrusted`
   (grounds replies, never privileged). Member DM text is `trusted`.
-- **Human-confirm wall:** genuinely privileged actions (dashboard grants, response-policy /
-  config changes) are *proposed* and require a `callback_query` tap from a member's authenticated
-  `from.id` before they commit (`lib/confirm/*`, `functions/callback.ts`). The tap is the wall.
-  **Reminders are exempt — they auto-commit** (`ingest.ts` reminder step): a reminder only posts
-  text to the fixed house group, so there's nothing to escalate. Do not re-add a confirm step to them.
+- **Two human-authorization walls (don't conflate them):** (1) the **confirm-tap wall** —
+  `callback_query` from a member's authenticated `from.id` (`lib/confirm/*`,
+  `functions/callback.ts`) gates **memory deletion / "forget"** (the only chat-initiated
+  privileged action). A "forget X" request only *proposes* a delete (LLM picks the target
+  *description*; code resolves it to exact, group-scoped row ids the human reviews); nothing
+  is removed until the tap. (2) the **dashboard-authz wall** — grants + response-policy/config
+  changes commit via authenticated **owner/admin dashboard** server actions
+  (`lib/auth/require-admin.ts` `requireAdmin`/`requireOwner`, re-checked live), **not** a
+  Telegram tap. **Reminders are exempt from both — they auto-commit** (`ingest.ts` reminder
+  step): a reminder only posts text to the fixed house group, so there's nothing to escalate.
+  Do not re-add a confirm step to them.
 - **Fixed send destination:** `sendToHouse` targets a **code-resolved** chat id only (house
   config / stored `deliver_chat_id` / task `group_id`). The LLM never picks a recipient.
 - **Secrets at rest:** wifi/door/bank values are AES-256-GCM encrypted (`lib/core/crypto.ts`);
@@ -101,6 +107,23 @@ crown jewels. The pipeline:
   Haiku **re-rank** (`rerank.ts`) — both best-effort, degrading to plain hybrid on any error.
 - Every retrieval arm (semantic *and* lexical) is **group-scoped, active-only, quarantined-
   excluded, current-embedding-model-only** — preserve all four in any query you add.
+- **Reflect** (`reflect.ts` + `functions/reflect.ts`): a slow **sleep-time cron** (every 6h)
+  re-reads each person's own facts + attributed notes and synthesises a durable per-person
+  **profile**, stored back as a `system`-trust fact (supersedes the prior; grounds "who is X").
+  Reads **already-trusted, non-secret, non-quarantined** rows only; picks only people with fresh
+  activity since their last profile (never churns). Material is **non-secret + non-quarantined**
+  (untrusted native-group notes ARE included — it's already-captured evidence/facts, not live
+  group text; only secret + forwarded/bot content is excluded). This is the "it learns" step.
+- **Forget** (`forget.ts`, deletion on request): `findMemoryToForget` resolves a target
+  description to exact **group-scoped** row ids (facts via trigram/substring, notes via hybrid
+  recall); `forgetMemory` runs **soft** (hide: `is_current`/`is_active=false`, reversible) or
+  **purge** (redact value/content + drop the embedding). Confirm-tap-gated + audited (above).
+  A "forget" message is **never captured** (storing "delete X" would re-add X).
+- **Extraction has NO fact ceiling** (`extract.ts`): a dense message **paginates** (re-ask for
+  new facts until a short page drains; `MAX_PASSES` backstop is logged, never a silent drop).
+  Every hot-path `generateObject` is **best-effort** — a malformed object degrades to a safe
+  default (classify→SAFE_VERDICT, extract→[], reminder/forget→none, reply→text fallback) so no
+  single LLM hiccup crash-loops ingest. See the structured-output rule before adding one.
 - Reserved + intentionally unused: `entities.name_embedding` (semantic entity resolution —
   today it's redundant with expansion; wire it only if recall proves thin in the wild).
 
