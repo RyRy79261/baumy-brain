@@ -24,6 +24,7 @@ export interface ExtractedFact {
   subjectKind?: 'person' | 'place' | 'org' | 'event' | 'thing'
   predicate: string
   object: string
+  objectKind?: 'person' | 'place' | 'org' | 'event' | 'thing' | 'value'
 }
 export type ReconcileResult = 'add' | 'noop' | 'update' | 'rejected'
 
@@ -166,11 +167,21 @@ export async function reconcileFact(
   const objectValue = isSecure ? null : input.fact.object
   const valueCiphertext = isSecure ? encryptSecret(input.fact.object) : null
 
+  // Relationship EDGE (memory v2 §4): when the object is a node-worthy entity (not a
+  // plain 'value') and not a secret, resolve it to a real node and store the edge
+  // alongside the display string. Extraction decides; default (unset/'value') → no edge.
+  const objKind = input.fact.objectKind
+  const objectEntityId =
+    !isSecure && objKind && objKind !== 'value'
+      ? await resolveEntity(db, input.groupId, input.fact.object, objKind)
+      : null
+
   const newValues = {
     groupId: input.groupId,
     subjectEntityId: subjectId,
     predicate,
     objectValue,
+    objectEntityId,
     isSecure,
     valueCiphertext,
     keyVersion: isSecure ? 1 : null,
