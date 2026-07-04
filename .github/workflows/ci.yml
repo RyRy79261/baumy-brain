@@ -16,6 +16,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm lint # eslint 9 flat config (eslint.config.mjs)
       - run: pnpm typecheck
       - run: pnpm test # unit (PGlite) + e2e (real pgvector Postgres via testcontainers)
       - run: pnpm build

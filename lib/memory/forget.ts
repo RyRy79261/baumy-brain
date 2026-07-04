@@ -123,7 +123,7 @@ export async function findMemoryToForget(db: Database, groupId: string, spec: Fo
 
   const scrubValues = [...scrub]
   let noteIds: string[] = []
-  let aliasHits: AliasHit[] = []
+  const aliasHits: AliasHit[] = []
 
   if (scrubValues.length) {
     // Facts whose stored VALUE contains a scrub string as a WHOLE WORD (case-insensitive).
