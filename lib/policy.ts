@@ -1,4 +1,3 @@
-import { eq } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { houseConfig } from '@/db/schema'
 
