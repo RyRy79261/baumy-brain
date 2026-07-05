@@ -174,7 +174,8 @@ export const handleTelegramMessage = inngest.createFunction(
             // trust=origin.memoryTrust: a member DM is 'trusted' (rank 3) and MAY supersede a
             // group 'untrusted' fact (rank 2), never a 'system' reflect fact (rank 4). Scope is
             // the house so the write lands in shared memory (trust-gated in reconcileFact).
-            const r = await reconcileFact(db, { groupId: houseScope, fact: f, authoredBy, trustLevel: origin.memoryTrust })
+            // memoryItemId links the fact back to THIS evidence note (its origin — see fact-lineage).
+            const r = await reconcileFact(db, { groupId: houseScope, fact: f, authoredBy, trustLevel: origin.memoryTrust, memoryItemId })
             if (r === 'add' || r === 'update') learned = true
           }
           // Tag this note with the person it's about (memory v2 §3) — attributed, never scored.
@@ -337,9 +338,19 @@ export const handleTelegramMessage = inngest.createFunction(
         // Show authors by NAME (not raw id) so the model can attribute + resolve
         // first-person pronouns in retrieved notes ("from Charl … my room" → Charl's).
         const names = await memberDisplayNames(db)
+        const nameOf = (id: string | null) => (id ? (names.get(id) ?? id) : null)
         const combined = [
-          ...factHits.map((f, i) => ({ id: `fact:${i}`, memoryType: 'fact', authoredBy: null, similarity: 1, ...f })),
-          ...memories.map((m) => ({ ...m, authoredBy: m.authoredBy ? (names.get(m.authoredBy) ?? m.authoredBy) : null })),
+          ...factHits.map((f, i) => {
+            // Attribute the fact to WHO stated it, and fold its lineage parent into the content so
+            // the model can narrate the progression + who moved it forward ("you said Zuzka's
+            // coming → Marco said she arrived") instead of a flat, source-less assertion.
+            const priorAuthor = nameOf(f.priorAuthoredBy)
+            const content = f.priorContent
+              ? `${f.content} (follows from — ${f.priorContent}${priorAuthor ? `, per ${priorAuthor}` : ''})`
+              : f.content
+            return { id: `fact:${i}`, memoryType: 'fact', similarity: 1, content, isSecure: f.isSecure, contentEncrypted: f.contentEncrypted, authoredBy: nameOf(f.authoredBy) }
+          }),
+          ...memories.map((m) => ({ ...m, authoredBy: nameOf(m.authoredBy) })),
         ]
         // Disclosure discretion (memory-core #15): a secure value is decrypted ONLY
         // here, to answer a direct question — never volunteered / in digests.

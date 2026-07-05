@@ -217,8 +217,19 @@ export const facts = pgTable(
     recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
     invalidatedAt: timestamp('invalidated_at', { withTimezone: true }),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    // provenance + lineage (docs/spec/fact-lineage.md): the evidence note a fact was extracted
+    // from (its ORIGIN — paired with authored_by = who), and the prior fact this one follows
+    // from (its PARENT — a supersession target, or the previous thing recorded about the same
+    // subject). Together with authored_by these build a per-entity timeline, sourced across
+    // people ("you said Zuzka's coming" → "Marco said she arrived"). Both nullable.
+    sourceMemoryItemId: uuid('source_memory_item_id').references(() => memoryItems.id, { onDelete: 'set null' }),
+    derivedFromFactId: uuid('derived_from_fact_id').references((): AnyPgColumn => facts.id, { onDelete: 'set null' }),
   },
-  (t) => [index('baumy_facts_group_current_idx').on(t.groupId, t.isCurrent)],
+  (t) => [
+    index('baumy_facts_group_current_idx').on(t.groupId, t.isCurrent),
+    index('baumy_facts_subject_idx').on(t.subjectEntityId), // per-entity timeline walks
+    index('baumy_facts_derived_idx').on(t.derivedFromFactId), // lineage-tree walks
+  ],
 )
 
 // ── Structured features ──────────────────────────────────────────

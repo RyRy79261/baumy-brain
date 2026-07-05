@@ -197,3 +197,66 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
     expect(hits[0].contentEncrypted).toBeTruthy()
   })
 })
+
+describe('fact lineage (origin + familial timeline)', () => {
+  it('links a fact to the evidence note it was distilled from (origin)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 100)
+    const memId = await captureMemory(
+      { groupId: GROUP, content: 'zuzka is coming today', memoryType: 'fact', authoredBy: '100', trustLevel: 'untrusted' },
+      { db, embed: async (t: string) => embedSync(t) },
+    )
+    await reconcileFact(db, { groupId: GROUP, fact: F('zuzka', 'arriving', 'today'), authoredBy: '100', trustLevel: 'untrusted', memoryItemId: memId })
+    const [row] = await db
+      .select({ src: facts.sourceMemoryItemId, author: facts.authoredBy })
+      .from(facts)
+      .where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'arriving')))
+    expect(row.src).toBe(memId) // fact → its origin note
+    expect(row.author).toBe('100') // ...stated by whom
+  })
+
+  it('a superseding fact derives from the incumbent it replaced (walkable both ways)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const t = 'untrusted' as const
+    await reconcileFact(db, { groupId: GROUP, fact: F('bins', 'go_out', 'friday'), authoredBy: null, trustLevel: t })
+    const [oldRow] = await db.select({ id: facts.id }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.objectValue, 'friday')))
+    await reconcileFact(db, { groupId: GROUP, fact: F('bins', 'go_out', 'monday'), authoredBy: null, trustLevel: t })
+    const [newRow] = await db.select({ id: facts.id, derived: facts.derivedFromFactId }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.objectValue, 'monday')))
+    expect(newRow.derived).toBe(oldRow.id) // new → old (parent)
+    const [oldAfter] = await db.select({ sup: facts.supersededBy }).from(facts).where(eq(facts.id, oldRow.id))
+    expect(oldAfter.sup).toBe(newRow.id) // old → new (existing forward pointer) — chain both ways
+  })
+
+  it('chains a progression across predicates + people and surfaces the lineage', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await upsertMember(db, GROUP, '10', 'Ryan', 'member')
+    await upsertMember(db, GROUP, '20', 'Marco', 'member')
+    // Ryan: "Zuzka is coming today"
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'arriving', object: 'today' }, authoredBy: '10', trustLevel: 'untrusted' })
+    const [first] = await db.select({ id: facts.id }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'arriving')))
+    // Marco: "Zuzka has arrived" — DIFFERENT predicate → an ADD that DERIVES from the prior fact about her
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'status', object: 'arrived' }, authoredBy: '20', trustLevel: 'untrusted' })
+    const [second] = await db.select({ derived: facts.derivedFromFactId }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'status')))
+    expect(second.derived).toBe(first.id) // familial link across predicates + authors
+
+    // the reply-grounding lookup surfaces the fact WITH its lineage parent + who authored each
+    const hits = await currentFactsForQuery(db, GROUP, 'has zuzka arrived?')
+    const arrived = hits.find((h) => h.content.includes('arrived'))
+    expect(arrived?.authoredBy).toBe('20') // stated by Marco
+    expect(arrived?.priorContent).toContain('arriving') // follows from the "arriving today" fact
+    expect(arrived?.priorAuthoredBy).toBe('10') // ...which Ryan stated
+  })
+
+  it('never surfaces a SECRET lineage parent in the progression', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    // a secret wifi-password fact, then a non-secret follow-up about the SAME subject (wifi)
+    await reconcileFact(db, { groupId: GROUP, fact: F('wifi', 'password', 'hunter2Berlin'), authoredBy: null, trustLevel: 'trusted' })
+    await reconcileFact(db, { groupId: GROUP, fact: F('wifi', 'channel', '6'), authoredBy: null, trustLevel: 'trusted' })
+    const hits = await currentFactsForQuery(db, GROUP, 'what wifi channel are we on')
+    const child = hits.find((h) => h.content.includes('channel'))
+    expect(child?.priorContent ?? '').not.toContain('hunter2') // the secret parent is redacted from lineage
+  })
+})

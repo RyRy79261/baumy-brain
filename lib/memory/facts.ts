@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, desc, eq, isNull, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { entities, facts, members, memoryItems } from '@/db/schema'
 import { encryptSecret } from '@/lib/core/crypto'
@@ -152,7 +152,7 @@ async function resolveEntityId(db: Database, groupId: string, name: string, kind
 // to overwrite a higher-trust one).
 export async function reconcileFact(
   db: Database,
-  input: { groupId: string; fact: ExtractedFact; authoredBy: string | null; trustLevel: Trust; neverSecret?: boolean },
+  input: { groupId: string; fact: ExtractedFact; authoredBy: string | null; trustLevel: Trust; neverSecret?: boolean; memoryItemId?: string | null },
 ): Promise<ReconcileResult> {
   // Quarantined (forwarded/bot) content NEVER becomes a fact (injection wall #7).
   if (input.trustLevel === 'quarantined') return 'rejected'
@@ -191,6 +191,8 @@ export async function reconcileFact(
     trustLevel: input.trustLevel,
     validFrom: new Date(),
     isCurrent: true,
+    // Provenance: the evidence note this fact was distilled from (with authoredBy = who).
+    sourceMemoryItemId: input.memoryItemId ?? null,
   }
 
   const [existing] = await db
@@ -207,7 +209,17 @@ export async function reconcileFact(
     .limit(1)
 
   if (!existing) {
-    await db.insert(facts).values(newValues)
+    // Lineage (no same-predicate incumbent to supersede): link this new fact to the most recent
+    // thing already recorded about the SAME subject — its timeline parent. This is what chains
+    // "Zuzka is coming today" → "Zuzka has arrived" even across different predicates and authors.
+    // Null for the very first fact about a subject. Best-effort context, not a semantic guarantee.
+    const [prior] = await db
+      .select({ id: facts.id })
+      .from(facts)
+      .where(and(eq(facts.groupId, input.groupId), eq(facts.subjectEntityId, subjectId)))
+      .orderBy(desc(facts.recordedAt))
+      .limit(1)
+    await db.insert(facts).values({ ...newValues, derivedFromFactId: prior?.id ?? null })
     return 'add'
   }
 
@@ -227,7 +239,9 @@ export async function reconcileFact(
   // window where the fact has no current value self-heals on the retry.
   const now = new Date()
   await db.update(facts).set({ isCurrent: false, validTo: now, invalidatedAt: now }).where(eq(facts.id, existing.id))
-  const [inserted] = await db.insert(facts).values(newValues).returning({ id: facts.id })
+  // The new row DERIVES FROM the incumbent it replaces (its parent), mirroring the incumbent's
+  // forward supersededBy pointer — so the supersession chain is walkable in both directions.
+  const [inserted] = await db.insert(facts).values({ ...newValues, derivedFromFactId: existing.id }).returning({ id: facts.id })
   await db.update(facts).set({ supersededBy: inserted.id }).where(eq(facts.id, existing.id))
   return 'update'
 }
@@ -258,21 +272,35 @@ export async function tagMemoryAboutPerson(
 // on the canonical name OR any recorded alias (exact substring, prioritised) and
 // falls back to a trigram fuzzy match, so "is the sink fixed" finds the "kitchen
 // sink" entity. Secure values stay encrypted here (decrypted only in the reply).
-export async function currentFactsForQuery(
-  db: Database,
-  groupId: string,
-  query: string,
-  limit = 5,
-): Promise<Array<{ content: string; isSecure: boolean; contentEncrypted: string | null }>> {
+export interface FactHit {
+  content: string
+  isSecure: boolean
+  contentEncrypted: string | null
+  /** Member id that stated this fact (the reply layer maps it to a name for attribution). */
+  authoredBy: string | null
+  /** The prior fact this one follows from (lineage parent), if non-secret — a short descriptor. */
+  priorContent: string | null
+  /** Member id that stated the lineage parent. */
+  priorAuthoredBy: string | null
+}
+
+export async function currentFactsForQuery(db: Database, groupId: string, query: string, limit = 5): Promise<FactHit[]> {
   const q = query.trim().toLowerCase()
   if (!q) return []
 
+  // LEFT JOIN the lineage parent (derived_from_fact_id) so the reply can show the progression
+  // "you said Zuzka's coming → Marco said she arrived". A secret parent is never surfaced.
   const res = await db.execute(sql`
     SELECT e.canonical_name AS subject,
            f.predicate AS predicate,
            f.object_value AS "objectValue",
            f.is_secure AS "isSecure",
            f.value_ciphertext AS "valueCiphertext",
+           f.authored_by AS "authoredBy",
+           CASE WHEN pf.id IS NOT NULL AND pf.is_secure = false
+                THEN pe.canonical_name || ' ' || replace(pf.predicate, '_', ' ') || coalesce(': ' || pf.object_value, '')
+                ELSE NULL END AS "priorContent",
+           pf.authored_by AS "priorAuthoredBy",
            CASE
              WHEN position(e.canonical_name IN ${q}) > 0
                OR EXISTS (SELECT 1 FROM unnest(coalesce(e.aliases, '{}'::text[])) a WHERE length(a) > 0 AND position(a IN ${q}) > 0)
@@ -280,6 +308,8 @@ export async function currentFactsForQuery(
            END AS pri
     FROM baumy_facts f
     JOIN baumy_entities e ON f.subject_entity_id = e.id
+    LEFT JOIN baumy_facts pf ON f.derived_from_fact_id = pf.id
+    LEFT JOIN baumy_entities pe ON pf.subject_entity_id = pe.id
     WHERE f.group_id = ${groupId} AND f.is_current = true AND length(e.canonical_name) > 0
       AND (
         position(e.canonical_name IN ${q}) > 0
@@ -294,5 +324,8 @@ export async function currentFactsForQuery(
     content: `${r.subject as string} ${String(r.predicate).replace(/_/g, ' ')}${r.isSecure ? '' : `: ${(r.objectValue as string | null) ?? ''}`}`,
     isSecure: Boolean(r.isSecure),
     contentEncrypted: (r.valueCiphertext ?? null) as string | null,
+    authoredBy: (r.authoredBy ?? null) as string | null,
+    priorContent: (r.priorContent ?? null) as string | null,
+    priorAuthoredBy: (r.priorAuthoredBy ?? null) as string | null,
   }))
 }

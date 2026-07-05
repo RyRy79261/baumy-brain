@@ -98,6 +98,26 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect(hits[0]?.content).toContain('0300')
   })
 
+  it('fact lineage: origin note + cross-person progression on the real migration (0009)', async () => {
+    await upsertMember(h.db, GROUP, '810', 'Ryan', 'member')
+    await upsertMember(h.db, GROUP, '820', 'Marco', 'member')
+    const memId = await captureMemory(
+      { groupId: GROUP, content: 'zuzka is coming today', memoryType: 'fact', authoredBy: '810', trustLevel: 'untrusted' },
+      { db: h.db, embed },
+    )
+    // Ryan: "coming today"; Marco: "arrived" — different predicate → an ADD deriving from the prior fact.
+    await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'zuzka-guest', subjectKind: 'person', predicate: 'arriving', object: 'today' }, authoredBy: '810', trustLevel: 'untrusted', memoryItemId: memId })
+    await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'zuzka-guest', subjectKind: 'person', predicate: 'status', object: 'arrived' }, authoredBy: '820', trustLevel: 'untrusted' })
+    // real FKs (source_memory_item_id + derived_from_fact_id) resolved on real Postgres
+    const src = await h.pool.query("SELECT source_memory_item_id FROM baumy_facts WHERE predicate = 'arriving' AND group_id = $1", [GROUP])
+    expect(src.rows[0].source_memory_item_id).toBe(memId)
+    const hits = await currentFactsForQuery(h.db, GROUP, 'has zuzka-guest arrived?')
+    const arrived = hits.find((r) => r.content.includes('arrived'))
+    expect(arrived?.authoredBy).toBe('820') // Marco stated it
+    expect(arrived?.priorContent).toContain('arriving') // ...following Ryan's "coming today"
+    expect(arrived?.priorAuthoredBy).toBe('810')
+  })
+
   it('entity resolution: surface variants merge; read-side fuzzy recalls (real pg_trgm)', async () => {
     await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'the kitchen sink', predicate: 'status', object: 'leaking' }, authoredBy: null, trustLevel: 'untrusted' })
     // "the sink" trigram-merges onto the same entity → supersede, not a fork.

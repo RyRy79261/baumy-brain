@@ -110,6 +110,12 @@ crown jewels. The pipeline:
   de-fragments subjects (normalize → exact → alias → conservative `strict_word_similarity`
   merge), so "the sink"/"kitchen sink" are one entity while "marta"/"marco" stay distinct —
   **write side is precision-first** (a bad merge corrupts the graph); read side fuzzes generously.
+  Every fact carries **lineage** (`docs/spec/fact-lineage.md`): `source_memory_item_id` (the
+  evidence note it came from — its origin, with `authored_by` = who) and `derived_from_fact_id`
+  (the prior fact it follows from — a supersession target, or the previous thing said about the
+  same subject). This chains a progression across predicates + people ("you said Zuzka's coming"
+  → "Marco said she arrived"); `currentFactsForQuery` surfaces the author + parent into the reply
+  grounding (a **secret** parent is redacted). Both nullable, additive.
 - **Retrieve** (`retrieve.ts`): **hybrid RRF** — semantic (pgvector cosine) ⊕ lexical
   (`content_tsv` full-text), fused by Reciprocal Rank Fusion, then recency-composed. The **deep
   tier** adds query **expansion/HyDE** (`expand.ts` → `retrieveExpanded`, cross-probe RRF) and a
