@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
-import { loadResponsePolicy, setGlobalEnabled, replyAllowed, type ResponsePolicy } from '@/lib/policy'
+import { loadResponsePolicy, setGlobalEnabled, setReplyFrequency, replyAllowed, type ResponsePolicy } from '@/lib/policy'
 
-const base: ResponsePolicy = { global_enabled: true, categories: {}, confidence_threshold: 0.7, muted_topics: [] }
+const base: ResponsePolicy = { global_enabled: true, categories: {}, confidence_threshold: 0.7, muted_topics: [], reply_frequency: 'balanced' }
 
 describe('response policy (kill-switch + reply gate)', () => {
   it('pause/resume flips global_enabled via the singleton (upsert)', async () => {
@@ -19,5 +19,25 @@ describe('response policy (kill-switch + reply gate)', () => {
     expect(replyAllowed(base, 0.5, 'bins?')).toBe(false) // below the 0.7 floor
     expect(replyAllowed(base, 0.9, 'bins?')).toBe(true)
     expect(replyAllowed({ ...base, muted_topics: ['bins'] }, 0.9, 'when do the BINS go out')).toBe(false) // muted topic
+  })
+
+  it('reply_frequency tunes the volunteered-reply floor', () => {
+    // A 0.8-confidence message: chatty (floor 0.5) + balanced (0.7) speak; quiet (0.85) stays quiet.
+    expect(replyAllowed({ ...base, reply_frequency: 'chatty' }, 0.8, 'bins?')).toBe(true)
+    expect(replyAllowed({ ...base, reply_frequency: 'balanced' }, 0.8, 'bins?')).toBe(true)
+    expect(replyAllowed({ ...base, reply_frequency: 'quiet' }, 0.8, 'bins?')).toBe(false)
+    // quiet still answers a very confident one; chatty answers a borderline one balanced would drop.
+    expect(replyAllowed({ ...base, reply_frequency: 'quiet' }, 0.9, 'bins?')).toBe(true)
+    expect(replyAllowed({ ...base, reply_frequency: 'chatty' }, 0.6, 'bins?')).toBe(true)
+    expect(replyAllowed({ ...base, reply_frequency: 'balanced' }, 0.6, 'bins?')).toBe(false)
+  })
+
+  it('setReplyFrequency round-trips via the singleton; default is balanced', async () => {
+    const db = await makeTestDb()
+    expect((await loadResponsePolicy(db)).reply_frequency).toBe('balanced') // default when unseeded
+    await setReplyFrequency(db, 'quiet')
+    expect((await loadResponsePolicy(db)).reply_frequency).toBe('quiet')
+    await setReplyFrequency(db, 'chatty')
+    expect((await loadResponsePolicy(db)).reply_frequency).toBe('chatty')
   })
 })

@@ -2,11 +2,18 @@ import { requireAdmin } from '@/lib/auth/require-admin'
 import { createHttpDb } from '@/db/client'
 import { loadRoster } from '@/lib/identity/roster'
 import { loadResponsePolicy } from '@/lib/policy'
-import { setPolicyEnabledAction, addMutedTopicAction, removeMutedTopicAction } from '../actions'
+import { setPolicyEnabledAction, addMutedTopicAction, removeMutedTopicAction, setReplyFrequencyAction } from '../actions'
+import { type ReplyFrequency } from '@/lib/policy'
 import { dailySpendCapUsd } from '@/lib/env'
 import { page } from '@/lib/dashboard/styles'
 
 export const runtime = 'nodejs'
+
+const FREQ_LABEL: Record<ReplyFrequency, string> = {
+  quiet: 'Quiet — only clearly meaningful replies',
+  balanced: 'Balanced',
+  chatty: 'Chatty — jumps in more readily',
+}
 
 export default async function SettingsPage() {
   const session = await requireAdmin()
@@ -35,6 +42,32 @@ export default async function SettingsPage() {
       ) : (
         <p style={{ color: '#888' }}>Only the owner can change these.</p>
       )}
+
+      <h2 style={{ marginTop: '2rem' }}>Reply frequency</h2>
+      <p style={{ color: '#888', fontSize: 14 }}>
+        How readily Baumy jumps into the group unprompted. It always answers when @-mentioned or
+        replied to; this only tunes <em>volunteered</em> replies (reactions like 🧠/👀 are unaffected).
+      </p>
+      <p style={{ color: '#aaa', fontSize: 14 }}>
+        Currently: <strong>{FREQ_LABEL[policy.reply_frequency]}</strong>.
+      </p>
+      {isOwner ? (
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {(['quiet', 'balanced', 'chatty'] as ReplyFrequency[]).map((lvl) => (
+            <form key={lvl} action={setReplyFrequencyAction}>
+              <input type="hidden" name="level" value={lvl} />
+              <button
+                type="submit"
+                disabled={policy.reply_frequency === lvl}
+                style={{ cursor: policy.reply_frequency === lvl ? 'default' : 'pointer', fontWeight: policy.reply_frequency === lvl ? 700 : 400 }}
+              >
+                {FREQ_LABEL[lvl]}
+                {policy.reply_frequency === lvl ? ' ✓' : ''}
+              </button>
+            </form>
+          ))}
+        </div>
+      ) : null}
 
       <h2 style={{ marginTop: '2rem' }}>Muted topics</h2>
       <p style={{ color: '#888', fontSize: 14 }}>Baumy won&rsquo;t chime in on messages mentioning these words.</p>

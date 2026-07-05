@@ -382,17 +382,19 @@ export const handleTelegramMessage = inngest.createFunction(
         } // runReplyBody
       })
     } else if (canSpeak && reminderSet) {
-      await reactToMessage(chatId, messageId, '👍') // reminder confirmed — a genuine "got it"
+      // 👍 is reserved for AGREEING TO A DIRECTIVE ("remind us X" → "got it, done"). It is the
+      // ONE case where a thumbs-up is honest — Baumy was told to do a thing and did it.
+      await reactToMessage(chatId, messageId, '👍')
     } else if (canSpeak && (learnedFact || verdict.respond === 'react')) {
-      // ONE acknowledgement, in priority order:
-      //   • a genuine vibe the classifier felt (🔥 / 🎉 / 🤯) wins — real emotion, let it through;
-      //   • else if Baumy REMEMBERED the message (a durable fact OR an informative note it
-      //     captured) → 🧠 "noted it". A 👍 here would read as agreeing to a statement (the
-      //     toilet-tip report is the tell) when Baumy is really just filing it away;
-      //   • else a light 👍 for react-worthy banter it didn't store.
+      // ONE acknowledgement for a statement/mention (Baumy wasn't told to DO anything), in order:
+      //   • a genuine vibe the classifier felt (🔥 / 🎉 / 🤯) — real emotion, let it through;
+      //   • else if Baumy LEARNED something (a durable fact OR an informative note it stored) → 🧠;
+      //   • else 👀 "seen it" — it noticed the message but there was nothing new to file away.
+      // Never 👍 here: a thumbs-up on a bare statement reads as "agreeing to" something Baumy is
+      // only noticing or remembering. 👍 means "I'll do it", 🧠 means "I learned it", 👀 means "I saw it".
       const vibe = verdict.respond === 'react' && verdict.reaction && verdict.reaction !== '👍' ? verdict.reaction : null
       const remembered = learnedFact || worthCapturing
-      await reactToMessage(chatId, messageId, vibe ?? (remembered ? '🧠' : '👍'))
+      await reactToMessage(chatId, messageId, vibe ?? (remembered ? '🧠' : '👀'))
     }
 
     return { updateId, decision, directed, respond: verdict.respond, reminderSet, source: origin.source }
