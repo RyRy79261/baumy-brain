@@ -64,6 +64,13 @@
       "when": 1783076681833,
       "tag": "0008_silly_magus",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1783277594783,
+      "tag": "0009_stiff_whizzer",
+      "breakpoints": true
     }
   ]
 }
