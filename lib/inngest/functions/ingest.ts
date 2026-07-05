@@ -138,7 +138,11 @@ export const handleTelegramMessage = inngest.createFunction(
     let learnedFact = false
     // Never capture a "forget X" request — storing "delete Madeleine Goujon" would just
     // re-add the very thing being deleted. The forget flow handles it below instead.
-    if (shouldCapture(origin, verdict) && verdict.intent !== 'forget') {
+    // `worthCapturing` (an evidence note was stored) drives the 🧠 "noted it" acknowledgement
+    // below even when no structured {subject,predicate,object} fact was distilled — an
+    // informative statement Baumy files away is still "remembered", not something to 👍.
+    const worthCapturing = shouldCapture(origin, verdict) && verdict.intent !== 'forget'
+    if (worthCapturing) {
       learnedFact = (await step.run('capture', async () => {
         const db = createHttpDb()
         // Never attribute quarantined (forwarded/bot) content to a housemate.
@@ -351,12 +355,17 @@ export const handleTelegramMessage = inngest.createFunction(
         } // runReplyBody
       })
     } else if (canSpeak && reminderSet) {
-      await reactToMessage(chatId, messageId, '👍') // reminder confirmed
-    } else if (canSpeak && learnedFact) {
-      // Learned a durable fact and no reply is warranted → make the memory VISIBLE.
-      await reactToMessage(chatId, messageId, '🧠')
-    } else if (canSpeak && verdict.respond === 'react') {
-      await reactToMessage(chatId, messageId, verdict.reaction ?? '👍') // social vibe
+      await reactToMessage(chatId, messageId, '👍') // reminder confirmed — a genuine "got it"
+    } else if (canSpeak && (learnedFact || verdict.respond === 'react')) {
+      // ONE acknowledgement, in priority order:
+      //   • a genuine vibe the classifier felt (🔥 / 🎉 / 🤯) wins — real emotion, let it through;
+      //   • else if Baumy REMEMBERED the message (a durable fact OR an informative note it
+      //     captured) → 🧠 "noted it". A 👍 here would read as agreeing to a statement (the
+      //     toilet-tip report is the tell) when Baumy is really just filing it away;
+      //   • else a light 👍 for react-worthy banter it didn't store.
+      const vibe = verdict.respond === 'react' && verdict.reaction && verdict.reaction !== '👍' ? verdict.reaction : null
+      const remembered = learnedFact || worthCapturing
+      await reactToMessage(chatId, messageId, vibe ?? (remembered ? '🧠' : '👍'))
     }
 
     return { updateId, decision, directed, respond: verdict.respond, reminderSet, source: origin.source }
