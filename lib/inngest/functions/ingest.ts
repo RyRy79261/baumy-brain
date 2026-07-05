@@ -9,6 +9,7 @@ import { captureMemory, claimReply, releaseReply, ensureRegistered } from '@/lib
 import { retrieve, retrieveExpanded, type RetrievedMemory } from '@/lib/memory/retrieve'
 import { extractFacts } from '@/lib/ai/extract'
 import { reconcileFact, currentFactsForQuery, tagMemoryAboutPerson } from '@/lib/memory/facts'
+import { gatherGraphContext, type GraphContextItem } from '@/lib/memory/graph'
 import { answer } from '@/lib/ai/reply'
 import { webSearchAnswer } from '@/lib/ai/websearch'
 import { expandQuery } from '@/lib/ai/expand'
@@ -335,6 +336,18 @@ export const handleTelegramMessage = inngest.createFunction(
           memories = await retrieve(text ?? '', { groupId: houseScope, k: 8, floor: 0.2 }, { db })
         }
         const factHits = await currentFactsForQuery(db, houseScope, text ?? '', deep ? 15 : 5)
+        // Deep tier: WALK the fact graph from the query's entities — cross-subject connections
+        // ("Charl's sister → the cave") + the top subject's full timeline — so a multi-hop
+        // question reaches knowledge no single lookup returns. Best-effort enrichment: any error
+        // degrades to [] (hybrid recall + direct facts still stand). Group-scoped, secret-excluded.
+        let graphItems: GraphContextItem[] = []
+        if (deep) {
+          try {
+            graphItems = await gatherGraphContext(db, houseScope, text ?? '')
+          } catch {
+            /* graph traversal is enrichment only — never fail the reply on it */
+          }
+        }
         // Show authors by NAME (not raw id) so the model can attribute + resolve
         // first-person pronouns in retrieved notes ("from Charl … my room" → Charl's).
         const names = await memberDisplayNames(db)
@@ -351,6 +364,7 @@ export const handleTelegramMessage = inngest.createFunction(
             return { id: `fact:${i}`, memoryType: 'fact', similarity: 1, content, isSecure: f.isSecure, contentEncrypted: f.contentEncrypted, authoredBy: nameOf(f.authoredBy) }
           }),
           ...memories.map((m) => ({ ...m, authoredBy: nameOf(m.authoredBy) })),
+          ...graphItems.map((g) => ({ ...g, authoredBy: nameOf(g.authoredBy) })),
         ]
         // Disclosure discretion (memory-core #15): a secure value is decrypted ONLY
         // here, to answer a direct question — never volunteered / in digests.

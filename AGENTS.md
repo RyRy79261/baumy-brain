@@ -116,6 +116,12 @@ crown jewels. The pipeline:
   same subject). This chains a progression across predicates + people ("you said Zuzka's coming"
   → "Marco said she arrived"); `currentFactsForQuery` surfaces the author + parent into the reply
   grounding (a **secret** parent is redacted). Both nullable, additive.
+- **Graph traversal** (`graph.ts`, `docs/spec/fact-graph-traversal.md`): the facts form a property
+  graph (relationship edges = a fact row with `object_entity_id` set). `connectedEdges` walks it
+  with a **bounded recursive CTE** (≤2 hops / node+edge caps, both directions) from a query's seed
+  entities — the cross-subject hop ("Charl's sister → the cave"); `entityTimeline` walks one
+  subject's full progression (incl. superseded, tagged `(past)`). `gatherGraphContext` feeds both
+  into the **deep-tier** reply grounding (best-effort). Group-scoped, secret-excluded, current-only.
 - **Retrieve** (`retrieve.ts`): **hybrid RRF** — semantic (pgvector cosine) ⊕ lexical
   (`content_tsv` full-text), fused by Reciprocal Rank Fusion, then recency-composed. The **deep
   tier** adds query **expansion/HyDE** (`expand.ts` → `retrieveExpanded`, cross-probe RRF) and a
