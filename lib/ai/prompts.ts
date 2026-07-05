@@ -39,8 +39,10 @@ export const REPLY_SYSTEM_TEXT = REPLY_GROUNDING.join(' ')
 export const START_MESSAGE = [
   "Meow 🐈‍⬛ I'm Baumy, the house's memory gremlin.",
   "I live in the group and quietly remember the stuff nobody writes down: who's visiting, when the bins go out, where the spare key went.",
-  'Just talk to me in the group — ask what I know, tell me house things, or say "remind us ...". No commands needed.',
-  'Got dashboard access? Send /dashboard for a one-time login link.',
+  'Here in a DM you can ask me house things privately — nobody in the group sees it:',
+  '• "when\'s bin day?"  • "who cleaned the sink?"  • "what\'s the wifi password?"  • "catch me up on this week"',
+  "Tell me something and I'll remember it for the house, too. I answer from what I've seen in the group — and I can't message you first (Telegram won't let me), so poke me whenever.",
+  '/weekly for the house digest, /guests for who\'s visiting. Got dashboard access? /dashboard for a one-time login link.',
 ].join('\n')
 
 // A single short line for a situation (acknowledgements, quips).
