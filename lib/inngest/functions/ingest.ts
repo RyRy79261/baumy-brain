@@ -24,7 +24,7 @@ import { createPendingAction } from '@/lib/confirm/store'
 import { parseWhen } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
 import { loadRoster, memberDisplayNames } from '@/lib/identity/roster'
-import { getHouseChatId } from '@/lib/identity/house'
+import { getHouseChatId, houseScopeForOrigin } from '@/lib/identity/house'
 import { houseTz } from '@/lib/env'
 import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
@@ -68,6 +68,11 @@ export const handleTelegramMessage = inngest.createFunction(
       roster,
       houseChatId,
     )
+    // The house whose SHARED memory this message reads/writes — the SCOPE, distinct from the
+    // reply DESTINATION (chatId). In the house group they're equal; in a member DM the scope is
+    // still the house (so a DM query grounds on house memory and a DM fact writes THROUGH to it)
+    // while the reply goes to the private chat. Derived from the authenticated lane, never text.
+    const houseScope = houseScopeForOrigin(origin, houseChatId)
 
     // Bug/feature report (/bug, /feature) → enrich into a clean GitHub
     // issue and file it on a confirm tap. Explicit slash command, works in the house group
@@ -152,7 +157,10 @@ export const handleTelegramMessage = inngest.createFunction(
         const salience =
           verdict.intent === 'fact' ? 0.85 : verdict.intent === 'reminder' || verdict.intent === 'task' ? 0.7 : verdict.intent === 'question' ? 0.5 : 0.35
         const memoryItemId = await captureMemory(
-          { groupId: chatId, content: text ?? '', memoryType: verdict.intent, authoredBy, trustLevel: origin.memoryTrust, salience },
+          // Scope = the house (houseScope), NOT the inbound chat: a member DM writes THROUGH to
+          // shared house memory (a private "boiler code is 1234" updates the house), and never
+          // to a dead private-chat silo. In the house lane houseScope === chatId (no change).
+          { groupId: houseScope, content: text ?? '', memoryType: verdict.intent, authoredBy, trustLevel: origin.memoryTrust, salience },
           { db },
         )
         // M2: distil structured facts + trust-gated reconcile into the knowledge
@@ -163,11 +171,14 @@ export const handleTelegramMessage = inngest.createFunction(
           const speaker = authoredBy ? ((await memberDisplayNames(db)).get(authoredBy) ?? null) : null
           const { facts } = await extractFacts(text ?? '', speaker)
           for (const f of facts) {
-            const r = await reconcileFact(db, { groupId: chatId, fact: f, authoredBy, trustLevel: origin.memoryTrust })
+            // trust=origin.memoryTrust: a member DM is 'trusted' (rank 3) and MAY supersede a
+            // group 'untrusted' fact (rank 2), never a 'system' reflect fact (rank 4). Scope is
+            // the house so the write lands in shared memory (trust-gated in reconcileFact).
+            const r = await reconcileFact(db, { groupId: houseScope, fact: f, authoredBy, trustLevel: origin.memoryTrust })
             if (r === 'add' || r === 'update') learned = true
           }
           // Tag this note with the person it's about (memory v2 §3) — attributed, never scored.
-          await tagMemoryAboutPerson(db, chatId, memoryItemId, facts)
+          await tagMemoryAboutPerson(db, houseScope, memoryItemId, facts)
         }
         return learned
       })) as boolean
@@ -185,7 +196,7 @@ export const handleTelegramMessage = inngest.createFunction(
         const parsed = parseWhen(ex.whenText, houseTz()) // resolve "9am" in the house timezone
         if (!parsed) return false
         const id = await createReminder(db, {
-          groupId: chatId,
+          groupId: houseScope, // scope = the house (a DM-set reminder belongs to the house, not a silo)
           deliverChatId: houseChatId, // fixed destination, resolved in code (never LLM)
           content: ex.content,
           fireAt: parsed.fireAt,
@@ -207,16 +218,31 @@ export const handleTelegramMessage = inngest.createFunction(
     // question, or banter aimed at Baumy). A directed message always gets a reply;
     // the model picks the tier and self-escalates. 👀 while thinking, swapped for the
     // words. A set reminder gets at least a 👍. Kill-switch silences everything.
-    const canSpeak = origin.lane === 'house' && policy.global_enabled
-    // A "forget X" request always gets a response (a proposal or an honest miss).
-    const wantAnswer =
-      canSpeak &&
-      (directed || decision === 'forget' || (verdict.respond === 'answer' && replyAllowed(policy, verdict.confidence, text ?? '')))
+    const isDm = origin.lane === 'member_dm'
+    // Pause (global_enabled) silences the GROUP; a private 1:1 DM query pollutes nothing, so it
+    // still answers (I7 — the bypass is lane-scoped to member_dm; the house lane below and the
+    // reminder step above still honor pause). canSpeak also drives the reaction/ack branches.
+    const houseCanSpeak = origin.lane === 'house' && policy.global_enabled
+    const canSpeak = houseCanSpeak || isDm
+    // A member DM is addressed TO Baumy: answer any question / ask / forget with WORDS, privately.
+    // A direct 1:1 ask bypasses the GROUP noise filters (confidence floor, muted topics) — those
+    // exist to spare the group, not to gate a question someone typed straight to Baumy. A DM that
+    // is a plain statement (a fact to remember) is NOT a wantAnswer — it captures + gets a 🧠 ack.
+    const wantAnswer = isDm
+      ? decision === 'forget' || verdict.respond === 'answer' || verdict.intent === 'question' || directed
+      : houseCanSpeak &&
+        (directed || decision === 'forget' || (verdict.respond === 'answer' && replyAllowed(policy, verdict.confidence, text ?? '')))
 
     if (wantAnswer) {
       await step.run('reply', async () => {
         const db = createHttpDb()
-        if (chatId !== houseChatId) return // belt-and-suspenders: house group only (E2)
+        // Destination allow-list: exactly two TRANSPORT-authenticated targets — the house group,
+        // or the message sender's OWN private chat (member_dm). Never a free/LLM-supplied id
+        // (injection wall I2/G1). Relaxes the old `chatId !== houseChatId` guard without deleting
+        // the belt: a reply still can only land in the house group or the authenticated sender's DM.
+        const isHouseReply = origin.lane === 'house' && chatId === houseChatId
+        const isDmReply = isDm && fromId != null && roster.isMember(fromId) && chatId === origin.chatId
+        if (!isHouseReply && !isDmReply) return
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
         await reactToMessage(chatId, messageId, '👀') // seen — thinking
         // The claim autocommitted (neon-http) before the fallible work below (LLM/send) and
@@ -239,7 +265,7 @@ export const handleTelegramMessage = inngest.createFunction(
           const speaker = fromId != null ? ((await memberDisplayNames(db)).get(String(fromId)) ?? null) : null
           const ex = await extractForget(text ?? '', speaker)
           if (ex.isForget) {
-            const matches = await findMemoryToForget(db, chatId, { values: ex.values, subject: ex.subject, attribute: ex.attribute })
+            const matches = await findMemoryToForget(db, houseScope, { values: ex.values, subject: ex.subject, attribute: ex.attribute })
             await reactToMessage(chatId, messageId, null)
             const mode: ForgetMode = ex.permanent ? 'purge' : 'soft'
             const aliasCount = matches.aliasHits.reduce((n, h) => n + h.remove.length, 0)
@@ -258,7 +284,7 @@ export const handleTelegramMessage = inngest.createFunction(
               return
             }
             const pid = await createPendingAction(db, {
-              groupId: chatId,
+              groupId: houseScope, // the house being modified (scope), not the DM chat
               actionType: 'memory.forget',
               payload: {
                 mode,
@@ -297,17 +323,17 @@ export const handleTelegramMessage = inngest.createFunction(
             /* fall back to the raw query */
           }
           memories = expansions.length
-            ? await retrieveExpanded(text ?? '', expansions, { groupId: chatId, k: 30, floor: 0.05 }, { db })
-            : await retrieve(text ?? '', { groupId: chatId, k: 30, floor: 0.05 }, { db })
+            ? await retrieveExpanded(text ?? '', expansions, { groupId: houseScope, k: 30, floor: 0.05 }, { db })
+            : await retrieve(text ?? '', { groupId: houseScope, k: 30, floor: 0.05 }, { db })
           try {
             memories = await rerank(text ?? '', memories)
           } catch {
             /* keep the fusion order */
           }
         } else {
-          memories = await retrieve(text ?? '', { groupId: chatId, k: 8, floor: 0.2 }, { db })
+          memories = await retrieve(text ?? '', { groupId: houseScope, k: 8, floor: 0.2 }, { db })
         }
-        const factHits = await currentFactsForQuery(db, chatId, text ?? '', deep ? 15 : 5)
+        const factHits = await currentFactsForQuery(db, houseScope, text ?? '', deep ? 15 : 5)
         // Show authors by NAME (not raw id) so the model can attribute + resolve
         // first-person pronouns in retrieved notes ("from Charl … my room" → Charl's).
         const names = await memberDisplayNames(db)
@@ -345,8 +371,9 @@ export const handleTelegramMessage = inngest.createFunction(
         // Graduated honest-miss: send WORDS when it answered, or when the miss is
         // itself informative (grounding was blank → "we've never mentioned that"). A bare
         // 👎 is only for an AMBIENT miss (adjacent-but-unhelpful memory) — a message that
-        // @-mentions Baumy directly ALWAYS gets words, never a dismissive thumbs-down.
-        if (answered || grounding.length === 0 || directed) {
+        // @-mentions Baumy directly, or ANY 1:1 DM, ALWAYS gets words, never a dismissive
+        // thumbs-down (a lone 👎 in a private chat reads as a shrug, not an answer).
+        if (answered || grounding.length === 0 || directed || isDm) {
           await sendToHouse(chatId, reply)
           await reactToMessage(chatId, messageId, null) // 👀 → gone; the words are the reply
         } else {

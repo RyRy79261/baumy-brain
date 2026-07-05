@@ -59,6 +59,12 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
 - **Trust tiers:** forwarded / bot-origin content → `quarantined`; it is never attributed to a
   housemate and never grounds a reply or writes a fact. Native group text is `untrusted`
   (grounds replies, never privileged). Member DM text is `trusted`.
+- **DM queries (`member_dm` lane, `docs/spec/dm-queries-and-house-scoping.md`):** a member can
+  DM Baumy to **read** house memory (answered privately) and **write** facts through to shared
+  house memory at `trusted`. The **scope** a message reads/writes is `houseScopeForOrigin(origin,
+  houseChatId)` — derived from the authenticated lane, NEVER the inbound `chatId` — while the
+  reply **destination** stays `origin.chatId`. Keep scope/destination/identity distinct. DM
+  answers **bypass `/pause`** (lane-scoped: house + reminders still honor it).
 - **Two human-authorization walls (don't conflate them):** (1) the **confirm-tap wall** —
   `callback_query` from a member's authenticated `from.id` (`lib/confirm/*`,
   `functions/callback.ts`) gates **memory deletion / "forget"** (the only chat-initiated
@@ -70,8 +76,9 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   Telegram tap. **Reminders are exempt from both — they auto-commit** (`ingest.ts` reminder
   step): a reminder only posts text to the fixed house group, so there's nothing to escalate.
   Do not re-add a confirm step to them.
-- **Fixed send destination:** `sendToHouse` targets a **code-resolved** chat id only (house
-  config / stored `deliver_chat_id` / task `group_id`). The LLM never picks a recipient.
+- **Fixed send destination:** `sendToHouse` targets a **code-resolved** chat id only. Replies
+  are a **two-target allow-list** — the house group, or the authenticated DM sender's own chat
+  (`origin.chatId`); reminders/digests → the fixed house group. The LLM never picks a recipient.
 - **Secrets at rest:** wifi/door/bank values are AES-256-GCM encrypted (`lib/core/crypto.ts`);
   only a non-secret descriptor is stored/embedded; decrypt only to answer a direct request,
   never in digests.
