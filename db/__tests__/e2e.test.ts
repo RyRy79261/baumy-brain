@@ -5,6 +5,7 @@ import { entities } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
+import { resolveSeedEntities, connectedEdges, gatherGraphContext } from '@/lib/memory/graph'
 import { findMemoryToForget, forgetMemory } from '@/lib/memory/forget'
 import { createReminder, claimReminder, markSent, releaseReminder } from '@/lib/reminders/store'
 import { loadResponsePolicy, setGlobalEnabled } from '@/lib/policy'
@@ -116,6 +117,18 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect(arrived?.authoredBy).toBe('820') // Marco stated it
     expect(arrived?.priorContent).toContain('arriving') // ...following Ryan's "coming today"
     expect(arrived?.priorAuthoredBy).toBe('810')
+  })
+
+  it('graph traversal: a multi-hop cross-subject walk on the real recursive CTE', async () => {
+    // marlowe —sibling of→ perrin —owns→ the loft   (a 2-hop chain across three subjects)
+    await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'marlowe', subjectKind: 'person', predicate: 'sibling_of', object: 'perrin', objectKind: 'person' }, authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'perrin', subjectKind: 'person', predicate: 'owns', object: 'the loft', objectKind: 'place' }, authoredBy: null, trustLevel: 'untrusted' })
+    const seeds = await resolveSeedEntities(h.db, GROUP, 'where is marlowe staying')
+    const rel = (await connectedEdges(h.db, GROUP, seeds, { maxHops: 2 })).map((e) => `${e.subject} ${e.predicate} ${e.object}`)
+    expect(rel).toContain('marlowe sibling of perrin') // 1 hop
+    expect(rel).toContain('perrin owns loft') // 2 hops — reached THROUGH perrin (real WITH RECURSIVE)
+    const conns = (await gatherGraphContext(h.db, GROUP, 'where is marlowe staying')).filter((i) => i.memoryType === 'connection')
+    expect(conns.length).toBeGreaterThanOrEqual(2)
   })
 
   it('entity resolution: surface variants merge; read-side fuzzy recalls (real pg_trgm)', async () => {
