@@ -37,9 +37,12 @@ passes (and later sessions) read from the record, not from conversation memory.
 | **3 — Framework-bias audit** | One advocate per memory philosophy; re-litigate all dismissals/acceptances; rebalance → refined baseline | Fable only | ✅ done | [**`refined-baseline.md`**](refined-baseline.md) · [`03a`](03a-framework-reconciliation.md) · [`03b`](03b-framework-residual-bias.md) · [`frameworks-map`](frameworks-map.md) · [appendix](appendix/pass3/) |
 | **Phase two** | Implementation, once the baseline stabilizes | — | not started | — |
 
-**➡️ [`refined-baseline.md`](refined-baseline.md) is the current best synthesis** — the framework-explicit,
-evenly-weighted map (neutral bedrock / framework-relative questions / revived + downgraded / stones
-unturned / open cruxes). Start there.
+| **4 — Alternative-theorem** | Treat corpus as incumbent; blind-re-derive; hunt for a *competing* theorem, re-anchored to the conversational objective | Fable generate / Opus score | ✅ done | [**`04`**](04-alternative-theorems.md) · [`04a`](04a-replication-convergence.md) · [`04b`](04b-alternative-critic.md) · [appendix](appendix/pass4/) |
+| **Phase two** | Implementation, once the baseline stabilizes | — | not started | — |
+
+**➡️ [`refined-baseline.md`](refined-baseline.md)** is the framework-audited map (bedrock vs relative);
+**[`04-alternative-theorems.md`](04-alternative-theorems.md)** is the alternative-frame synthesis for the
+*conversational* objective. Read both; they answer different questions.
 
 Supporting: [`glossary.md`](glossary.md) — every name/study/system/term in plain language + what it's
 used for. [`seeds.md`](seeds.md) — the 8 topics distilled into the claim-clusters that are the
@@ -82,6 +85,38 @@ is "a filled table, not a flipped default." It is *not* fully neutral — see `0
 (the scaffold vocabulary itself is still store-flavored; memory-augmented nets that literally do address
 lookup are missing), a candidate seed for a future pass.
 
+## The alternative-theorem finding (Pass 4 — "would we replay to the same result?")
+
+Treating the corpus as the incumbent and re-deriving blind, from 5 lenses, re-anchored to the *conversational*
+objective: **no — a blind replay does not reproduce our fact-graph frame.** All 5 independently landed on
+**relationship-indexed, two-speed, reconstructive memory** (fast episodic capture → slow consolidation into
+person/relationship gist → **recall as generative reconstruction, not lookup**), rating only *partial*
+convergence with the incumbent. **The incumbent is relocated, not refuted:** our weighted knowledge-graph is
+what they each reconstruct as the *slow consolidated + fidelity/audit layer* — never the organizing frame.
+
+**Evidence-linked additions the incumbent lacks:** a fast episodic layer (affect / who-was-there / temporal
+context, not flattened to triples); a **reconstruction read step** (gist-first, hedged — the biggest omission,
+the direct cure for "robotic lookup"); a **common-ground / transactive ledger** (who-knows-what, "what I already
+told you," anti-repetition, epistemic rights — a *clean* omission, conversation-specific, and the *safest* to
+add since it traffics in pointers/provenance); need-probability ranking + adaptive forgetting; a metamemory/
+hedging surface; and `reflect` reframed as the *learning engine*. **Crucially, the security core stays
+firewalled** — reconstruction is structurally unsafe for secrets/reminders/authz, so every winning theorem
+walls itself out of it, and Baumy's "deterministic code disposes" rule is *re-justified from memory theory*.
+
+**Two honesty caveats (from the Opus scorer + the critic), so this is not over-sold:**
+- **Weak independence + priming.** The objective prompt said "recalls naturally rather than robotic database
+  lookups" — pre-stating the conclusion; both processes sampled the same training canon; and *all 10 theorems
+  scoring "better" is a rubric-bias red flag*. The **engineering/IR/security lens — the axis on which the
+  incumbent was actually chosen — was never run.** So "under-weights process/relationship" is robust;
+  "replace the graph" is not. The defensible conclusion is **re-frame + augment into a firewalled hybrid.**
+- **⚠️ Objective substitution (the fork to resolve before phase two).** The exercise optimized a *human-like
+  companion*. Baumy is, per `AGENTS.md`, a **house-management secretary** — explicitly "not a personal
+  assistant," accuracy- and security-first. Several recommendations (gist-over-verbatim, adaptive forgetting)
+  are **anti-features for a secretary** answering "what's the wifi password / when is rent due." Companion vs
+  secretary changes which additions apply. Also still missing: fuzzy-trace theory, Schank/Kolodner case-based
+  reasoning ("that reminds me…"), contextual-integrity for a *multiparty* group, and any observational data on
+  whether the incumbent actually *sounds* robotic. See `04b-alternative-critic.md`.
+
 ## Headline findings so far (empirical core — survived every pass)
 
 - **Empirical bedrock survived every attack** — carried by *data*, not analogy: the lesion double
@@ -111,7 +146,7 @@ lookup are missing), a candidate seed for a future pass.
 
 ## Provenance
 
-Runs: Pass 0 (19 agents), Pass 1 (26), Pass 2 (26), Pass 3 (26). ~4.5M subagent tokens across the four
-passes, 0 agent errors. Conducted 2026-07-05 → 2026-07-06. All findings are model-generated and
+Runs: Pass 0 (19 agents), Pass 1 (26), Pass 2 (26), Pass 3 (26), Pass 4 (32; 1 agent failed on a structured-
+output retry cap). ~5.7M subagent tokens across five passes. Conducted 2026-07-05 → 2026-07-06. Findings are model-generated and
 adversarially cross-checked; they are a research aid, not ground truth. Model policy: Fable 5 for opaque
 generation + the verification gate; Opus 4.8 for bounded adjudication.
