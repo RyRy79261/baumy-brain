@@ -1,0 +1,4 @@
+{
+  "_instructions": "Human-authored queries for the retrieval ablation — the out-of-distribution channel. Add entries to `queries` in YOUR OWN phrasing (how you'd actually ask in the house chat). `relevant` = substrings of the seeded corpus content (see NOTES/FACTS in retrieval.ablation.test.ts) that count as a correct hit, most-important first. `family` groups the result (use an existing F1–F6 or invent one, e.g. F7-human). `expansions` = 1–2 paraphrases (or leave as empty array to test expansion-off realism). Then re-run: RUN_ABLATION=1 pnpm vitest run scripts/ablation",
+  "queries": []
+}

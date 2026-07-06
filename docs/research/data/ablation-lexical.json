@@ -1,0 +1,359 @@
+{
+  "embedder": "embedSync (lexical hash — test embedder)",
+  "k": 8,
+  "corpus": {
+    "notes": 20,
+    "facts": 8
+  },
+  "queries": {
+    "authored": 20,
+    "human": 0
+  },
+  "scores": [
+    {
+      "variant": "semantic-only (arm)",
+      "hitAt1": 0.5,
+      "hitAtK": 0.8,
+      "mrr": 0.621,
+      "perFamily": {
+        "F1-exact": {
+          "n": 4,
+          "hitAtK": 1
+        },
+        "F2-paraphrase": {
+          "n": 5,
+          "hitAtK": 0.6
+        },
+        "F3-multihop": {
+          "n": 3,
+          "hitAtK": 1
+        },
+        "F4-fact": {
+          "n": 3,
+          "hitAtK": 0.333
+        },
+        "F5-supersession": {
+          "n": 2,
+          "hitAtK": 1
+        },
+        "F6-colloquial": {
+          "n": 3,
+          "hitAtK": 1
+        }
+      },
+      "misses": [
+        {
+          "q": "when does our guest get here?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "who supplies our power now?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "who is zuzka?",
+          "family": "F4-fact"
+        },
+        {
+          "q": "what is miso?",
+          "family": "F4-fact"
+        }
+      ]
+    },
+    {
+      "variant": "lexical-only (arm)",
+      "hitAt1": 0.25,
+      "hitAtK": 0.25,
+      "mrr": 0.25,
+      "perFamily": {
+        "F1-exact": {
+          "n": 4,
+          "hitAtK": 1
+        },
+        "F2-paraphrase": {
+          "n": 5,
+          "hitAtK": 0
+        },
+        "F3-multihop": {
+          "n": 3,
+          "hitAtK": 0.333
+        },
+        "F4-fact": {
+          "n": 3,
+          "hitAtK": 0
+        },
+        "F5-supersession": {
+          "n": 2,
+          "hitAtK": 0
+        },
+        "F6-colloquial": {
+          "n": 3,
+          "hitAtK": 0
+        }
+      },
+      "misses": [
+        {
+          "q": "is the laundry machine out of order?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "when does our guest get here?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "who supplies our power now?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "where's the extra house key hidden?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "how late can we play music?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "where is charl's sister staying?",
+          "family": "F3-multihop"
+        },
+        {
+          "q": "who looks after miso?",
+          "family": "F3-multihop"
+        },
+        {
+          "q": "who is zuzka?",
+          "family": "F4-fact"
+        },
+        {
+          "q": "what is marta's job?",
+          "family": "F4-fact"
+        },
+        {
+          "q": "what is miso?",
+          "family": "F4-fact"
+        },
+        {
+          "q": "which day do the bins go out?",
+          "family": "F5-supersession"
+        },
+        {
+          "q": "is it paper bin this week?",
+          "family": "F5-supersession"
+        },
+        {
+          "q": "wat was that wifi pass again lol",
+          "family": "F6-colloquial"
+        },
+        {
+          "q": "bins tmrw??",
+          "family": "F6-colloquial"
+        },
+        {
+          "q": "who's got the landlords number",
+          "family": "F6-colloquial"
+        }
+      ]
+    },
+    {
+      "variant": "hybrid (prod shallow)",
+      "hitAt1": 0.55,
+      "hitAtK": 0.7,
+      "mrr": 0.574,
+      "perFamily": {
+        "F1-exact": {
+          "n": 4,
+          "hitAtK": 1
+        },
+        "F2-paraphrase": {
+          "n": 5,
+          "hitAtK": 0.4
+        },
+        "F3-multihop": {
+          "n": 3,
+          "hitAtK": 0.667
+        },
+        "F4-fact": {
+          "n": 3,
+          "hitAtK": 0.333
+        },
+        "F5-supersession": {
+          "n": 2,
+          "hitAtK": 1
+        },
+        "F6-colloquial": {
+          "n": 3,
+          "hitAtK": 1
+        }
+      },
+      "misses": [
+        {
+          "q": "when does our guest get here?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "who supplies our power now?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "how late can we play music?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "who looks after miso?",
+          "family": "F3-multihop"
+        },
+        {
+          "q": "who is zuzka?",
+          "family": "F4-fact"
+        },
+        {
+          "q": "what is miso?",
+          "family": "F4-fact"
+        }
+      ]
+    },
+    {
+      "variant": "hybrid+expansion (deep)",
+      "hitAt1": 0.35,
+      "hitAtK": 0.8,
+      "mrr": 0.479,
+      "perFamily": {
+        "F1-exact": {
+          "n": 4,
+          "hitAtK": 1
+        },
+        "F2-paraphrase": {
+          "n": 5,
+          "hitAtK": 0.6
+        },
+        "F3-multihop": {
+          "n": 3,
+          "hitAtK": 1
+        },
+        "F4-fact": {
+          "n": 3,
+          "hitAtK": 0.333
+        },
+        "F5-supersession": {
+          "n": 2,
+          "hitAtK": 1
+        },
+        "F6-colloquial": {
+          "n": 3,
+          "hitAtK": 1
+        }
+      },
+      "misses": [
+        {
+          "q": "when does our guest get here?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "how late can we play music?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "who is zuzka?",
+          "family": "F4-fact"
+        },
+        {
+          "q": "what is miso?",
+          "family": "F4-fact"
+        }
+      ]
+    },
+    {
+      "variant": "hybrid+facts (prod reply)",
+      "hitAt1": 0.65,
+      "hitAtK": 0.8,
+      "mrr": 0.69,
+      "perFamily": {
+        "F1-exact": {
+          "n": 4,
+          "hitAtK": 1
+        },
+        "F2-paraphrase": {
+          "n": 5,
+          "hitAtK": 0.4
+        },
+        "F3-multihop": {
+          "n": 3,
+          "hitAtK": 0.667
+        },
+        "F4-fact": {
+          "n": 3,
+          "hitAtK": 1
+        },
+        "F5-supersession": {
+          "n": 2,
+          "hitAtK": 1
+        },
+        "F6-colloquial": {
+          "n": 3,
+          "hitAtK": 1
+        }
+      },
+      "misses": [
+        {
+          "q": "when does our guest get here?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "who supplies our power now?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "how late can we play music?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "who looks after miso?",
+          "family": "F3-multihop"
+        }
+      ]
+    },
+    {
+      "variant": "hybrid+facts+graph (prod deep reply)",
+      "hitAt1": 0.55,
+      "hitAtK": 0.9,
+      "mrr": 0.665,
+      "perFamily": {
+        "F1-exact": {
+          "n": 4,
+          "hitAtK": 1
+        },
+        "F2-paraphrase": {
+          "n": 5,
+          "hitAtK": 0.6
+        },
+        "F3-multihop": {
+          "n": 3,
+          "hitAtK": 1
+        },
+        "F4-fact": {
+          "n": 3,
+          "hitAtK": 1
+        },
+        "F5-supersession": {
+          "n": 2,
+          "hitAtK": 1
+        },
+        "F6-colloquial": {
+          "n": 3,
+          "hitAtK": 1
+        }
+      },
+      "misses": [
+        {
+          "q": "when does our guest get here?",
+          "family": "F2-paraphrase"
+        },
+        {
+          "q": "how late can we play music?",
+          "family": "F2-paraphrase"
+        }
+      ]
+    }
+  ],
+  "generatedAt": "2026-07-06T09:21:49.694Z"
+}

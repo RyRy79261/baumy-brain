@@ -68,7 +68,12 @@ passes (and later sessions) read from the record, not from conversation memory.
 
 | **4 — Alternative-theorem** | Treat corpus as incumbent; blind-re-derive; hunt for a *competing* theorem, re-anchored to the conversational objective | Fable generate / Opus score | ✅ done | [**`04`**](04-alternative-theorems.md) · [`04a`](04a-replication-convergence.md) · [`04b`](04b-alternative-critic.md) · [appendix](appendix/pass4/) |
 | **5 — Methodology audit** | Review the *process*, not the content: anti-patterns, gaps, fitness as a reusable base | Fable lenses / Opus adjudicate | ✅ done | [**`05`**](05-methodology-review.md) · [`05a`](05a-methodology-remediation.md) · [`05b`](05b-methodology-metacritic.md) · [appendix](appendix/pass5/) |
-| **Phase two** | Implementation, once the baseline stabilizes | — | not started | — |
+| **6 — Empirical ablation** | The first data contact: run the *real* retrieval pipeline over a house corpus + labeled queries | real code (PGlite) | ✅ done | [**`06`**](06-empirical-ablation.md) · harness `scripts/ablation/` · data `data/` |
+| **Phase two** | Implementation, once the baseline stabilizes | — | not started (see [`HUMAN-REVIEW.md`](HUMAN-REVIEW.md)) | — |
+
+**👤 [`HUMAN-REVIEW.md`](HUMAN-REVIEW.md)** — the out-of-distribution check only a human can do (is it
+signal or a fluent echo?), the secretary-vs-companion decision that gates phase two, and a 5-minute way
+to perturb the empirical loop with your own queries. Start there when you're reviewing rather than reading.
 
 **➡️ [`refined-baseline.md`](refined-baseline.md)** is the framework-audited map (bedrock vs relative);
 **[`04-alternative-theorems.md`](04-alternative-theorems.md)** is the alternative-frame synthesis for the
