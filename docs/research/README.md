@@ -10,14 +10,43 @@ knowledge graph that should degrade gracefully over time). This directory is the
 > stress-tested, and framework-audited. Read it as "what the field can and cannot support," not "what to
 > build." Implementation ("phase two") comes only after this stabilizes.
 
-## Scope discipline (why this is trustworthy-ish)
+## ⚠️ Methodological status — read before inheriting anything here
 
-- **Adversarial by construction.** Every claim is steelmanned *and* red-teamed; every verdict is
-  independently verified; every dismissal and acceptance is re-litigated for hidden bias.
+A Pass-5 methodology audit ([`05-methodology-review.md`](05-methodology-review.md)) rated this program
+**"a durable *hypothesis map*, not a verified base model — recoverable, not yet safe to inherit as-is."**
+Four disclosures govern every claim below:
+
+- **U1 — Single-vendor monoculture.** *Every* agent across all passes is one vendor's model (Claude
+  Fable 5 / Opus 4.8). "Steelman vs red-team", "independent verification", "blind re-derivation", and
+  "N/N converged" are all the **same training distribution re-prompted** — so agreement measures one
+  model's internal consistency, **not correspondence to reality**. This is structural and *not fixable*
+  within the model-family constraint; it can only be disclosed. **N-agent agreement ≠ field consensus.**
+- **U2 — No empirical contact.** No transcripts, benchmark runs, ablations, or falsifiable predictions
+  were executed. It is theory-vs-theory throughout. Where the headlines below say "survived every pass",
+  read *"survived Claude red-teaming Claude"* — **not** validated against data.
+- **U3 — No preregistration.** The topics, the 14 frameworks, the 10 theorems, the schemas, and the
+  Pass-4 objective were all authored *after* seeing prior results by one orchestrator (garden of forking
+  paths). The frame that decides "what counts as a finding" was tuned to the findings.
+- **U4 — Recursive self-audit.** The Pass-5 audit is itself Claude auditing Claude's research; it
+  discounts *itself* by the same amount. The only exit it names is **one out-of-distribution reviewer
+  (a human, or a non-Claude model) at one choke point** — starting by checking that provenance claim.
+
+Treat this corpus as a **rigorous starting *question* set, not a settled *answer* set.** Verdicts that are
+**structural/checkable** (provenance, citation catches) are trustworthy; **interpretive** verdicts
+("robust", "better", "bedrock") carry an unbounded, unmeasured miss rate.
+
+## Scope discipline (what the machinery actually is)
+
+- **Adversarial by construction — within one distribution.** Every claim is steelmanned *and* red-teamed
+  and re-litigated for bias; this catches internal inconsistency and reliably surfaces overreach, but it
+  is *self*-checking, not *independent* verification (see U1). It produced real deflations, not a rubber
+  stamp — but it cannot certify correspondence to reality.
 - **Citations are checked, not asserted.** Fabricated venues and misattributions were caught and logged
-  (see the gate ruling); treat any remaining "2025/2026 venue" label as a preprint unless verified.
-- **Framework-relativity is made explicit.** A late pass specifically hunts for the failure mode where,
-  by tacitly adopting one philosophy of memory, we over-weight it and under-credit its rivals.
+  (see the gate ruling) — the *one* place monoculture doesn't bite, since facts are checked against
+  external sources. The caught-count is a floor, not a calibrated recall (no known-fakes were injected).
+- **Framework-relativity is made explicit.** A pass hunts the failure mode where, by tacitly adopting one
+  philosophy of memory, we over-weight it and under-credit rivals (Pass 3) — though the audit notes the
+  scaffold vocabulary itself stays theory-laden.
 
 ## Method & model policy
 
@@ -38,6 +67,7 @@ passes (and later sessions) read from the record, not from conversation memory.
 | **Phase two** | Implementation, once the baseline stabilizes | — | not started | — |
 
 | **4 — Alternative-theorem** | Treat corpus as incumbent; blind-re-derive; hunt for a *competing* theorem, re-anchored to the conversational objective | Fable generate / Opus score | ✅ done | [**`04`**](04-alternative-theorems.md) · [`04a`](04a-replication-convergence.md) · [`04b`](04b-alternative-critic.md) · [appendix](appendix/pass4/) |
+| **5 — Methodology audit** | Review the *process*, not the content: anti-patterns, gaps, fitness as a reusable base | Fable lenses / Opus adjudicate | ✅ done | [**`05`**](05-methodology-review.md) · [`05a`](05a-methodology-remediation.md) · [`05b`](05b-methodology-metacritic.md) · [appendix](appendix/pass5/) |
 | **Phase two** | Implementation, once the baseline stabilizes | — | not started | — |
 
 **➡️ [`refined-baseline.md`](refined-baseline.md)** is the framework-audited map (bedrock vs relative);
@@ -117,12 +147,13 @@ walls itself out of it, and Baumy's "deterministic code disposes" rule is *re-ju
   reasoning ("that reminds me…"), contextual-integrity for a *multiparty* group, and any observational data on
   whether the incumbent actually *sounds* robotic. See `04b-alternative-critic.md`.
 
-## Headline findings so far (empirical core — survived every pass)
+## Headline findings so far (the claims that survived our adversarial review — *not* validated against data; see U2)
 
-- **Empirical bedrock survived every attack** — carried by *data*, not analogy: the lesion double
-  dissociations (memory is plural); accessibility ≠ availability; the spacing/testing effects; the
-  parametric-editing "ripple problem"; AI's genuinely missing principled *decay* of stale-but-
-  uncontradicted facts; and the writable-memory attack surface.
+- **The most attack-resistant claims** — the ones that held under Claude red-teaming Claude across every
+  pass because they rest on *widely-replicated* results the models could not talk down (NOT because *this
+  process* tested them against data): the lesion double dissociations (memory is plural); accessibility ≠
+  availability; the spacing/testing effects; the parametric-editing "ripple problem"; AI's apparent
+  missing principled *decay* of stale-but-uncontradicted facts; and the writable-memory attack surface.
 - **The "grand convergence" narrative was deflated** to *"shared ancestry + useful borrowing."* Much of
   the AI/cognitive/neuro overlap is a scheme AI *imported* (CoALA, HippoRAG, EWC), not independent
   rediscovery — so it can't be sold as cross-field corroboration. (Pass-2 nuance: the *lesion-
@@ -146,7 +177,8 @@ walls itself out of it, and Baumy's "deterministic code disposes" rule is *re-ju
 
 ## Provenance
 
-Runs: Pass 0 (19 agents), Pass 1 (26), Pass 2 (26), Pass 3 (26), Pass 4 (32; 1 agent failed on a structured-
-output retry cap). ~5.7M subagent tokens across five passes. Conducted 2026-07-05 → 2026-07-06. Findings are model-generated and
+Runs: Pass 0 (19 agents), Pass 1 (26), Pass 2 (26), Pass 3 (26), Pass 4 (32; 1 failed on a retry cap),
+Pass 5 methodology audit (12). ~6.5M subagent tokens across six passes. Conducted 2026-07-05 → 2026-07-06.
+Findings are model-generated and
 adversarially cross-checked; they are a research aid, not ground truth. Model policy: Fable 5 for opaque
 generation + the verification gate; Opus 4.8 for bounded adjudication.
