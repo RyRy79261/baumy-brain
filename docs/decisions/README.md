@@ -10,3 +10,4 @@ idea inline; these are for decisions that warrant a standalone rationale.
 | # | Decision | Status |
 |---|---|---|
 | [0001](0001-agent-os-and-hermes.md) | Why not Agent OS + Hermes (dev framework + open-weights model) | Accepted (2026-07-06) |
+| [0002](0002-postgres-not-markdown-vault.md) | Why the knowledge graph lives in Postgres, not an Obsidian/markdown vault | Accepted (2026-07-06) |
