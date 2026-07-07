@@ -18,7 +18,9 @@ cause a privileged effect. Preserve this in every change.
   classify = Haiku (routing/triage ONLY); reply = assess = Sonnet (all reasoning + memory
   ops); advisor = Opus. The reply path self-escalates Sonnet→Opus when it signals it needs
   more; the other Sonnet ops (extract/expand/rerank/reflect/forget) are fixed-tier.
-  **Do not add another language-model vendor.**
+  **Do not add another language-model vendor.** (Rationale + when to revisit — incl. why not an
+  open-weights model like Hermes, and why not the Agent OS dev framework — in
+  `docs/decisions/0001-agent-os-and-hermes.md`.)
 - **Embeddings = Voyage `voyage-3.5-lite`** (512-dim), a plain fetch in `lib/ai/embed.ts` (needs
   `VOYAGE_API_KEY`). Anthropic ships no embedding model, so Voyage is the one deliberate exception
   to "Anthropic only" — not OpenAI. `embedSync` (a deterministic lexical hash) is a **tests/
