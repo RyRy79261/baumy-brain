@@ -30,6 +30,11 @@ export const extractedFacts = z.object({
       // the default and makes NO graph edge; a concrete entity kind makes the object
       // a real node + relationship EDGE (memory v2 §4). Precision-first.
       objectKind: z.enum(['person', 'place', 'org', 'event', 'thing', 'value']).optional(),
+      // The time phrase VERBATIM when this fact is about something HAPPENING at a specific
+      // time (a guest arriving/staying, a dated event, a deadline) — resolved to an absolute
+      // event_at at CAPTURE time (when "tomorrow" is still unambiguous) so a proactive heads-up
+      // can be scheduled. Empty/absent for timeless facts. See docs/spec/event-surfacing.md.
+      whenText: z.string().optional(),
     }),
   ),
 })

@@ -152,7 +152,17 @@ async function resolveEntityId(db: Database, groupId: string, name: string, kind
 // to overwrite a higher-trust one).
 export async function reconcileFact(
   db: Database,
-  input: { groupId: string; fact: ExtractedFact; authoredBy: string | null; trustLevel: Trust; neverSecret?: boolean; memoryItemId?: string | null },
+  input: {
+    groupId: string
+    fact: ExtractedFact
+    authoredBy: string | null
+    trustLevel: Trust
+    neverSecret?: boolean
+    memoryItemId?: string | null
+    // Absolute event time, resolved by the CALLER from the fact's time phrase at capture (when
+    // relative words like "tomorrow" are unambiguous). Drives the proactive event-surfacing scan.
+    eventAt?: Date | null
+  },
 ): Promise<ReconcileResult> {
   // Quarantined (forwarded/bot) content NEVER becomes a fact (injection wall #7).
   if (input.trustLevel === 'quarantined') return 'rejected'
@@ -193,6 +203,8 @@ export async function reconcileFact(
     isCurrent: true,
     // Provenance: the evidence note this fact was distilled from (with authoredBy = who).
     sourceMemoryItemId: input.memoryItemId ?? null,
+    // Absolute event time (nullable) — the queryable anchor the event-surfacing scan reads.
+    eventAt: input.eventAt ?? null,
   }
 
   const [existing] = await db
@@ -244,6 +256,35 @@ export async function reconcileFact(
   const [inserted] = await db.insert(facts).values({ ...newValues, derivedFromFactId: existing.id }).returning({ id: facts.id })
   await db.update(facts).set({ supersededBy: inserted.id }).where(eq(facts.id, existing.id))
   return 'update'
+}
+
+// Current dated facts in a time window — the input to the proactive event-surfacing scan
+// (docs/spec/event-surfacing.md). Group-scoped, current-only, and SECRET-EXCLUDED (a heads-up
+// must never surface an encrypted value — bank/door/wifi facts stay out of the group). Returns
+// the subject + predicate + the resolved event_at; the scan renders the heads-up from those.
+export interface DatedFact {
+  id: string
+  subject: string
+  predicate: string
+  eventAt: Date
+}
+
+export async function upcomingDatedFacts(db: Database, groupId: string, from: Date, to: Date): Promise<DatedFact[]> {
+  const res = await db.execute(sql`
+    SELECT f.id, e.canonical_name AS subject, f.predicate, f.event_at AS "eventAt"
+    FROM baumy_facts f
+    JOIN baumy_entities e ON f.subject_entity_id = e.id
+    WHERE f.group_id = ${groupId} AND f.is_current = true AND f.is_secure = false
+      AND f.event_at IS NOT NULL
+      AND f.event_at >= ${from.toISOString()} AND f.event_at <= ${to.toISOString()}
+    ORDER BY f.event_at ASC`)
+  const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
+  return rows.map((r) => ({
+    id: String(r.id),
+    subject: String(r.subject),
+    predicate: String(r.predicate),
+    eventAt: new Date(r.eventAt as string),
+  }))
 }
 
 // Tag an evidence item with the PERSON it is ABOUT (memory v2 §3), so sentiment/notes
