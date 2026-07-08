@@ -7,6 +7,7 @@ export const ACTIONS = [
   'capture', // write to memory
   'answer', // retrieval-grounded reply into the house group
   'create_reminder',
+  'mutate_list', // add / check off a house shopping-list item (low-privilege, capture/reminder tier)
   'reduce_response_policy', // safe-direction self-config (mute / quiet only)
   'set_response_policy', // full response-policy config (owner)
   'grant_dashboard',
@@ -16,12 +17,13 @@ export type Action = (typeof ACTIONS)[number]
 
 export function allowedActions(o: Origin): Action[] {
   if (o.lane === 'ignore') return []
-  // House lane — the injection wall. Capture + answer + reminders only (a reminder
-  // fires only into the fixed house group, so it's safe-by-construction). No config, no admin.
-  if (o.lane === 'house') return ['capture', 'answer', 'create_reminder']
+  // House lane — the injection wall. Capture + answer + reminders + list ops only (a reminder
+  // fires only into the fixed house group, and a list op only mutates the house's own scoped
+  // shopping list — both safe-by-construction, reversible, low-privilege). No config, no admin.
+  if (o.lane === 'house') return ['capture', 'answer', 'create_reminder', 'mutate_list']
 
   // Member-DM lane — house-management.
-  const base: Action[] = ['capture', 'answer', 'create_reminder', 'reduce_response_policy']
+  const base: Action[] = ['capture', 'answer', 'create_reminder', 'mutate_list', 'reduce_response_policy']
   if (o.source === 'owner') {
     return [...base, 'set_response_policy', 'grant_dashboard', 'admin']
   }

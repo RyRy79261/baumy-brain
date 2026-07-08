@@ -11,6 +11,7 @@ const gen = vi.fn(async (_args?: unknown) => ({
     reaction: '👍',
     tier: 'quick',
     webSearch: false,
+    list: 'none',
   },
 }))
 vi.mock('ai', async (importOriginal) => {

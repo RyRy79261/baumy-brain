@@ -81,9 +81,11 @@ describe('resolveOrigin', () => {
 })
 
 describe('allowedActions — the action↔origin policy', () => {
-  it('house lane = capture/answer/reminder only, never scheduled-task/config/admin', () => {
+  it('house lane = capture/answer/reminder/list only, never scheduled-task/config/admin', () => {
     const acts = allowedActions(resolveOrigin(houseMsg(100, 'x'), roster))
-    expect(acts).toEqual(['capture', 'answer', 'create_reminder'])
+    // low-privilege, safe-by-construction house actions (list ops mutate only the house's own
+    // scoped shopping list, reversibly) — but never config/admin/scheduled-task.
+    expect(acts).toEqual(['capture', 'answer', 'create_reminder', 'mutate_list'])
     expect(acts).not.toContain('create_scheduled_task')
     expect(acts).not.toContain('set_response_policy')
     expect(acts).not.toContain('admin')

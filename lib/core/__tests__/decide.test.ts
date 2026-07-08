@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { resolveOriginParts, type Roster } from '@/lib/core/origin'
-import { decide, shouldCapture, type Verdict } from '@/lib/core/decide'
+import { decide, shouldCapture, listOpProposed, type Verdict } from '@/lib/core/decide'
 
 const HOUSE = '-1001234567890'
 beforeAll(() => {
@@ -68,6 +68,37 @@ describe('shouldCapture — remembering is orthogonal to the action', () => {
     expect(shouldCapture(houseOrigin(), V({ worthRemembering: true, confidence: 0.2 }))).toBe(false)
     const ignored = resolveOriginParts({ chatId: '-999', fromId: 5, text: 'x', isPrivate: false }, roster)
     expect(shouldCapture(ignored, V({ worthRemembering: true }))).toBe(false)
+  })
+})
+
+describe('listOpProposed — shopping-list op gate (low-privilege, lane-scoped)', () => {
+  const quarantined = () =>
+    resolveOriginParts({ chatId: HOUSE, fromId: 100, text: 'x', isPrivate: false, isForwarded: true }, roster)
+  const ignored = () => resolveOriginParts({ chatId: '-999', fromId: 5, text: 'x', isPrivate: false }, roster)
+
+  it('a house-group list op is allowed while the bot is enabled', () => {
+    expect(listOpProposed(houseOrigin(), 'add', true, 'capture')).toBe(true)
+    expect(listOpProposed(houseOrigin(), 'checkoff', true, 'drop')).toBe(true)
+    expect(listOpProposed(houseOrigin(), 'query', true, 'reply')).toBe(true) // a list query IS a question → still handled
+  })
+  it('a PAUSED house goes silent, but a member DM still works (pause is lane-scoped)', () => {
+    expect(listOpProposed(houseOrigin(), 'add', false, 'capture')).toBe(false) // paused group → no list op
+    expect(listOpProposed(memberDm(), 'add', false, 'capture')).toBe(true) // DM bypasses pause
+  })
+  it('an explicit reminder/forget WINS — the list op never preempts it', () => {
+    // "remind us to buy bin bags friday" is BOTH intent=reminder and list=add; the reminder is
+    // the stated ask, so the list op must yield or the reminder would be silently dropped.
+    expect(listOpProposed(houseOrigin(), 'add', true, 'reminder')).toBe(false)
+    expect(listOpProposed(memberDm(), 'add', true, 'reminder')).toBe(false)
+    expect(listOpProposed(houseOrigin(), 'add', true, 'forget')).toBe(false)
+  })
+  it('quarantined (forwarded/bot) content can NEVER mutate the list', () => {
+    expect(listOpProposed(quarantined(), 'add', true, 'capture')).toBe(false)
+    expect(listOpProposed(quarantined(), 'checkoff', true, 'capture')).toBe(false)
+  })
+  it("'none' and an ignored origin never propose a list op", () => {
+    expect(listOpProposed(houseOrigin(), 'none', true, 'capture')).toBe(false)
+    expect(listOpProposed(ignored(), 'add', true, 'capture')).toBe(false)
   })
 })
 

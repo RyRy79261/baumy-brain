@@ -67,6 +67,11 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   houseChatId)` — derived from the authenticated lane, NEVER the inbound `chatId` — while the
   reply **destination** stays `origin.chatId`. Keep scope/destination/identity distinct. DM
   answers **bypass `/pause`** (lane-scoped: house + reminders still honor it).
+- **Shopping list (`docs/spec/shopping-list.md`, `lib/lists/*`, `baumy_list_items`):** rides the
+  same scope seam — a member DMs "buy milk" / "got the milk" / "what's on the list?" and it writes
+  THROUGH to the house's group-scoped list. Classifier `list` flag proposes → `listOpProposed`
+  (quarantine-excluded, pause lane-scoped) + the store dispose. First-class stateful table (crosses
+  the memory-core "graduation rule"), not a fact; auto-commits (capture tier), never confirm-gated.
 - **Two human-authorization walls (don't conflate them):** (1) the **confirm-tap wall** —
   `callback_query` from a member's authenticated `from.id` (`lib/confirm/*`,
   `functions/callback.ts`) gates **memory deletion / "forget"** (the only chat-initiated
@@ -75,9 +80,10 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   is removed until the tap. (2) the **dashboard-authz wall** — grants + response-policy/config
   changes commit via authenticated **owner/admin dashboard** server actions
   (`lib/auth/require-admin.ts` `requireAdmin`/`requireOwner`, re-checked live), **not** a
-  Telegram tap. **Reminders are exempt from both — they auto-commit** (`ingest.ts` reminder
-  step): a reminder only posts text to the fixed house group, so there's nothing to escalate.
-  Do not re-add a confirm step to them.
+  Telegram tap. **Reminders and shopping-list add/check-off are exempt from both — they
+  auto-commit** (`ingest.ts` reminder step + `list` step): a reminder only posts text to the fixed
+  house group, and a list op only mutates the house's own group-scoped list (reversible,
+  low-privilege). Both are the capture tier. Do not re-add a confirm step to either.
 - **Fixed send destination:** `sendToHouse` targets a **code-resolved** chat id only. Replies
   are a **two-target allow-list** — the house group, or the authenticated DM sender's own chat
   (`origin.chatId`); reminders/digests → the fixed house group. The LLM never picks a recipient.

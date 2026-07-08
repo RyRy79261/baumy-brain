@@ -47,3 +47,28 @@ export function shouldCapture(origin: Origin, v: Verdict, th: Thresholds = DEFAU
   if (origin.lane === 'ignore') return false
   return v.worthRemembering && isAllowed(origin, 'capture') && clampConfidence(v.confidence) >= th.capture
 }
+
+// A shopping-list op (add / check off / query) is a LOW-PRIVILEGE, group-scoped, reversible
+// mutation — the capture/reminder tier, NOT the confirm-tap tier (docs/spec/shopping-list.md).
+// The classifier PROPOSES the op flag; this disposes whether to act: quarantined (forwarded/bot)
+// content can never mutate a list, and a paused GROUP goes silent while a member DM still works
+// (pause is lane-scoped, mirroring the DM answer bypass). The caller additionally checks the house
+// SCOPE is non-empty (needs houseChatId).
+//
+// The list op runs on its OWN flag (orthogonal to capture), but it must YIELD to an explicit
+// reminder/forget Decision: "remind us to buy bin bags friday" is BOTH intent=reminder and
+// list=add, and the reminder is the stated ask — so a list op never preempts it. A list QUERY is
+// a question (Decision 'reply'), which we do NOT skip, so "what's on the list?" still renders it.
+export function listOpProposed(
+  origin: Origin,
+  listFlag: 'add' | 'checkoff' | 'query' | 'none',
+  policyEnabled: boolean,
+  decision: Decision,
+): boolean {
+  if (origin.lane === 'ignore') return false
+  if (listFlag === 'none') return false
+  if (decision === 'reminder' || decision === 'forget') return false // explicit action wins
+  if (origin.memoryTrust === 'quarantined') return false
+  if (!isAllowed(origin, 'mutate_list')) return false
+  return origin.lane === 'member_dm' || policyEnabled
+}

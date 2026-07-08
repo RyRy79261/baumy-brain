@@ -37,6 +37,10 @@ type Events = {
   'telegram/chat_member': { data: { updateId: number; raw: unknown } }
 }
 
+// The inbound Telegram message payload — exported so the ingest handler can be invoked
+// directly in a test with a synthetic event (end-to-end wiring coverage).
+export type TelegramMessageData = Events['telegram/message.received']['data']
+
 export const inngest = new Inngest({
   id: 'baumy',
   schemas: new EventSchemas().fromRecord<Events>(),

@@ -71,6 +71,13 @@
       "when": 1783277594783,
       "tag": "0009_stiff_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783445836571,
+      "tag": "0010_purple_shockwave",
+      "breakpoints": true
     }
   ]
 }

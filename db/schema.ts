@@ -281,6 +281,39 @@ export const scheduledTasks = pgTable(
   (t) => [index('baumy_scheduled_tasks_active_idx').on(t.isActive, t.nextRunAt)],
 )
 
+// First-class house shopping list (docs/spec/shopping-list.md). Crosses the memory-core
+// "graduation rule" (memory-core.md #10): a shopping list needs current-state + uniqueness +
+// mutation (add / check off / query), which fuzzy fact-memory can't give — so it earns a real
+// table. Group-scoped like every house-data table; a member DM writes THROUGH to the house list
+// (scope = houseScopeForOrigin, never the inbound chat). `list_name` is a resilience seam — one
+// 'shopping' list today; a 'todo'/'guests' list later needs no migration. Auto-commit tier (like
+// reminders/capture): the LLM proposes items, deterministic code disposes; NOT confirm-gated.
+export const listItems = pgTable(
+  'baumy_list_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    groupId: text('group_id')
+      .notNull()
+      .references(() => telegramChats.chatId),
+    listName: text('list_name').notNull().default('shopping'), // resilience seam (one list today)
+    item: text('item').notNull(), // display text, verbatim ("oat milk")
+    itemNormalized: text('item_normalized').notNull(), // lower(trim) dedupe key — precision-first, code-computed
+    addedBy: text('added_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
+    checkedBy: text('checked_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
+    checkedAt: timestamp('checked_at', { withTimezone: true }), // null = still open (unbought)
+    isActive: boolean('is_active').notNull().default(true), // soft-remove (never hard delete)
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('baumy_list_items_group_open_idx').on(t.groupId, t.isActive),
+    // ONE open copy of an item per house list — a re-add while it's already open is a no-op;
+    // checking it off (checked_at set) drops it out of the predicate, so a later re-add is allowed.
+    uniqueIndex('baumy_list_items_open_uq')
+      .on(t.groupId, t.listName, t.itemNormalized)
+      .where(sql`${t.isActive} AND ${t.checkedAt} IS NULL`),
+  ],
+)
+
 // ── Operability ──────────────────────────────────────────────────
 
 // reserved / not yet written — prompt registry for future prompt versioning; nothing writes it yet.

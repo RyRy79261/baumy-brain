@@ -17,6 +17,10 @@ export const classifierVerdict = z.object({
   tier: z.enum(['quick', 'think', 'deep']),
   // True ONLY when the member explicitly asks to look something up online / search the web.
   webSearch: z.boolean(),
+  // Shopping-list routing (docs/spec/shopping-list.md). Routing ONLY — the concrete items are
+  // pulled later by extractListOp (Sonnet). 'none' unless the message is clearly a list add /
+  // check-off / query. The disposition is deterministic + lane-gated (injection wall).
+  list: z.enum(['add', 'checkoff', 'query', 'none']),
 })
 export type ClassifierVerdict = z.infer<typeof classifierVerdict>
 
@@ -32,6 +36,7 @@ const SAFE_VERDICT: ClassifierVerdict = {
   reaction: null,
   tier: 'quick',
   webSearch: false,
+  list: 'none',
 }
 
 export async function classify(

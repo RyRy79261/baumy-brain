@@ -1,8 +1,8 @@
-import { inngest } from '@/lib/inngest/client'
+import { inngest, type TelegramMessageData } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { telegramUpdates } from '@/db/schema'
 import { resolveOriginParts } from '@/lib/core/origin'
-import { decide, shouldCapture } from '@/lib/core/decide'
+import { decide, shouldCapture, listOpProposed } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
 import { captureMemory, claimReply, releaseReply, ensureRegistered } from '@/lib/memory/write'
@@ -16,6 +16,9 @@ import { expandQuery } from '@/lib/ai/expand'
 import { rerank } from '@/lib/ai/rerank'
 import { extractReminder } from '@/lib/ai/reminder-extract'
 import { extractForget } from '@/lib/ai/forget-extract'
+import { extractListOp } from '@/lib/ai/list-extract'
+import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
+import { addAck, checkoffAck, renderList } from '@/lib/lists/format'
 import { findMemoryToForget, type ForgetMode } from '@/lib/memory/forget'
 import { enrichIssue, formatIssueBody } from '@/lib/ai/issue-enrich'
 import { issuesConfigured, labelsFor } from '@/lib/github/issues'
@@ -33,12 +36,16 @@ import { loadResponsePolicy, replyAllowed } from '@/lib/policy'
 import { isDirectedAtBaumy } from '@/lib/pipeline/directed'
 import { sendToHouse, sendConfirmCard, getBotUsername, reactToMessage } from '@/lib/telegram/client'
 
+// A minimal structural view of the Inngest step tools — the handler only uses step.run.
+// Typed generically so every step.run<T> call site keeps its inferred return type.
+type IngestStep = { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> }
+
 // The reactive ingest pipeline (architecture D10): record-inbound → pre-filter →
 // origin (real roster) → member-DM commands OR classify → write-gate → act.
-export const handleTelegramMessage = inngest.createFunction(
-  { id: 'handle-telegram-message', retries: 3 },
-  { event: 'telegram/message.received' },
-  async ({ event, step }) => {
+// Exported as a plain function so a test can drive the WHOLE handler with a fake step and a
+// synthetic event — proving the routing/wiring end-to-end, not just the seams. The Inngest
+// wrapper below only forwards its context.
+export async function runIngest(event: { data: TelegramMessageData }, step: IngestStep) {
     const { updateId, messageId, chatId, fromId, text, chatType, isBot, isForwarded, replyToBot } = event.data
     // Prefer the human name (first[+last]); fall back to @username. Backfills members
     // that were only ever seen as a raw id (so Baumy can attribute a name, not digits).
@@ -184,6 +191,81 @@ export const handleTelegramMessage = inngest.createFunction(
         }
         return learned
       })) as boolean
+    }
+
+    // House shopping list (docs/spec/shopping-list.md): a member adds items / checks them off /
+    // asks what's on the list — primarily from a DM, so they don't have to pollute the group.
+    // AUTO-COMMIT, low-privilege (capture/reminder tier, NOT confirm-gated): the classifier FLAGS
+    // the op, the extractor NAMES the items, deterministic code DISPOSES against the group-scoped
+    // table (scope = houseScope from the lane, attribution = authenticated fromId, quarantine
+    // excluded by listOpProposed). Runs AFTER capture (a co-mentioned durable fact is still
+    // learned above) and RETURNS when it handles the message, so a list op never also trips the
+    // generic reply/ack below. The MUTATION is one memoized step (exactly-once); a WORDS ack then
+    // sends through the same claim-and-release belt as a reply (exactly-once, retry-safe).
+    if (houseScope && listOpProposed(origin, verdict.list, policy.global_enabled, decision)) {
+      // The MUTATION is ONE memoized step, and its RETURNING-derived result (added / already /
+      // checked-off / not-found) is captured HERE — so a later fallible read can never recompute
+      // it against already-mutated state and lie ("already there" / "couldn't find it"). The
+      // neon-http driver autocommits per statement, so the write lands the instant it runs.
+      type ListMutation =
+        | { handled: false }
+        | { handled: true; op: 'query' }
+        | { handled: true; op: 'add'; dm: boolean; added: string[]; already: string[] }
+        | { handled: true; op: 'checkoff'; dm: boolean; checkedOff: string[]; notFound: string[] }
+      const mut: ListMutation = await step.run('list', async (): Promise<ListMutation> => {
+        const db = createHttpDb()
+        const ex = await extractListOp(text ?? '')
+        if (ex.op === 'none') return { handled: false } // classifier over-flagged → fall through
+        if ((ex.op === 'add' || ex.op === 'checkoff') && ex.items.length === 0) return { handled: false }
+        // Destination belt: exactly the two TRANSPORT-authenticated targets — the house group, or
+        // the authenticated DM sender's own chat. Never a free/LLM id (injection wall I2).
+        const isHouseReply = origin.lane === 'house' && chatId === houseChatId
+        const isDmReply = origin.lane === 'member_dm' && fromId != null && roster.isMember(fromId) && chatId === origin.chatId
+        if (!isHouseReply && !isDmReply) return { handled: false }
+        // Attribution = the AUTHENTICATED sender, never a name in the text (quarantine already
+        // excluded by the gate; keep the null-safety in lockstep with the capture step).
+        const actor = origin.memoryTrust === 'quarantined' || fromId == null ? null : String(fromId)
+        const dm = origin.lane === 'member_dm'
+        if (ex.op === 'query') return { handled: true, op: 'query' }
+        if (ex.op === 'add') {
+          const res = await addListItems(db, { groupId: houseScope, items: ex.items, addedBy: actor })
+          return { handled: true, op: 'add', dm, added: res.added, already: res.already }
+        }
+        const res = await checkOffItems(db, { groupId: houseScope, items: ex.items, checkedBy: actor })
+        return { handled: true, op: 'checkoff', dm, checkedOff: res.checkedOff, notFound: res.notFound }
+      })
+
+      if (mut.handled) {
+        // Group add/check-off → a quiet reaction (don't add to the scroll — the point of the DM
+        // lane). Idempotent, and the mutation memoized above, so a retry never re-mutates.
+        // 🧠 = learned what to buy; 👍 = got it / done.
+        if ((mut.op === 'add' || mut.op === 'checkoff') && !mut.dm) {
+          await reactToMessage(chatId, messageId, mut.op === 'add' ? '🧠' : '👍')
+        } else {
+          // WORDS (a query either lane, or a DM add/check-off): render the current list + ack and
+          // send exactly-once. currentList is an IDEMPOTENT read — if it or the send throws, only
+          // THIS step re-runs; the memoized mutation is never recomputed, so the ack stays true.
+          // Claim/send/release-on-error mirrors the reply path (one send per inbound).
+          await step.run('list-send', async () => {
+            const db = createHttpDb()
+            if (!(await claimReply(db, updateId))) return
+            try {
+              const items = (await currentList(db, houseScope)).map((r) => r.item)
+              const out =
+                mut.op === 'query'
+                  ? renderList(items)
+                  : mut.op === 'add'
+                    ? addAck(mut.added, mut.already, items.length)
+                    : checkoffAck(mut.checkedOff, mut.notFound, items)
+              await sendToHouse(chatId, out)
+            } catch (err) {
+              await releaseReply(db, updateId).catch(() => {})
+              throw err
+            }
+          })
+        }
+        return { updateId, decision: 'list' as const, source: origin.source }
+      }
     }
 
     // Reminder: AUTO-COMMIT the ACTION (no click-to-confirm — safe, a reminder only
@@ -423,5 +505,10 @@ export const handleTelegramMessage = inngest.createFunction(
     }
 
     return { updateId, decision, directed, respond: verdict.respond, reminderSet, source: origin.source }
-  },
+}
+
+export const handleTelegramMessage = inngest.createFunction(
+  { id: 'handle-telegram-message', retries: 3 },
+  { event: 'telegram/message.received' },
+  ({ event, step }) => runIngest(event, step as unknown as IngestStep),
 )
