@@ -7,6 +7,12 @@ import { sendToHouse } from '@/lib/telegram/client'
 
 const ARM_WINDOW_DAYS = 6 // Inngest Free caps a single sleep at 7 days
 
+// Delivery framing: an explicit "remind me" reminder posts as ⏰; a proactive event-surfacing
+// heads-up (anchor_kind='event_offset', docs/spec/event-surfacing.md) posts as 🗓️ so it reads as
+// advance notice, not an alarm. Same delivery machinery — only the prefix differs.
+const reminderBody = (anchorKind: string | undefined, content: string): string =>
+  `${anchorKind === 'event_offset' ? '🗓️' : '⏰'} ${content}`
+
 // Daily arm (task-graph R2): emit an arm.due event for each scheduled reminder
 // entering the ≤6-day window. One cheap run/day — nowhere near the exec budget.
 export const reminderArm = inngest.createFunction(
@@ -50,7 +56,7 @@ export const reminderDeliver = inngest.createFunction(
       const db = createHttpDb()
       if (!(await claimReminder(db, reminderId))) return // another path already claimed it
       try {
-        await sendToHouse(row.deliverChatId, `⏰ ${row.content}`)
+        await sendToHouse(row.deliverChatId, reminderBody(row.anchorKind, row.content))
       } catch (e) {
         await releaseReminder(db, reminderId) // SEND failed → back to scheduled so it retries (never zero-fire)
         throw e
@@ -78,7 +84,7 @@ export const reminderSweeper = inngest.createFunction(
       for (const r of overdue) {
         if (!(await claimReminder(db, r.id))) continue
         try {
-          await sendToHouse(r.deliverChatId, `⏰ ${r.content}`)
+          await sendToHouse(r.deliverChatId, reminderBody(r.anchorKind, r.content))
         } catch {
           await releaseReminder(db, r.id) // send failed → return to scheduled for the next sweep
           continue

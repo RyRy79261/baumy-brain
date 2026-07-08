@@ -9,6 +9,7 @@ import { resolveSeedEntities, connectedEdges, gatherGraphContext } from '@/lib/m
 import { findMemoryToForget, forgetMemory } from '@/lib/memory/forget'
 import { createReminder, claimReminder, markSent, releaseReminder } from '@/lib/reminders/store'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
+import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
 import { loadResponsePolicy, setGlobalEnabled } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
 import { embedSync } from '@/lib/ai/embed'
@@ -219,6 +220,30 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     const re = await addListItems(h.db, { groupId: GROUP, items: ['oat milk'], addedBy: null })
     expect(re.added).toEqual(['oat milk'])
     expect((await currentList(h.db, GROUP)).map((r) => r.item).sort()).toEqual(['bin bags', 'oat milk'])
+  })
+
+  it('event surfacing: a dated fact schedules event-anchored heads-ups on real Postgres', async () => {
+    // event_at is populated at capture; the scan reads it via the real timestamptz comparison.
+    const eventAt = new Date(Date.now() + 7.5 * 86_400_000) // inside the 8-day horizon, all 3 stages future
+    await reconcileFact(h.db, {
+      groupId: GROUP,
+      fact: { subject: 'guest-nadia', subjectKind: 'person', predicate: 'arrives_on', object: 'soon' },
+      authoredBy: null,
+      trustLevel: 'untrusted',
+      eventAt,
+    })
+    const res = await runEventSurfacingScan(h.db, GROUP, new Date(), 'Europe/Berlin')
+    expect(res.created).toBeGreaterThanOrEqual(2)
+    const rows = await h.pool.query(
+      "SELECT anchor_kind, event_fact_id, content FROM baumy_reminders WHERE group_id = $1 AND anchor_kind = 'event_offset'",
+      [GROUP],
+    )
+    expect(rows.rows.length).toBeGreaterThanOrEqual(2)
+    expect(rows.rows[0].event_fact_id).toBeTruthy() // anchored to the fact
+    expect(String(rows.rows[0].content)).toContain('Heads-up')
+    // re-scan is idempotent (no duplicate stages)
+    const again = await runEventSurfacingScan(h.db, GROUP, new Date(), 'Europe/Berlin')
+    expect(again.created).toBe(0)
   })
 
   it('dashboard grant is live on the real roster (revoke takes effect immediately)', async () => {

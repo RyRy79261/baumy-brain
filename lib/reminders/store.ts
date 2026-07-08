@@ -9,6 +9,9 @@ export interface CreateReminderInput {
   fireAt: Date
   anchorKind?: string
   createdBy: string | null
+  // The dated fact this reminder is anchored to (event-surfacing heads-ups); null for an
+  // explicit "remind me" reminder. Lets the scan de-dupe stages per event (docs/spec/event-surfacing.md).
+  eventFactId?: string | null
 }
 
 export async function createReminder(db: Database, input: CreateReminderInput): Promise<string> {
@@ -22,9 +25,16 @@ export async function createReminder(db: Database, input: CreateReminderInput): 
       fireAt: input.fireAt,
       status: 'scheduled',
       createdBy: input.createdBy,
+      eventFactId: input.eventFactId ?? null,
     })
     .returning({ id: reminders.id })
   return r.id
+}
+
+// All fire times already scheduled/sent/cancelled for a dated fact — the event-surfacing scan's
+// de-dupe key, so a stage is never nudged twice (and a cancelled/sent one is not recreated).
+export async function remindersForEventFact(db: Database, eventFactId: string): Promise<{ fireAt: Date }[]> {
+  return db.select({ fireAt: reminders.fireAt }).from(reminders).where(eq(reminders.eventFactId, eventFactId))
 }
 
 // Atomic claim: only the FIRST caller flips scheduled→firing → exactly-once send.
@@ -94,6 +104,7 @@ export async function dueScheduled(db: Database, before: Date, limit = 100) {
       fireAt: reminders.fireAt,
       deliverChatId: reminders.deliverChatId,
       content: reminders.content,
+      anchorKind: reminders.anchorKind, // event_offset heads-ups render differently from ⏰ reminders
     })
     .from(reminders)
     .where(and(eq(reminders.status, 'scheduled'), lte(reminders.fireAt, before)))

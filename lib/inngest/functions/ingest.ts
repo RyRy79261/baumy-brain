@@ -179,11 +179,15 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
           const speaker = authoredBy ? ((await memberDisplayNames(db)).get(authoredBy) ?? null) : null
           const { facts } = await extractFacts(text ?? '', speaker)
           for (const f of facts) {
+            // Resolve a dated fact's time phrase to an absolute event_at NOW, while "tomorrow" is
+            // still unambiguous (it can't be resolved later at scan time). Non-dated / unparseable
+            // → null. This is what the proactive event-surfacing scan reads (event-surfacing.md).
+            const eventAt = f.whenText?.trim() ? (parseWhen(f.whenText, houseTz())?.fireAt ?? null) : null
             // trust=origin.memoryTrust: a member DM is 'trusted' (rank 3) and MAY supersede a
             // group 'untrusted' fact (rank 2), never a 'system' reflect fact (rank 4). Scope is
             // the house so the write lands in shared memory (trust-gated in reconcileFact).
             // memoryItemId links the fact back to THIS evidence note (its origin — see fact-lineage).
-            const r = await reconcileFact(db, { groupId: houseScope, fact: f, authoredBy, trustLevel: origin.memoryTrust, memoryItemId })
+            const r = await reconcileFact(db, { groupId: houseScope, fact: f, authoredBy, trustLevel: origin.memoryTrust, memoryItemId, eventAt })
             if (r === 'add' || r === 'update') learned = true
           }
           // Tag this note with the person it's about (memory v2 §3) — attributed, never scored.
