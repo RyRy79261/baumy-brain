@@ -8,6 +8,7 @@ import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
 import { resolveSeedEntities, connectedEdges, gatherGraphContext } from '@/lib/memory/graph'
 import { findMemoryToForget, forgetMemory } from '@/lib/memory/forget'
 import { createReminder, claimReminder, markSent, releaseReminder } from '@/lib/reminders/store'
+import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
 import { loadResponsePolicy, setGlobalEnabled } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
 import { embedSync } from '@/lib/ai/embed'
@@ -199,6 +200,25 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     const note = await h.pool.query("SELECT content, is_active FROM baumy_memory_items WHERE content LIKE '%crashing in the cave%'")
     expect(note.rows[0].is_active).toBe(true)
     expect(note.rows[0].content).not.toContain('Robert Tables')
+  })
+
+  it('shopping list: partial-unique open dedup + check-off then re-add on real Postgres (migration 0010)', async () => {
+    // The partial predicate is the one thing PGlite can't be trusted to reproduce — assert it
+    // survived to real Postgres, then exercise the behavior it guards.
+    const idx = await h.pool.query("SELECT indexdef FROM pg_indexes WHERE indexname = 'baumy_list_items_open_uq'")
+    expect(idx.rows[0].indexdef).toContain('WHERE') // it's a PARTIAL unique index
+    expect(idx.rows[0].indexdef).toContain('checked_at')
+
+    await addListItems(h.db, { groupId: GROUP, items: ['oat milk', 'bin bags'], addedBy: null })
+    // re-adding an OPEN item is a no-op — the partial-unique index (real PG) + onConflictDoNothing
+    const dup = await addListItems(h.db, { groupId: GROUP, items: ['oat milk'], addedBy: null })
+    expect(dup.added).toEqual([])
+    expect(dup.already).toEqual(['oat milk'])
+    // check it off → it leaves the open predicate → the same item can be re-added as a fresh row
+    await checkOffItems(h.db, { groupId: GROUP, items: ['oat milk'], checkedBy: null })
+    const re = await addListItems(h.db, { groupId: GROUP, items: ['oat milk'], addedBy: null })
+    expect(re.added).toEqual(['oat milk'])
+    expect((await currentList(h.db, GROUP)).map((r) => r.item).sort()).toEqual(['bin bags', 'oat milk'])
   })
 
   it('dashboard grant is live on the real roster (revoke takes effect immediately)', async () => {
