@@ -6,6 +6,7 @@ import { reminderArm, reminderDeliver, reminderSweeper } from './reminders'
 import { reembedSweep } from './reembed'
 import { reflectSweep } from './reflect'
 import { eventSurfacingScan } from './surfacing'
+import { consolidationSweep } from './consolidation'
 
 // All registered Inngest functions.
 export const functions: InngestFunction.Any[] = [
@@ -19,4 +20,5 @@ export const functions: InngestFunction.Any[] = [
   reembedSweep,
   reflectSweep,
   eventSurfacingScan,
+  consolidationSweep,
 ]

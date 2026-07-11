@@ -60,11 +60,40 @@ that genuinely exists.
 - `lib/inngest/functions/surfacing.ts` — `runEventSurfacingScan` core + the `event-surfacing-scan` cron.
 - `lib/inngest/functions/reminders.ts` — 🗓️ vs ⏰ delivery framing.
 
+## End-of-day consolidation (catch-up + integrity)
+
+The scan above only dates events **at capture** — so a date learned *before* the feature shipped, or
+one the per-message extractor missed, never becomes a heads-up. A nightly **consolidation pass**
+(`lib/inngest/functions/consolidation.ts` `consolidationSweep`, 22:30 house tz, ahead of the 08:00
+scan) closes that, in two deterministic, decay-bounded passes:
+
+- **A — catch up.** For each current, non-secret fact learned in the last **14 days** (`recentUndatedFacts`)
+  with `event_at IS NULL`, re-resolve its `object_value` with `parseWhen` **anchored to the fact's own
+  `recorded_at`** — so "tomorrow night" said last Tuesday correctly lands on the Wednesday after, the
+  unambiguous resolution that is impossible at scan time. If it resolves to a *future* time, a targeted
+  `setFactEventAt` UPDATE backfills `event_at` (not `reconcileFact`, which NOOPs on an unchanged value),
+  and `runEventSurfacingScan` then schedules the week/day/morning heads-ups idempotently. chrono returns
+  null for a non-date value, so a plain attribute ("the extra room") is safely left undated.
+- **B — integrity.** The create-only scan never cancels, so a superseded/contradicted event ("Iman's
+  coming" → "Iman cancelled") would still fire a stale heads-up. `orphanedEventReminders` finds
+  scheduled `event_offset` reminders whose anchoring fact is no longer `is_current` and cancels them.
+
+Two windows, not to be conflated: the **decay bound** is *backward* on `recorded_at` (which facts to
+re-examine); the **surfacing horizon** is *forward* on `event_at` (which events get nudges). The pass
+is LLM-free (deterministic parse + fact currency), honors `/pause`, and once a fact is dated it drops
+out of the candidate set, so nothing re-processes.
+
 ## Deliberately deferred
 
 - **Coalescing** many same-day heads-ups into one digest message (the spec's fatigue lever) — v1
   sends one reminder per stage, riding the proven per-reminder delivery. A daily cap / digest roll-up
   is an additive follow-up if the house finds it chatty.
+- **Graph-aware contradiction integrity.** Pass B today cancels heads-ups only for a *same-predicate*
+  supersession (the deterministic case). A contradiction stated across a *different* predicate ("Iman
+  arrives Friday" stays current, but "Iman's not coming after all" is added) leaves the anchoring fact
+  current, so its heads-up survives. Catching that needs walking the event's graph neighbourhood
+  (`connectedEdges` / `entityTimeline`) and an LLM judging "is this event still on?" — LLM-proposes,
+  code-cancels. Deferred as the richer next step.
 - **Recurrence** (annual bills): `event_at` is a single timestamp; recurring dated facts are future work.
 - **LLM-voiced nudges**: content is deterministic (cheap, never hallucinates an event). A voice pass
   over the heads-up text is a later polish.
