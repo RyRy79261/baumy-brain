@@ -10,6 +10,7 @@ import { findMemoryToForget, forgetMemory } from '@/lib/memory/forget'
 import { createReminder, claimReminder, markSent, releaseReminder } from '@/lib/reminders/store'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
 import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
+import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { loadResponsePolicy, setGlobalEnabled } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
 import { embedSync } from '@/lib/ai/embed'
@@ -244,6 +245,40 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     // re-scan is idempotent (no duplicate stages)
     const again = await runEventSurfacingScan(h.db, GROUP, new Date(), 'Europe/Berlin')
     expect(again.created).toBe(0)
+  })
+
+  it('consolidation: backfills a missed date against recorded_at + cancels a superseded heads-up (real PG)', async () => {
+    const now = new Date()
+    // An undated fact whose date lives in the object — the pre-feature / extractor-missed shape.
+    await reconcileFact(h.db, {
+      groupId: GROUP,
+      fact: { subject: 'guest-omar', subjectKind: 'person', predicate: 'arrives_on', object: 'in 6 days' },
+      authoredBy: null,
+      trustLevel: 'untrusted',
+    })
+    const res = await runConsolidationSweep(h.db, GROUP, now, 'Europe/Berlin')
+    expect(res.backfilled).toBeGreaterThanOrEqual(1) // event_at resolved against recorded_at
+    expect(res.created).toBeGreaterThanOrEqual(1) // heads-ups scheduled for the now-dated event
+    const dated = await h.pool.query(
+      "SELECT count(*)::int n FROM baumy_facts WHERE group_id = $1 AND is_current = true AND event_at IS NOT NULL",
+      [GROUP],
+    )
+    expect(dated.rows[0].n).toBeGreaterThanOrEqual(1)
+
+    // The plan changes → supersede the arrival; the integrity pass cancels its stale heads-ups.
+    await reconcileFact(h.db, {
+      groupId: GROUP,
+      fact: { subject: 'guest-omar', subjectKind: 'person', predicate: 'arrives_on', object: 'cancelled' },
+      authoredBy: null,
+      trustLevel: 'untrusted',
+    })
+    const res2 = await runConsolidationSweep(h.db, GROUP, now, 'Europe/Berlin')
+    expect(res2.cancelled).toBeGreaterThanOrEqual(1)
+    const cancelled = await h.pool.query(
+      "SELECT count(*)::int n FROM baumy_reminders WHERE group_id = $1 AND anchor_kind = 'event_offset' AND status = 'cancelled'",
+      [GROUP],
+    )
+    expect(cancelled.rows[0].n).toBeGreaterThanOrEqual(1)
   })
 
   it('dashboard grant is live on the real roster (revoke takes effect immediately)', async () => {

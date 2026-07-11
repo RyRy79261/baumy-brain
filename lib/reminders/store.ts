@@ -37,6 +37,21 @@ export async function remindersForEventFact(db: Database, eventFactId: string): 
   return db.select({ fireAt: reminders.fireAt }).from(reminders).where(eq(reminders.eventFactId, eventFactId))
 }
 
+// Scheduled event-surfacing heads-ups whose anchoring fact is NO LONGER CURRENT (superseded or
+// contradicted — "Iman's coming" → "Iman cancelled") — the integrity gap: surfacing only ever
+// CREATES reminders, so a stale one would still deliver. The consolidation pass cancels these.
+// Group-scoped; joins reminders → the fact it's anchored to; only pending (scheduled) ones.
+export async function orphanedEventReminders(db: Database, groupId: string): Promise<{ id: string }[]> {
+  const res = await db.execute(sql`
+    SELECT r.id
+    FROM baumy_reminders r
+    JOIN baumy_facts f ON r.event_fact_id = f.id
+    WHERE r.group_id = ${groupId} AND r.anchor_kind = 'event_offset' AND r.status = 'scheduled'
+      AND f.is_current = false`)
+  const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
+  return rows.map((r) => ({ id: String(r.id) }))
+}
+
 // Atomic claim: only the FIRST caller flips scheduled→firing → exactly-once send.
 // A single row-level UPDATE…WHERE status='scheduled' is atomic on any driver.
 export async function claimReminder(db: Database, id: string): Promise<boolean> {

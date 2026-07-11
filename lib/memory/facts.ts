@@ -287,6 +287,37 @@ export async function upcomingDatedFacts(db: Database, groupId: string, from: Da
   }))
 }
 
+// Recent CURRENT facts that carry a value but NO resolved event_at yet — the catch-up candidates
+// for the end-of-day consolidation pass (docs/spec/event-surfacing.md). These are facts captured
+// before event-surfacing shipped, or ones whose date the per-message extractor missed. Bounded by
+// a BACKWARD recorded_at window (memory decay) so the pass stays cheap; secret-excluded. The pass
+// re-parses object_value against each fact's OWN recorded_at — where "tomorrow" is unambiguous.
+export interface UndatedFact {
+  id: string
+  objectValue: string
+  recordedAt: Date
+}
+
+export async function recentUndatedFacts(db: Database, groupId: string, since: Date): Promise<UndatedFact[]> {
+  const res = await db.execute(sql`
+    SELECT f.id, f.object_value AS "objectValue", f.recorded_at AS "recordedAt"
+    FROM baumy_facts f
+    WHERE f.group_id = ${groupId} AND f.is_current = true AND f.is_secure = false
+      AND f.event_at IS NULL AND f.object_value IS NOT NULL AND length(f.object_value) > 0
+      AND f.recorded_at >= ${since.toISOString()}
+    ORDER BY f.recorded_at DESC
+    LIMIT 500`)
+  const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
+  return rows.map((r) => ({ id: String(r.id), objectValue: String(r.objectValue), recordedAt: new Date(r.recordedAt as string) }))
+}
+
+// Backfill a resolved event_at onto an existing CURRENT fact. A targeted single-statement UPDATE
+// (neon-http has no transactions) — NOT reconcileFact, which NOOPs when object_value is unchanged
+// and so would never write the missed date. is_current guard keeps a superseded row untouched.
+export async function setFactEventAt(db: Database, factId: string, eventAt: Date): Promise<void> {
+  await db.update(facts).set({ eventAt }).where(and(eq(facts.id, factId), eq(facts.isCurrent, true)))
+}
+
 // Tag an evidence item with the PERSON it is ABOUT (memory v2 §3), so sentiment/notes
 // gather under that person for their profile + reflection. Uses the first person-subject
 // from extraction (the entity was just resolved by reconcileFact, so it exists). This is
