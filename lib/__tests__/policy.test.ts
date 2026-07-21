@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
-import { loadResponsePolicy, setGlobalEnabled, setReplyFrequency, replyAllowed, type ResponsePolicy } from '@/lib/policy'
+import { loadResponsePolicy, setGlobalEnabled, setReplyFrequency, setReminderFrequency, replyAllowed, type ResponsePolicy } from '@/lib/policy'
 
-const base: ResponsePolicy = { global_enabled: true, categories: {}, confidence_threshold: 0.7, muted_topics: [], reply_frequency: 'balanced' }
+const base: ResponsePolicy = { global_enabled: true, categories: {}, confidence_threshold: 0.7, muted_topics: [], reply_frequency: 'balanced', reminder_frequency: 'twice' }
 
 describe('response policy (kill-switch + reply gate)', () => {
   it('pause/resume flips global_enabled via the singleton (upsert)', async () => {
@@ -12,6 +12,15 @@ describe('response policy (kill-switch + reply gate)', () => {
     expect((await loadResponsePolicy(db)).global_enabled).toBe(false)
     await setGlobalEnabled(db, true)
     expect((await loadResponsePolicy(db)).global_enabled).toBe(true)
+  })
+
+  it('reminder_frequency: defaults to twice, is settable, and fails closed on garbage', async () => {
+    const db = await makeTestDb()
+    expect((await loadResponsePolicy(db)).reminder_frequency).toBe('twice') // default when unseeded
+    await setReminderFrequency(db, 'once')
+    expect((await loadResponsePolicy(db)).reminder_frequency).toBe('once')
+    await setReminderFrequency(db, 'hourly' as never) // invalid → no-op
+    expect((await loadResponsePolicy(db)).reminder_frequency).toBe('once') // unchanged
   })
 
   it('replyAllowed: paused silences everything; the floor + mutes gate the rest', () => {

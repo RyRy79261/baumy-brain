@@ -15,15 +15,29 @@ export type ReplyFrequency = 'quiet' | 'balanced' | 'chatty'
 // 'chatty' jumps in more readily.
 export const REPLY_FLOORS: Record<ReplyFrequency, number> = { quiet: 0.85, balanced: 0.7, chatty: 0.5 }
 
+// How often the proactive reminder/event DIGEST fires per day (docs/spec/reminders.md). 'twice'
+// splits the waking day into ~12h segments (a morning + an evening batch); 'once' is a single
+// morning batch. It's a batched heads-up, NOT an alarm — an explicit "remind me at X" still fires
+// near its time on its own. Only the WAKING-hour slots (never 02:00–06:00) ever send.
+export type ReminderFrequency = 'once' | 'twice'
+
 export interface ResponsePolicy {
   global_enabled: boolean
   categories: Record<string, boolean>
   confidence_threshold: number
   muted_topics: string[]
   reply_frequency: ReplyFrequency
+  reminder_frequency: ReminderFrequency
 }
 
-const DEFAULT: ResponsePolicy = { global_enabled: true, categories: {}, confidence_threshold: 0.7, muted_topics: [], reply_frequency: 'balanced' }
+const DEFAULT: ResponsePolicy = {
+  global_enabled: true,
+  categories: {},
+  confidence_threshold: 0.7,
+  muted_topics: [],
+  reply_frequency: 'balanced',
+  reminder_frequency: 'twice',
+}
 
 // The effective confidence floor a volunteered reply must clear — driven by reply_frequency.
 export function replyConfidenceFloor(policy: ResponsePolicy): number {
@@ -39,6 +53,7 @@ export async function loadResponsePolicy(db: Database): Promise<ResponsePolicy> 
     confidence_threshold: typeof p.confidence_threshold === 'number' ? p.confidence_threshold : DEFAULT.confidence_threshold,
     muted_topics: p.muted_topics ?? [],
     reply_frequency: p.reply_frequency && p.reply_frequency in REPLY_FLOORS ? p.reply_frequency : DEFAULT.reply_frequency,
+    reminder_frequency: p.reminder_frequency === 'once' || p.reminder_frequency === 'twice' ? p.reminder_frequency : DEFAULT.reminder_frequency,
   }
 }
 
@@ -47,6 +62,17 @@ export async function setReplyFrequency(db: Database, level: ReplyFrequency): Pr
   if (!(level in REPLY_FLOORS)) return // fail closed on a bad value
   const current = await loadResponsePolicy(db)
   const next = { ...current, reply_frequency: level }
+  await db
+    .insert(houseConfig)
+    .values({ id: true, responsePolicy: next })
+    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: new Date() } })
+}
+
+// Set how often the reminder/event digest fires (owner-only, via the dashboard). Upserts the singleton.
+export async function setReminderFrequency(db: Database, level: ReminderFrequency): Promise<void> {
+  if (level !== 'once' && level !== 'twice') return // fail closed on a bad value
+  const current = await loadResponsePolicy(db)
+  const next = { ...current, reminder_frequency: level }
   await db
     .insert(houseConfig)
     .values({ id: true, responsePolicy: next })

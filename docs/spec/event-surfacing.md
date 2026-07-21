@@ -29,9 +29,10 @@ So this is a **two-part** feature:
    **non-secret**, group-scoped facts with a future `event_at` in an 8-day horizon
    (`upcomingDatedFacts`), and for each computes the still-future lead stages
    (`computeNudgeStages`: `event_at − 7d`, `− 1d`, and 08:00 morning-of). For each new stage it
-   creates an **event-anchored reminder** (`anchor_kind = 'event_offset'`, `event_fact_id` set) — and
-   the **existing** arm → claim → send → mark-sent machinery delivers it **exactly-once**. Delivery
-   frames an event-offset reminder as 🗓️ (advance notice), not ⏰ (`lib/inngest/functions/reminders.ts`).
+   creates an **event-anchored reminder** (`anchor_kind = 'event_offset'`, `event_fact_id` set).
+   These are **excluded from near-time arming** and delivered **batched by the daily digest**
+   (`docs/spec/reminders.md`) at waking-hour slots — framed 🗓️ (advance notice), not ⏰ — claim-once
+   so they never double-send.
 
 The scan is the "production path that creates reminders" the old design lacked — now fed by data
 that genuinely exists.
