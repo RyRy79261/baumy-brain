@@ -1,6 +1,27 @@
 import { describe, it, expect } from 'vitest'
 import { DateTime } from 'luxon'
-import { parseWhen } from '@/lib/reminders/parse'
+import { parseWhen, clampToWakingHours } from '@/lib/reminders/parse'
+
+const TZ = 'Europe/Berlin'
+const at = (iso: string) => DateTime.fromISO(iso, { zone: TZ }).toJSDate()
+const hourIn = (d: Date) => DateTime.fromJSDate(d).setZone(TZ).hour
+
+describe('clampToWakingHours (6am–2am reminding window, no 3am pings)', () => {
+  it('bumps a 3:30am fire time up to 6am', () => {
+    expect(hourIn(clampToWakingHours(at('2026-07-10T03:30'), TZ))).toBe(6)
+  })
+  it('bumps exactly 2am up to 6am (dead zone starts at 02:00)', () => {
+    expect(hourIn(clampToWakingHours(at('2026-07-10T02:00'), TZ))).toBe(6)
+  })
+  it('leaves 1am alone (still inside the 6am–2am window)', () => {
+    const d = at('2026-07-10T01:00')
+    expect(clampToWakingHours(d, TZ)).toEqual(d)
+  })
+  it('leaves a normal 9am alone', () => {
+    const d = at('2026-07-10T09:00')
+    expect(clampToWakingHours(d, TZ)).toEqual(d)
+  })
+})
 
 describe('parseWhen — DST-correct NL time resolution', () => {
   it('summer reminder resolves to CEST (+2): 9am local = 07:00 UTC', () => {

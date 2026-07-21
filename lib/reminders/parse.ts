@@ -9,6 +9,18 @@ export interface ParsedWhen {
   resolvedLocal: string
 }
 
+// Reminding hours are 06:00–02:00 house tz — nobody wants a ping at 3am. A fire time that lands in
+// the 02:00–06:00 dead zone is nudged forward to 06:00 the same day. Applied to explicit "remind me
+// at X" reminders at creation (event heads-ups are delivered by the daytime digest, so they're
+// waking-hours by construction). Baumy is a house secretary, not an alarm clock.
+export function clampToWakingHours(fireAt: Date, tz = 'Europe/Berlin'): Date {
+  const dt = DateTime.fromJSDate(fireAt).setZone(tz)
+  if (dt.hour >= 2 && dt.hour < 6) {
+    return dt.set({ hour: 6, minute: 0, second: 0, millisecond: 0 }).toJSDate()
+  }
+  return fireAt
+}
+
 export function parseWhen(whenText: string, tz = 'Europe/Berlin', now: DateTime = DateTime.now()): ParsedWhen | null {
   const localNow = now.setZone(tz)
   // A Date whose SYSTEM-tz wall-clock equals the house's wall-clock now, so

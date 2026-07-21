@@ -25,7 +25,7 @@ import { issuesConfigured, labelsFor } from '@/lib/github/issues'
 import { parseReportCommand } from '@/lib/pipeline/report'
 import { parseHouseReport, weeklyReport, guestReport } from '@/lib/reports/reports'
 import { createPendingAction } from '@/lib/confirm/store'
-import { parseWhen } from '@/lib/reminders/parse'
+import { parseWhen, clampToWakingHours } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
 import { loadRoster, memberDisplayNames } from '@/lib/identity/roster'
 import { getHouseChatId, houseScopeForOrigin } from '@/lib/identity/house'
@@ -287,7 +287,8 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
           groupId: houseScope, // scope = the house (a DM-set reminder belongs to the house, not a silo)
           deliverChatId: houseChatId, // fixed destination, resolved in code (never LLM)
           content: ex.content,
-          fireAt: parsed.fireAt,
+          // Fire near the requested time, but never in the 02:00–06:00 dead zone (no 3am pings).
+          fireAt: clampToWakingHours(parsed.fireAt, houseTz()),
           createdBy: fromId != null ? String(fromId) : null,
         })
         // Best-effort arm; the sweeper backstops delivery, so a hand-off failure
