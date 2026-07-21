@@ -10,7 +10,12 @@ import { embed, EMBED_MODEL } from '@/lib/ai/embed'
 // (memory_item_id, model) uniqueness + onConflictDoNothing means re-runs add nothing.
 export const reembedSweep = inngest.createFunction(
   { id: 'reembed-sweep' },
-  { cron: '*/10 * * * *' },
+  // DAILY, not every 10 min. This only has work right after an embedder swap (rare, deploy-gated);
+  // in steady state it is a no-op SELECT. Running it every 10 min woke the Neon compute ~144×/day
+  // for nothing, which (with the sweeper) kept the endpoint from ever scaling to zero — the bulk of
+  // a ~100 CU-hour/month bill. After an embedder swap, bump this or invoke the function on-demand
+  // to drain the backfill faster (50 rows/run).
+  { cron: '0 4 * * *' },
   async ({ step }) => {
     const reembedded = await step.run('reembed', async () => {
       const db = createHttpDb()
