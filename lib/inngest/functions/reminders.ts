@@ -70,10 +70,13 @@ export const reminderDeliver = inngest.createFunction(
 )
 
 // Sweeper (task-graph R3 backstop): a coarse catch-up for anything missed,
-// redeployed-through, or beyond the arm window. Every 15 min ≈ 2.9k runs/mo.
+// redeployed-through, or beyond the arm window. This is a LAST-RESORT backstop — the normal path
+// is the immediate arm event (ingest) + the daily arm cron + per-reminder sleepUntil delivery — so
+// it can be coarse. Every 30 min (not 15) so the Neon compute gets clean idle windows to scale to
+// zero between runs; worst case a reminder the primary paths ALL missed is up to ~30 min late.
 export const reminderSweeper = inngest.createFunction(
   { id: 'reminder-sweeper' },
-  { cron: '*/15 * * * *' },
+  { cron: '*/30 * * * *' },
   async ({ step }) => {
     const sent = await step.run('sweep', async () => {
       const db = createHttpDb()
