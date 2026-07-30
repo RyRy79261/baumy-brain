@@ -3,6 +3,7 @@ import { type Database } from '@/db/client'
 import { entities, facts, members, memoryItems } from '@/db/schema'
 import { encryptSecret } from '@/lib/core/crypto'
 import { scanSensitivity } from '@/lib/core/sensitivity'
+import { PROFILE_PREDICATE } from '@/lib/memory/reflect'
 import type { Trust } from '@/lib/core/origin'
 
 // Trust ranking for contradiction resolution. A fact may only supersede an
@@ -264,25 +265,35 @@ export async function reconcileFact(
 // the subject + predicate + the resolved event_at; the scan renders the heads-up from those.
 export interface DatedFact {
   id: string
+  subjectEntityId: string
   subject: string
   predicate: string
+  // The fact's OWN words — the model writes the heads-up from these, so a nudge reads like a
+  // sentence instead of a "<subject> <predicate>" stub. Never a secret (is_secure is excluded).
+  objectValue: string
+  authoredBy: string | null
   eventAt: Date
 }
 
 export async function upcomingDatedFacts(db: Database, groupId: string, from: Date, to: Date): Promise<DatedFact[]> {
   const res = await db.execute(sql`
-    SELECT f.id, e.canonical_name AS subject, f.predicate, f.event_at AS "eventAt"
+    SELECT f.id, f.subject_entity_id AS "subjectEntityId", e.canonical_name AS subject, f.predicate,
+           f.object_value AS "objectValue", f.authored_by AS "authoredBy", f.event_at AS "eventAt"
     FROM baumy_facts f
     JOIN baumy_entities e ON f.subject_entity_id = e.id
     WHERE f.group_id = ${groupId} AND f.is_current = true AND f.is_secure = false
+      AND f.predicate <> ${PROFILE_PREDICATE}
       AND f.event_at IS NOT NULL
       AND f.event_at >= ${from.toISOString()} AND f.event_at <= ${to.toISOString()}
     ORDER BY f.event_at ASC`)
   const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
   return rows.map((r) => ({
     id: String(r.id),
+    subjectEntityId: String(r.subjectEntityId),
     subject: String(r.subject),
     predicate: String(r.predicate),
+    objectValue: r.objectValue == null ? '' : String(r.objectValue),
+    authoredBy: r.authoredBy == null ? null : String(r.authoredBy),
     eventAt: new Date(r.eventAt as string),
   }))
 }
@@ -303,6 +314,10 @@ export async function recentUndatedFacts(db: Database, groupId: string, since: D
     SELECT f.id, f.object_value AS "objectValue", f.recorded_at AS "recordedAt"
     FROM baumy_facts f
     WHERE f.group_id = ${groupId} AND f.is_current = true AND f.is_secure = false
+      -- NEVER a reflect PROFILE: it is a prose paragraph re-synthesised every few hours, so it is
+      -- permanently "recent" and any stray month name inside it would be read as a fresh event
+      -- date, forever ("Heads-up — Mad profile, today"). Profiles are not events.
+      AND f.predicate <> ${PROFILE_PREDICATE}
       AND f.event_at IS NULL AND f.object_value IS NOT NULL AND length(f.object_value) > 0
       AND f.recorded_at >= ${since.toISOString()}
     ORDER BY f.recorded_at DESC

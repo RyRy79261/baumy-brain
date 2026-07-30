@@ -26,7 +26,7 @@ The core principle: **REACTIVE (cheap, capped) is decoupled from DELIBERATIVE/AD
 | **`classify`** | OpenAI GPT-5.4 nano | `gpt-5.4-nano` | reactive — every pre-filtered message | triage + extract; `reasoning_effort` defaults `none`; ~$0.0002/msg |
 | **`reply`** | Claude Haiku 4.5 | `claude-haiku-4-5` | reactive — live chat replies, retrieval-grounded answers, trigger management | cheapest Anthropic tier + old tokenizer; ~$0.007/reply. **HARD RULE: this path NEVER invokes Opus.** |
 | **`assess`** | Claude Sonnet 5 | `claude-sonnet-5` | deliberate/on-demand — multi-fact reasoning over on-hand/retrieved info (audits, scheduled tasks) | near-Opus quality; **intro $2/$10 through 2026-08-31**, then $3/$15 |
-| **`advisor`** | Claude Opus 4.8 | `claude-opus-4-8` | **explicit deliberate intent ONLY** ("go research/assess X"); routed through the write-gate; never the reactive classifier | derived answers needing real reasoning/research NOT directly on hand; "a calm, deliberate thing"; web-search-capable |
+| **`advisor`** | Claude Opus 5 | `claude-opus-5` | **explicit deliberate intent ONLY** ("go research/assess X"); routed through the write-gate; never the reactive classifier | derived answers needing real reasoning/research NOT directly on hand; "a calm, deliberate thing"; web-search-capable |
 | `classify` escalation | OpenAI GPT-5.4 mini | `gpt-5.4-mini` | reactive — low-confidence nano output only | nano→mini cascade for the minority of ambiguous messages |
 | `classify` cost-floor fallback | OpenAI GPT-4.1 nano | `gpt-4.1-nano` | swappable env alias | non-reasoning, deterministic cost; legacy → behind alias |
 | Embeddings | (owned by storage workstream) | — | — | negligible cost (<$0.10/mo); confirm exact 2026 model ID there |
@@ -50,9 +50,9 @@ The two decisions that carry the entire budget: **the reactive path defaults to 
 
 - **D1 — `reply` = Claude Haiku 4.5 (`claude-haiku-4-5`).** Reactive replies are the *sole* high-frequency cost driver. Haiku is ~$0.007/reply vs ~$0.035 on Opus (5×) and uses the **old tokenizer** (~30% fewer tokens for the same text), giving a second discount on top of the lower sticker rate. Letting the reactive path drift to Opus is the single biggest way to blow the budget — forbidden by DR2. *(high)*
 - **D2 — `assess` = Sonnet 5 (`claude-sonnet-5`) for multi-fact reasoning over retrieved/on-hand info, while introductory pricing lasts.** Intro $2/$10 through **2026-08-31**, then $3/$15 (+50%). Even post-intro it is half of Opus. *Note the tokenizer offset:* Sonnet 5's lower sticker vs Sonnet 4.6 is partly cancelled by ~30% higher token counts — do not treat $2 vs $3 as a straight 33% saving. Reachable from the reactive path only for grounded multi-fact reasoning; the primary users are on-demand audits (A4) and scheduled tasks (A4b). *(medium)*
-- **D3 — `advisor` = Opus 4.8 (`claude-opus-4-8`), explicit deliberate intent ONLY.** At ~$0.035/reply × 300 replies/mo it would be ~$10.5/mo on replies *alone* — straight into the $10–20 band; at chatty volume >$30/mo. It is gated behind an explicit escalation signal through the write-gate and is **never** reachable by the reactive classifier (DR2). Maps to the on-demand audits / deliberate research of A4/A4b; web-search-capable (DR5). *(high)*
+- **D3 — `advisor` = Opus 5 (`claude-opus-5`), explicit deliberate intent ONLY.** At ~$0.035/reply × 300 replies/mo it would be ~$10.5/mo on replies *alone* — straight into the $10–20 band; at chatty volume >$30/mo. It is gated behind an explicit escalation signal through the write-gate and is **never** reachable by the reactive classifier (DR2). Maps to the on-demand audits / deliberate research of A4/A4b; web-search-capable (DR5). *(high)*
 - **D4 — Route ALL non-realtime Anthropic work (nightly memory consolidation, daily/weekly digests, bulk back-processing, scheduled tasks) through the Batch API for a flat 50% discount.** Baumy already routes async work through Inngest, which absorbs the ≤24h turnaround (most batches <1h). Batch stacks with prompt caching. **Never** route the interactive `reply` path through Batch (it's latency-sensitive and Batch is 24h-async). *(high)*
-- **D5 — Prompt-cache the stable reply prefix (persona system prompt + tool schema + retrieved-memory block) with a 5-minute ephemeral breakpoint — but size it above the model minimum.** Cache reads are 0.1× input (90% off). **Minimum cacheable prefix is 4096 tokens on Haiku 4.5 AND Opus 4.8, 2048 on Sonnet** — a ~2,500-token prefix caches on Sonnet but *silently does not* on Haiku/Opus. Treat caching as a **burst optimizer**, not a guaranteed discount: a quiet house chats in bursts with long gaps, so many one-off queries miss the 5-min TTL. *(high)*
+- **D5 — Prompt-cache the stable reply prefix (persona system prompt + tool schema + retrieved-memory block) with a 5-minute ephemeral breakpoint — but size it above the model minimum.** Cache reads are 0.1× input (90% off). **Minimum cacheable prefix is 4096 tokens on Haiku 4.5, 1024 on Sonnet 5, and 512 on Opus 5** — a ~2,500-token prefix caches on Sonnet 5 and Opus 5 but *silently does not* on Haiku. Treat caching as a **burst optimizer**, not a guaranteed discount: a quiet house chats in bursts with long gaps, so many one-off queries miss the 5-min TTL. *(high)*
 - **D6 — Keep inference on default global routing; do NOT set `inference_geo`.** `inference_geo:"us"` applies a flat 1.1× multiplier across all token categories. Baumy has no data-residency requirement; omit the parameter entirely (it also 400s on pre-4.6 models). *(high)*
 
 ### OpenAI (`classify` tier)
@@ -79,7 +79,8 @@ The two decisions that carry the entire budget: **the reactive path defaults to 
 
 | Model | ID (alias) | Base in | Base out | Cache 5m write (1.25×) | Cache 1h write (2×) | Cache read/hit (0.1×) | Batch in | Batch out | Context | Max out |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Opus 4.8 (`advisor`) | `claude-opus-4-8` | $5.00 | $25.00 | $6.25 | $10.00 | $0.50 | $2.50 | $12.50 | 1M | 128K¹ |
+| **Opus 5 (`advisor`)** | `claude-opus-5` | $5.00 | $25.00 | $6.25 | $10.00 | $0.50 | $2.50 | $12.50 | 1M | 128K¹ |
+| Opus 4.8 | `claude-opus-4-8` | $5.00 | $25.00 | $6.25 | $10.00 | $0.50 | $2.50 | $12.50 | 1M | 128K¹ |
 | Opus 4.7 | `claude-opus-4-7` | $5.00 | $25.00 | $6.25 | $10.00 | $0.50 | $2.50 | $12.50 | 1M | 128K |
 | Opus 4.6 | `claude-opus-4-6` | $5.00 | $25.00 | $6.25 | $10.00 | $0.50 | $2.50 | $12.50 | 1M | 128K |
 | **Sonnet 5 intro→2026-08-31 (`assess`)** | `claude-sonnet-5` | **$2.00** | **$10.00** | $2.50 | $4.00 | **$0.20** | $1.00 | $5.00 | 1M | 128K |
@@ -150,7 +151,7 @@ export const MODELS = {
   classify: process.env.BAUMY_CLASSIFY_MODEL ?? 'gpt-5.4-nano',   // reactive triage+extract, every pre-filtered msg
   reply:    process.env.BAUMY_REPLY_MODEL    ?? 'claude-haiku-4-5', // reactive live chat; NEVER Opus (DR2)
   assess:   process.env.BAUMY_ASSESS_MODEL   ?? 'claude-sonnet-5',  // multi-fact reasoning over retrieved info
-  advisor:  process.env.BAUMY_ADVISOR_MODEL  ?? 'claude-opus-4-8',  // explicit deliberate intent ONLY (write-gate)
+  advisor:  process.env.BAUMY_ADVISOR_MODEL  ?? 'claude-opus-5',    // explicit deliberate intent ONLY (write-gate)
   // classifier cascade (reactive tier)
   classifyEscalate: process.env.BAUMY_CLASSIFY_ESCALATE ?? 'gpt-5.4-mini', // low-confidence nano output only
   classifyFallback: process.env.BAUMY_CLASSIFY_FALLBACK ?? 'gpt-4.1-nano',  // swappable cost-floor
@@ -161,6 +162,7 @@ export const RATES = {
   'claude-haiku-4-5': { in: 1,  cachedIn: 0.10, out: 5,  batchIn: 0.50, batchOut: 2.50, minCachePrefix: 4096 },
   'claude-sonnet-5':  { in: 2,  cachedIn: 0.20, out: 10, batchIn: 1.00, batchOut: 5.00, minCachePrefix: 2048,
                         _note: 'INTRO thru 2026-08-31; from 2026-09-01: in 3, cachedIn 0.30, out 15, batch 1.5/7.5' },
+  'claude-opus-5':    { in: 5,  cachedIn: 0.50, out: 25, batchIn: 2.50, batchOut: 12.50, minCachePrefix: 512 },
   'claude-opus-4-8':  { in: 5,  cachedIn: 0.50, out: 25, batchIn: 2.50, batchOut: 12.50, minCachePrefix: 4096 },
   'gpt-5.4-nano':     { in: 0.20, cachedIn: 0.02,  out: 1.25, batchIn: 0.10,  batchOut: 0.625, cacheDiscount: 0.90 },
   'gpt-5.4-mini':     { in: 0.75, cachedIn: 0.075, out: 4.50, batchIn: 0.375, batchOut: 2.25,  cacheDiscount: 0.90 },

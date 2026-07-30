@@ -1,15 +1,22 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { facts, reminders } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { reconcileFact, recentUndatedFacts } from '@/lib/memory/facts'
-import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
-import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 
 const GROUP = '-100consol'
 const TZ = 'Europe/Berlin'
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64')
+
+// The written heads-up line is the model's job (offline suite → mocked). What is under test here
+// is the DATE half: which stored values may become an event_at at all.
+vi.mock('@/lib/ai/nudge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/ai/nudge')>()
+  return { ...actual, writeHeadsUp: async () => 'heads-up line' }
+})
+const { runEventSurfacingScan } = await import('@/lib/inngest/functions/surfacing')
+const { runConsolidationSweep } = await import('@/lib/inngest/functions/consolidation')
 
 describe('end-of-day consolidation — catch-up + integrity', () => {
   it('catches up a recent dated fact that never got an event_at, and schedules its heads-ups', async () => {
@@ -86,6 +93,38 @@ describe('end-of-day consolidation — catch-up + integrity', () => {
     // every heads-up for the now-stale event is cancelled — it will not fire
     const rows = await db.select().from(reminders).where(eq(reminders.groupId, GROUP))
     expect(rows.every((r) => r.status === 'cancelled')).toBe(true)
+  })
+
+  it('never dates a PROSE fact from a month name buried inside it (the "Mad profile" bug)', async () => {
+    // chrono will happily pluck "March" out of a biography and, with forward-dating, hand back
+    // next March — which is how a reflect profile became a dated "event" and got a daily heads-up.
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, {
+      groupId: GROUP,
+      fact: { subject: 'madeleine', subjectKind: 'person', predicate: 'profile', object: 'Owner of the house; she moved in in March and is usually away on the 30th.' },
+      authoredBy: null,
+      trustLevel: 'system',
+    })
+    const res = await runConsolidationSweep(db, GROUP, new Date(), TZ)
+    expect(res.backfilled).toBe(0)
+    expect(res.created).toBe(0)
+    const [f] = await db.select({ e: facts.eventAt }).from(facts).where(eq(facts.groupId, GROUP))
+    expect(f.e).toBeNull()
+  })
+
+  it('never turns a PAST-TENSE aside into a future event ("was supposed to leave on Sunday")', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, {
+      groupId: GROUP,
+      fact: { subject: 'tilly', subjectKind: 'person', predicate: 'was_supposed_to', object: 'was supposed to leave on Sunday' },
+      authoredBy: null,
+      trustLevel: 'untrusted',
+    })
+    expect((await runConsolidationSweep(db, GROUP, new Date(), TZ)).backfilled).toBe(0)
+    const [f] = await db.select({ e: facts.eventAt }).from(facts).where(eq(facts.groupId, GROUP))
+    expect(f.e).toBeNull()
   })
 
   it('recency-bounds the scan by recorded_at (an old undated fact is out of scope)', async () => {

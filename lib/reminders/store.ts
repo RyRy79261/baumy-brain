@@ -1,4 +1,4 @@
-import { and, desc, eq, lte, sql } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, lt, lte, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { reminders } from '@/db/schema'
 
@@ -35,6 +35,15 @@ export async function createReminder(db: Database, input: CreateReminderInput): 
 // de-dupe key, so a stage is never nudged twice (and a cancelled/sent one is not recreated).
 export async function remindersForEventFact(db: Database, eventFactId: string): Promise<{ fireAt: Date }[]> {
   return db.select({ fireAt: reminders.fireAt }).from(reminders).where(eq(reminders.eventFactId, eventFactId))
+}
+
+// Same, for every fact in one EVENT group. The scan anchors a heads-up to the group's earliest
+// fact, but a sibling fact may have anchored an earlier run's reminder — checking the whole group
+// is what stops "Ryan returns home" and "Ryan needs a lift" nudging the house twice about one
+// arrival. Empty input → no query, no rows.
+export async function remindersForEventFacts(db: Database, eventFactIds: string[]): Promise<{ fireAt: Date }[]> {
+  if (eventFactIds.length === 0) return []
+  return db.select({ fireAt: reminders.fireAt }).from(reminders).where(inArray(reminders.eventFactId, eventFactIds))
 }
 
 // Scheduled event-surfacing heads-ups whose anchoring fact is NO LONGER CURRENT (superseded or
@@ -111,8 +120,12 @@ export async function listReminders(db: Database, groupId: string, limit = 100) 
     .limit(limit)
 }
 
-// Scheduled reminders due at/before `before` — for the arm cron + the sweeper.
-export async function dueScheduled(db: Database, before: Date, limit = 100) {
+// Scheduled reminders due at/before `before` — for the arm cron + the digest.
+// `notBefore` is the STALENESS FLOOR: a reminder whose moment has long passed must never be
+// delivered as if it were now. Without it, anything that sat un-delivered (a paused cron, a
+// deploy gap) piled up as 'scheduled' forever and the next digest flushed the whole backlog —
+// which is how a months-old reminder landed in the group this morning.
+export async function dueScheduled(db: Database, before: Date, limit = 100, notBefore?: Date) {
   return db
     .select({
       id: reminders.id,
@@ -122,7 +135,26 @@ export async function dueScheduled(db: Database, before: Date, limit = 100) {
       anchorKind: reminders.anchorKind, // event_offset heads-ups render differently from ⏰ reminders
     })
     .from(reminders)
-    .where(and(eq(reminders.status, 'scheduled'), lte(reminders.fireAt, before)))
+    .where(
+      and(
+        eq(reminders.status, 'scheduled'),
+        lte(reminders.fireAt, before),
+        ...(notBefore ? [gte(reminders.fireAt, notBefore)] : []),
+      ),
+    )
     .orderBy(reminders.fireAt) // earliest-due first, so a >limit backlog drains in order
     .limit(limit)
+}
+
+// Retire reminders whose fire time is further past than the grace window — they are no longer
+// news. Cancelled (not deleted) so the dashboard still shows what happened, and cancelled rows are
+// gated out of every delivery path by claimReminder. Returns how many were retired so the digest
+// can LOG the drop instead of silently swallowing it.
+export async function expireStaleScheduled(db: Database, olderThan: Date): Promise<number> {
+  const rows = await db
+    .update(reminders)
+    .set({ status: 'cancelled' })
+    .where(and(eq(reminders.status, 'scheduled'), lt(reminders.fireAt, olderThan)))
+    .returning({ id: reminders.id })
+  return rows.length
 }

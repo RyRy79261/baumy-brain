@@ -3,7 +3,7 @@ import { DateTime } from 'luxon'
 import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { reminders } from '@/db/schema'
-import { claimReminder, markSent, dueScheduled, releaseReminder, reapStaleFiring } from '@/lib/reminders/store'
+import { claimReminder, markSent, dueScheduled, releaseReminder, reapStaleFiring, expireStaleScheduled } from '@/lib/reminders/store'
 import { sendToHouse } from '@/lib/telegram/client'
 import { getHouseChatId } from '@/lib/identity/house'
 import { loadResponsePolicy } from '@/lib/policy'
@@ -11,6 +11,13 @@ import { houseTz } from '@/lib/env'
 
 const ARM_WINDOW_DAYS = 6 // Inngest Free caps a single sleep at 7 days
 type DueRow = Awaited<ReturnType<typeof dueScheduled>>[number]
+
+// How late a reminder may be and still be worth sending. Past this it is history, not a reminder:
+// "let them in when they return tomorrow evening" delivered weeks later is noise, and the house
+// cannot tell it apart from something happening now. Anything older is cancelled, not delivered.
+// One digest slot of slack (a 20:00 miss still goes out at 08:00) plus room for a deploy gap.
+const STALE_AFTER_HOURS = 24
+const staleBefore = (now: Date): Date => new Date(now.getTime() - STALE_AFTER_HOURS * 3_600_000)
 
 // Delivery framing: an explicit "remind me" reminder posts as ⏰; a proactive event-surfacing
 // heads-up (anchor_kind='event_offset', docs/spec/event-surfacing.md) posts as 🗓️ so it reads as
@@ -29,8 +36,9 @@ export const reminderArm = inngest.createFunction(
       const horizon = new Date(Date.now() + ARM_WINDOW_DAYS * 86_400_000)
       // Only EXPLICIT reminders are armed for near-time sleepUntil delivery. Event heads-ups
       // (anchor_kind='event_offset') are delivered BATCHED by the daytime digest instead, so they
-      // never fire at odd individual times — exclude them from arming here.
-      const due = await dueScheduled(db, horizon)
+      // never fire at odd individual times — exclude them from arming here. The staleness floor
+      // keeps a long-past backlog row from being armed and fired as if it were due now.
+      const due = await dueScheduled(db, horizon, 100, staleBefore(new Date()))
       return due.filter((r) => r.anchorKind !== 'event_offset')
     })
     if (rows.length > 0) {
@@ -90,9 +98,16 @@ export const reminderDeliver = inngest.createFunction(
 // reminder as ONE message per destination, claim-once. Claiming first is the exactly-once guard vs
 // the sleepUntil path — whichever claims a row wins; the other skips it. A send failure releases the
 // whole batch back to 'scheduled' so the next slot retries (never a zero-fire, never a double-send).
-export async function deliverDueReminders(db: ReturnType<typeof createHttpDb>, now: Date): Promise<{ sent: number; messages: number }> {
+export async function deliverDueReminders(
+  db: ReturnType<typeof createHttpDb>,
+  now: Date,
+): Promise<{ sent: number; messages: number; expired: number }> {
   await reapStaleFiring(db, new Date(now.getTime() - 10 * 60_000))
-  const due = await dueScheduled(db, now)
+  // Retire anything too late to be news BEFORE selecting — so a backlog is dropped, never flushed
+  // into the group. Logged, never silent (audit trail lives in the cancelled rows).
+  const expired = await expireStaleScheduled(db, staleBefore(now))
+  if (expired > 0) console.warn(`reminder-digest: retired ${expired} stale reminder(s) (>${STALE_AFTER_HOURS}h past due)`)
+  const due = await dueScheduled(db, now, 100, staleBefore(now))
   // Batch by destination (all reminders target the house group, but group defensively).
   const byDest = new Map<string, DueRow[]>()
   for (const r of due) byDest.set(r.deliverChatId, [...(byDest.get(r.deliverChatId) ?? []), r])
@@ -114,7 +129,7 @@ export async function deliverDueReminders(db: ReturnType<typeof createHttpDb>, n
     sent += claimed.length
     messages += 1
   }
-  return { sent, messages }
+  return { sent, messages, expired }
 }
 
 // Digest (docs/spec/reminders.md) — REPLACES the old every-30-min poll. A batched heads-up at

@@ -4,47 +4,72 @@ import { getHouseChatId } from '@/lib/identity/house'
 import { loadResponsePolicy } from '@/lib/policy'
 import { houseTz } from '@/lib/env'
 import { upcomingDatedFacts } from '@/lib/memory/facts'
-import { createReminder, remindersForEventFact } from '@/lib/reminders/store'
-import { computeNudgeStages, nudgeContent } from '@/lib/surfacing/nudge'
+import { memberDisplayNames } from '@/lib/identity/roster'
+import { createReminder, remindersForEventFacts } from '@/lib/reminders/store'
+import { computeNudgeStages, groupEvents, leadFor, whenLabel } from '@/lib/surfacing/nudge'
+import { writeHeadsUp } from '@/lib/ai/nudge'
 
 // Cover the ~7-day-ahead stage with a day of margin.
 const HORIZON_DAYS = 8
 
 // The scan CORE (exported for testing): for every current, non-secret dated fact in the horizon,
-// ensure event-anchored reminders exist at each still-future lead stage, de-duped per fact so a
-// re-run never double-schedules. Pure DB work — the cron wrapper resolves the house + pause gate.
+// ensure event-anchored reminders exist at each still-future lead stage. Two things keep this from
+// spamming the group (the failure the house actually saw — five stub lines from one message):
+//   • GROUPING — facts about the same subject on the same day are ONE event, one heads-up, not one
+//     per extracted triple. De-duped against every reminder already tied to ANY fact in the group.
+//   • The LINE IS WRITTEN, not templated — the model reads the group's facts and writes a sentence,
+//     or says SKIP. A skip (or any model hiccup) schedules nothing; the next scan retries.
 export async function runEventSurfacingScan(
   db: Database,
   groupId: string,
   now: Date,
   tz: string,
-): Promise<{ created: number; scanned: number }> {
+): Promise<{ created: number; scanned: number; skipped: number }> {
   const to = new Date(now.getTime() + HORIZON_DAYS * 86_400_000)
   const dated = await upcomingDatedFacts(db, groupId, now, to)
+  const names = await memberDisplayNames(db)
   let created = 0
-  for (const f of dated) {
-    const stages = computeNudgeStages(f.eventAt, now, tz)
+  let skipped = 0
+  for (const ev of groupEvents(dated, tz)) {
+    const stages = computeNudgeStages(ev.eventAt, now, tz)
     if (stages.length === 0) continue
-    // De-dupe by fire-minute against every reminder already tied to this fact (any status),
-    // so a stage is never scheduled twice and a sent/cancelled one is not recreated.
-    const existing = await remindersForEventFact(db, f.id)
+    // De-dupe by fire-minute across EVERY fact in the group (any status), so a stage is never
+    // scheduled twice, a sibling fact cannot re-open one, and a sent/cancelled one is not recreated.
+    const existing = await remindersForEventFacts(
+      db,
+      ev.facts.map((f) => f.id),
+    )
     const seen = new Set(existing.map((r) => Math.floor(r.fireAt.getTime() / 60_000)))
+    const knowledge = ev.facts.map((f) => ({
+      subject: f.subject,
+      predicate: f.predicate,
+      object: f.objectValue,
+      authoredBy: f.authoredBy ? (names.get(f.authoredBy) ?? null) : null,
+    }))
     for (const s of stages) {
       if (seen.has(Math.floor(s.fireAt.getTime() / 60_000))) continue
+      const line = await writeHeadsUp(knowledge, leadFor(s.stage), whenLabel(ev.eventAt, tz))
+      if (!line) {
+        // Not an event / not worth pinging the house (or the model errored). Schedule NOTHING —
+        // an unwanted heads-up is worse than a missed one. Nothing is written, so a later scan
+        // re-asks; a genuinely skippable event just stays quiet.
+        skipped++
+        continue
+      }
       await createReminder(db, {
         groupId,
         deliverChatId: groupId, // fixed house group, code-resolved (never LLM)
-        content: nudgeContent(f.subject, f.predicate, f.eventAt, s.stage, tz),
+        content: line,
         fireAt: s.fireAt,
         anchorKind: 'event_offset',
-        eventFactId: f.id,
+        eventFactId: ev.anchor.id,
         createdBy: null, // system-generated
       })
       seen.add(Math.floor(s.fireAt.getTime() / 60_000))
       created++
     }
   }
-  return { created, scanned: dated.length }
+  return { created, scanned: dated.length, skipped }
 }
 
 // Proactive event-surfacing (docs/spec/event-surfacing.md): the missing "production path that
