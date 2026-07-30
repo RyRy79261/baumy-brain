@@ -131,6 +131,22 @@ re-examine); the **surfacing horizon** is *forward* on `event_at` (which events 
 is LLM-free (deterministic parse + fact currency), honors `/pause`, and once a fact is dated it drops
 out of the candidate set, so nothing re-processes.
 
+## Cleaning up what v1 already wrote (migration `0011_retire_templated_nudges`)
+
+The code fix stops *new* garbage, but three things were already in the DB, so the cleanup is a
+**data migration** — it runs automatically on deploy (`scripts/maybe-migrate.mjs`), not a script
+somebody has to remember:
+
+- **Pending templated heads-ups are DELETED** (not cancelled). Rows already scheduled would still
+  post `Heads-up — Mad profile, today` at their fire time. Delete, because the scan de-dupes against
+  reminders of *any* status — a cancelled row would permanently block the properly-written
+  replacement for that event×stage. The `LIKE` is anchored to the exact old template (prefix **and**
+  the `, <lead> (` tail) so a model-written line that happens to open with "Heads-up" survives.
+- **Invented `event_at` values are nulled** on profiles and on any fact whose value is longer than
+  the parser's 120-char limit. They stay perfectly good facts; they are just not events.
+- **The un-delivered backlog is cancelled** (audited, not deleted). `expireStaleScheduled` handles
+  this on every digest run from now on; the migration clears what was already sitting there.
+
 ## Deliberately deferred
 
 - **Coalescing across *different* events on the same day.** v2 collapses the facts of one event into
