@@ -22,7 +22,7 @@ describe('reminder digest — batched, exactly-once delivery', () => {
     await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'bins out tonight', fireAt: minsAgo(10), anchorKind: 'event_offset', createdBy: null })
 
     const res = await deliverDueReminders(db, new Date())
-    expect(res).toEqual({ sent: 2, messages: 1 }) // two reminders → ONE message
+    expect(res).toEqual({ sent: 2, messages: 1, expired: 0 }) // two reminders → ONE message
     expect(sendToHouse).toHaveBeenCalledTimes(1)
     const body = String(sendToHouse.mock.calls[0][1])
     expect(body).toContain('⏰ call the landlord') // explicit → ⏰
@@ -47,6 +47,34 @@ describe('reminder digest — batched, exactly-once delivery', () => {
     await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'later', fireAt: new Date(Date.now() + 3_600_000), createdBy: null })
     expect((await deliverDueReminders(db, new Date())).sent).toBe(0)
     expect(sendToHouse).not.toHaveBeenCalled()
+  })
+
+  it('RETIRES a long-past reminder instead of flushing it into the group', async () => {
+    // The "patos" bug: anything that sat un-delivered stayed 'scheduled' forever, and the next
+    // digest posted it as if it were now. Past the grace window it is history, not a reminder.
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await createReminder(db, {
+      groupId: GROUP,
+      deliverChatId: GROUP,
+      content: 'let them in when they return tomorrow evening',
+      fireAt: new Date(Date.now() - 40 * 86_400_000), // ~6 weeks late
+      createdBy: null,
+    })
+    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'bins out', fireAt: minsAgo(30), createdBy: null })
+
+    const res = await deliverDueReminders(db, new Date())
+    expect(res).toEqual({ sent: 1, messages: 1, expired: 1 })
+    expect(String(sendToHouse.mock.calls[0][1])).not.toContain('let them in') // never delivered
+    const rows = await db.select().from(reminders).where(eq(reminders.groupId, GROUP))
+    expect(rows.find((r) => r.content.startsWith('let them in'))!.status).toBe('cancelled') // audited, not deleted
+  })
+
+  it('still delivers a reminder that is late but inside the grace window', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'from last night', fireAt: minsAgo(14 * 60), createdBy: null })
+    expect((await deliverDueReminders(db, new Date())).sent).toBe(1)
   })
 
   it('a send failure releases the batch back to scheduled (retries, never zero-fire)', async () => {

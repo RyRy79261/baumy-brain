@@ -1,9 +1,10 @@
 import { DateTime } from 'luxon'
 
 // Proactive event-surfacing (docs/spec/event-surfacing.md): given a dated fact's absolute
-// event_at, work out WHEN to give the house advance notice and WHAT the heads-up says. Pure +
-// deterministic (no I/O), so the lead-time policy is unit-tested. The scan turns each returned
-// stage into an event-anchored reminder, reusing the proven exactly-once delivery machinery.
+// event_at, work out WHEN to give the house advance notice, and which facts belong to the SAME
+// event. Pure + deterministic (no I/O), so the lead-time and grouping policy are unit-tested. The
+// scan turns each returned stage into an event-anchored reminder, reusing the proven exactly-once
+// delivery machinery; the LINE itself is written by the model (lib/ai/nudge.ts).
 
 export type NudgeStage = 'week' | 'day' | 'morning'
 
@@ -25,14 +26,43 @@ export function computeNudgeStages(eventAt: Date, now: Date, tz = 'Europe/Berlin
     .map((c) => ({ stage: c.stage, fireAt: c.fireAt.toJSDate() }))
 }
 
-// The heads-up text (delivery adds the 🗓️ prefix). Built from the fact's subject + predicate +
-// a FRESH date rendered from event_at — never the fact's stored object, because that is often the
-// original relative phrase ("tomorrow night") which is stale by the time the nudge fires.
-export function nudgeContent(subject: string, predicate: string, eventAt: Date, stage: NudgeStage, tz = 'Europe/Berlin'): string {
-  const lead = stage === 'week' ? 'next week' : stage === 'day' ? 'tomorrow' : 'today'
-  const when = DateTime.fromJSDate(eventAt).setZone(tz).toFormat('ccc d LLL')
-  const subj = subject.charAt(0).toUpperCase() + subject.slice(1)
-  const pred = predicate.replace(/_/g, ' ').trim()
-  const basis = pred ? `${subj} ${pred}` : subj
-  return `Heads-up — ${basis}, ${lead} (${when})`
+// How the model is told to phrase the lead, and the date it renders — always from event_at, never
+// the fact's stored words (often a relative phrase that is stale by the time the nudge fires).
+export const leadFor = (stage: NudgeStage): 'next week' | 'tomorrow' | 'today' =>
+  stage === 'week' ? 'next week' : stage === 'day' ? 'tomorrow' : 'today'
+
+export const whenLabel = (eventAt: Date, tz = 'Europe/Berlin'): string =>
+  DateTime.fromJSDate(eventAt).setZone(tz).toFormat('ccc d LLL')
+
+// ONE event, not one database row. A single message shreds into several fact triples ("Ryan
+// returns home", "Ryan needs a lift"), each carrying the SAME resolved date — surfacing them
+// row-by-row is what turned one arrival into five heads-up lines. Facts about the same SUBJECT on
+// the same LOCAL DAY are one event: they get one nudge, written from all of them together.
+export interface GroupableFact {
+  id: string
+  subjectEntityId: string
+  eventAt: Date
+}
+
+export interface EventGroup<T extends GroupableFact> {
+  key: string
+  facts: T[]
+  // The anchor is the earliest fact of the group (id as a stable tiebreak) — the row new reminders
+  // are attached to. Dedupe still checks EVERY fact in the group, so a late-arriving sibling
+  // cannot re-schedule a stage that already exists.
+  anchor: T
+  eventAt: Date
+}
+
+export function groupEvents<T extends GroupableFact>(facts: T[], tz = 'Europe/Berlin'): EventGroup<T>[] {
+  const byKey = new Map<string, T[]>()
+  for (const f of facts) {
+    const day = DateTime.fromJSDate(f.eventAt).setZone(tz).toFormat('yyyy-LL-dd')
+    const key = `${f.subjectEntityId}|${day}`
+    byKey.set(key, [...(byKey.get(key) ?? []), f])
+  }
+  return [...byKey.entries()].map(([key, group]) => {
+    const sorted = [...group].sort((a, b) => a.eventAt.getTime() - b.eventAt.getTime() || a.id.localeCompare(b.id))
+    return { key, facts: sorted, anchor: sorted[0], eventAt: sorted[0].eventAt }
+  })
 }

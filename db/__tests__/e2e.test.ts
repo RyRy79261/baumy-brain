@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { and, eq } from 'drizzle-orm'
 import { startPgHarness, dockerAvailable, type PgHarness } from './pg-harness'
 import { entities } from '@/db/schema'
@@ -9,7 +9,6 @@ import { resolveSeedEntities, connectedEdges, gatherGraphContext } from '@/lib/m
 import { findMemoryToForget, forgetMemory } from '@/lib/memory/forget'
 import { createReminder, claimReminder, markSent, releaseReminder } from '@/lib/reminders/store'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
-import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { loadResponsePolicy, setGlobalEnabled } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
@@ -17,6 +16,15 @@ import { embedSync } from '@/lib/ai/embed'
 
 // Secure-value capture needs the app-side key.
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 3).toString('base64')
+
+// The heads-up LINE is written by the model (lib/ai/nudge.ts) — mocked, like every other LLM call
+// in the suite, so this stays offline. What the e2e proves is the REAL SQL underneath: the dated-
+// fact query, the grouping, the dedupe and the cancel, against real Postgres.
+vi.mock('@/lib/ai/nudge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/ai/nudge')>()
+  return { ...actual, writeHeadsUp: async (facts: { subject: string }[]) => `heads-up about ${facts[0]?.subject}` }
+})
+const { runEventSurfacingScan } = await import('@/lib/inngest/functions/surfacing')
 const embed = async (t: string) => embedSync(t)
 const GROUP = '-100e2e'
 
@@ -241,7 +249,7 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     )
     expect(rows.rows.length).toBeGreaterThanOrEqual(2)
     expect(rows.rows[0].event_fact_id).toBeTruthy() // anchored to the fact
-    expect(String(rows.rows[0].content)).toContain('Heads-up')
+    expect(String(rows.rows[0].content)).toContain('guest-nadia') // the written line, not a template
     // re-scan is idempotent (no duplicate stages)
     const again = await runEventSurfacingScan(h.db, GROUP, new Date(), 'Europe/Berlin')
     expect(again.created).toBe(0)

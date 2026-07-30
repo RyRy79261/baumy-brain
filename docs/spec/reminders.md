@@ -27,6 +27,26 @@ feature — so the delivery model is built to be cheap and calm, not second-prec
    ~24/7 and burned ~100 CU-hours/month for a feature nobody triggers that often. Reminder wakes
    went from ~48/day to **1–2/day**.
 
+## Staleness — a reminder has a shelf life
+
+A reminder that missed its moment used to sit `status = 'scheduled'` **forever**, and the next
+delivery path to look would send it as if it were now. That is how a months-old "let them in when
+they return tomorrow evening" landed in the group one morning: whatever the reason nothing delivered
+it at the time (a paused cron, a deploy gap, the sweeper→digest changeover), the backlog was still
+sitting there and the first digest to run flushed it.
+
+So delivery has a **grace window** — `STALE_AFTER_HOURS = 24` (`lib/inngest/functions/reminders.ts`).
+Past that, a reminder is history, not news:
+
+- the digest calls `expireStaleScheduled` **before** selecting, flipping anything older to
+  `cancelled` — retired, not delivered. `cancelled` (not deleted) keeps the audit trail on the
+  dashboard, and `claimReminder` gates cancelled rows out of every delivery path.
+- `dueScheduled` takes a `notBefore` floor, so both the digest **and** the `reminder-arm` cron ignore
+  ancient rows even if one slips past the sweep.
+- the count is **logged**, never silently swallowed.
+
+24h is one digest slot of slack (a missed 20:00 still goes out at 08:00) plus room for a deploy gap.
+
 ## Frequency (owner-settable)
 
 `response_policy.reminder_frequency` (`lib/policy.ts`, `setReminderFrequency`):
@@ -45,6 +65,9 @@ are inside the 06:00–02:00 waking window, so the digest never sends at 3am.
   reminder is never double-sent even though two paths can reach it. A send failure calls
   `releaseReminder` (back to `scheduled`) so the next slot retries — never a zero-fire. `markSent`
   is separate from the send, and a row stuck in `firing` is reaped by the digest's `reapStaleFiring`.
+  Exactly-once is a ceiling, not a floor: the staleness window above means a reminder can legitimately
+  fire **zero** times if nothing delivered it within a day of its moment. That is the intended
+  outcome — late enough and it is misinformation, not a reminder.
 - **Fixed destination.** Reminders/digests deliver only to the code-resolved house group
   (`deliverChatId`), never an LLM-picked recipient.
 - **Honors `/pause`.** The digest is proactive output, so it skips when `global_enabled` is false
