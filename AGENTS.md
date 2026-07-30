@@ -197,7 +197,17 @@ crown jewels. The pipeline:
 - `.env*` files may be blocked by local permissions — edit `SETUP.md`/`.env.example` guidance
   instead of assuming you can read them.
 - Reminders are exactly-once: claim → send → mark-sent, with release-on-failure + a stale-firing
-  reaper. Don't reorder that.
+  reaper. Don't reorder that. Exactly-once is a **ceiling, not a floor** — a reminder more than
+  `STALE_AFTER_HOURS` (24h) past its moment is **cancelled, not delivered** (`expireStaleScheduled` +
+  the `dueScheduled` floor). Removing that grace window is how a months-old backlog gets flushed into
+  the group as if it were today's news (`docs/spec/reminders.md` §Staleness).
+- Proactive event heads-ups (`docs/spec/event-surfacing.md`): the **line is written by the model**
+  (`lib/ai/nudge.ts`), never templated from `{subject, predicate}` columns — that printed row
+  fragments ("Heads-up — Mad profile, today") into the house group. Code still picks what is eligible
+  (grouped **per event**, not per fact triple; profiles excluded; secrets excluded) and where it goes.
+  A `SKIP` from the model — or any error — schedules **nothing**. Dates on stored facts are read with
+  `parseEventDate` (precision-first: no forward-dating, coverage + known-day guards), never a bare
+  chrono call over arbitrary values.
 
 ---
 

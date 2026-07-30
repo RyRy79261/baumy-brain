@@ -5,7 +5,7 @@ import { getHouseChatId } from '@/lib/identity/house'
 import { loadResponsePolicy } from '@/lib/policy'
 import { houseTz } from '@/lib/env'
 import { recentUndatedFacts, setFactEventAt } from '@/lib/memory/facts'
-import { parseWhen } from '@/lib/reminders/parse'
+import { parseEventDate } from '@/lib/reminders/parse'
 import { orphanedEventReminders, cancelReminder } from '@/lib/reminders/store'
 import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
 
@@ -38,10 +38,13 @@ export async function runConsolidationSweep(
   let backfilled = 0
   for (const f of undated) {
     // Resolve the fact's stored value against WHEN IT WAS RECORDED — "tomorrow night" said last
-    // Tuesday means the Wednesday after, not tomorrow. chrono returns null for a non-date value,
-    // so a plain attribute ("the extra room") is safely skipped.
-    const parsed = parseWhen(f.objectValue, tz, DateTime.fromJSDate(f.recordedAt))
-    if (!parsed || parsed.fireAt.getTime() <= now.getTime()) continue // unparseable or already past
+    // Tuesday means the Wednesday after, not tomorrow. parseEventDate is the PRECISION-FIRST
+    // reader (docs/spec/event-surfacing.md): the date phrase must be most of the value and must
+    // name a day, and it is never rolled forward. A plain attribute ("the extra room"), a
+    // past-tense aside ("was supposed to leave on Sunday") and a prose blob with a month name in
+    // it all resolve to null instead of inventing a future event.
+    const parsed = parseEventDate(f.objectValue, tz, DateTime.fromJSDate(f.recordedAt))
+    if (!parsed || parsed.fireAt.getTime() <= now.getTime()) continue // not a date, or already past
     await setFactEventAt(db, f.id, parsed.fireAt)
     backfilled++
   }

@@ -14,5 +14,5 @@ export const MODELS: Record<Role, { provider: 'anthropic'; id: string }> = {
   assess: { provider: 'anthropic', id: process.env.BAUMY_ASSESS_MODEL ?? 'claude-sonnet-5' },
   // ADVISOR — the escalation ceiling: a model may signal it needs more, and the reply
   // bumps Sonnet → Opus for that turn only. Also the scheduled-task deliberative tier.
-  advisor: { provider: 'anthropic', id: process.env.BAUMY_ADVISOR_MODEL ?? 'claude-opus-4-8' },
+  advisor: { provider: 'anthropic', id: process.env.BAUMY_ADVISOR_MODEL ?? 'claude-opus-5' },
 }
