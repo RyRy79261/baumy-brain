@@ -35,7 +35,10 @@ const DEFAULT: ResponsePolicy = {
   categories: {},
   confidence_threshold: 0.7,
   muted_topics: [],
-  reply_frequency: 'balanced',
+  // Baumy is a secretary, not a chatterbox: default to 'quiet' (0.85 floor) so an UNaddressed
+  // message only earns words when it's clearly meaningful — a direct @mention/reply/DM still
+  // always answers, and reactions are never gated. The owner can retune live in the dashboard.
+  reply_frequency: 'quiet',
   reminder_frequency: 'twice',
 }
 
