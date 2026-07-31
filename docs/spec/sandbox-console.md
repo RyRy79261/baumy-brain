@@ -1,6 +1,63 @@
 # The console — looking inside Baumy's brain (and, later, a sandbox to poke it)
 
-**Status:** Phase 1 (read-only console) implemented. Phases 2–3 designed, not built.
+**Status:** Phase 1 (read-only console) and the Phase-2 sandbox ENGINE implemented. The sandbox has
+no UI yet; Phase 3 (editing) is designed, not built.
+
+## How to actually use it
+
+### The console — a page in the dashboard
+
+`/admin/console`. **Owner only.**
+
+1. DM the bot `/dashboard`. It replies with a one-time login link (expires in 5 minutes) — that is
+   the whole login; the link sets a signed session cookie.
+2. Follow the link. If you are the owner, the nav gains a **Console** tab; otherwise go straight to
+   `/admin/console`. Non-owners get "This surface is owner-only" — the hidden nav link is cosmetic,
+   the page re-checks `requireOwner` itself.
+
+"Owner" means `members.role = 'owner'` in the roster, or the `BAUMY_OWNER_ID` env override (which
+also fails closed: if the DB is unreachable, only the env owner is trusted).
+
+Four sections, all read-only:
+
+| Section | Answers |
+|---|---|
+| **About to happen** | Every scheduled reminder split into **due now** (the next digest sends these), **upcoming**, **too late to send** (past the 24h window — these get cancelled, not delivered) and **stuck mid-send**. |
+| **Events it knows about** | Dated facts inside the 8-day surfacing horizon — the events a heads-up *could* be written for — plus orphaned heads-ups and undated catch-up candidates. |
+| **Waiting on a human** | Pending confirm cards (type and who asked, never the payload) and how many dashboard login links are still live. |
+| **What it made of what we said** | Each recent message with the facts it produced and the heads-ups those facts scheduled, hanging off it. Superseded facts are shown greyed rather than hidden. |
+
+Running it locally is `pnpm dev` plus the usual env (`DATABASE_URL`, `BAUMY_SESSION_SECRET`,
+`BAUMY_ENCRYPTION_KEY`, and `BAUMY_PUBLIC_URL` so the login link points at localhost). It reads the
+**real** database — it is an observation deck, not a sandbox.
+
+### The sandbox — a library, no UI yet
+
+There is no "make me a sandbox" button. Today it is driven from a test or a script:
+
+```ts
+import { createSandbox, sendAs, advanceBy, spoken } from '@/lib/sandbox/harness'
+
+const sb = await createSandbox({
+  db,                                   // any Database — PGlite in tests, a Neon branch later
+  startAt: new Date('2026-07-01T09:00:00Z'),
+  people: [{ id: 501, name: 'Madeleine', role: 'owner' }, { id: 502, name: 'Charl' }],
+})
+
+await sendAs(sb, 'Madeleine', "zuzana's arriving on the 8th, she'll take the cave")
+await sendAs(sb, 'Charl', 'is the cave free?', { dm: true })   // the member_dm lane
+await sendAs(sb, 'Charl', 'the boiler code is 9999', { forwarded: true }) // quarantined
+
+const res = await advanceBy(sb, { days: 7 })   // runs each cron at ITS OWN simulated instant
+res.fired.forEach((f) => console.log(f.at, f.job, spoken(f.said)))
+```
+
+`lib/sandbox/__tests__/harness.test.ts` is the worked example — run it with
+`npx vitest run lib/sandbox`.
+
+Two properties worth knowing before trusting it: `sendAs` drives the **real** `runIngest`, so the
+trust wall and lane derivation are the production ones; and outbound capture is installed in the
+**transport**, so a sandbox cannot post to the real house group even holding production config.
 
 ## Why
 
