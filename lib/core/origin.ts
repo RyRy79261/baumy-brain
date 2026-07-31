@@ -52,8 +52,15 @@ const IGNORE: Origin = {
 // `houseChatId` is the house group id — resolved by the caller from house_config
 // (auto-captured when the bot is added). Falls back to the BAUMY_HOUSE_CHAT_ID
 // env override when a caller omits it (e.g. unit tests).
-export function resolveOriginParts(p: OriginParts, roster: Roster, houseChatId?: string): Origin {
+// `acceptHouseIds` is the alias set (docs/spec/telegram.md D9): every chat id that counts as the
+// house — the stable scope id AND the current live transport id after a supergroup migration. A
+// message from ANY of them is the house lane; scope is still derived via houseScopeForOrigin from
+// the stable scope id (passed as `houseChatId`), never from the inbound chat. Omitted (tests / the
+// pre-migration case) → just the single `houseChatId`. All ids come from Telegram-authenticated
+// transport fields / stored config, never message text, so the injection wall holds.
+export function resolveOriginParts(p: OriginParts, roster: Roster, houseChatId?: string, acceptHouseIds?: string[]): Origin {
   const house = houseChatId ?? process.env.BAUMY_HOUSE_CHAT_ID ?? ''
+  const accept = acceptHouseIds && acceptHouseIds.length > 0 ? acceptHouseIds : house !== '' ? [house] : []
   const { chatId, fromId, text, isPrivate } = p
   const isOwner = fromId != null && roster.isOwner(fromId)
   // Forwarded or bot-origin content is quarantined regardless of lane (injection
@@ -65,7 +72,7 @@ export function resolveOriginParts(p: OriginParts, roster: Roster, houseChatId?:
   // ALWAYS untrusted for privileged actions (privacy mode is OFF → injection
   // wall); it can only become memory, a reply, or a (fixed-destination) reminder.
   // owner/member is attribution only.
-  if (house !== '' && chatId === house) {
+  if (accept.includes(chatId)) {
     return { source: isOwner ? 'owner' : 'member', lane: 'house', memoryTrust: quarantined ? 'quarantined' : 'untrusted', privileged: false, chatId, fromId, text }
   }
 
@@ -79,7 +86,7 @@ export function resolveOriginParts(p: OriginParts, roster: Roster, houseChatId?:
   return { ...IGNORE, chatId, fromId, text }
 }
 
-export function resolveOrigin(update: TelegramUpdate, roster: Roster, houseChatId?: string): Origin {
+export function resolveOrigin(update: TelegramUpdate, roster: Roster, houseChatId?: string, acceptHouseIds?: string[]): Origin {
   const msg = update.message ?? update.edited_message
   if (!msg) return IGNORE
   return resolveOriginParts(
@@ -93,5 +100,6 @@ export function resolveOrigin(update: TelegramUpdate, roster: Roster, houseChatI
     },
     roster,
     houseChatId,
+    acceptHouseIds,
   )
 }

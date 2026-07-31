@@ -102,7 +102,16 @@ export const houseConfig = pgTable(
   'baumy_house_config',
   {
     id: boolean('id').primaryKey().default(true),
+    // The STABLE house scope id — the key every memory/fact/reminder row is group-scoped by.
+    // Captured on bot-add and NEVER rewritten on a supergroup migration (that would orphan all
+    // memory). The live transport id below rides the migration instead (docs/spec/telegram.md D9).
     houseGroupChatId: text('house_group_chat_id'),
+    // The CURRENT Telegram transport id (a -100… supergroup id after a group→supergroup upgrade).
+    // Null → the group hasn't migrated, so sends/inbound use house_group_chat_id. This is the
+    // "alias" seam: scope stays put (house_group_chat_id), transport follows the migration here.
+    liveChatId: text('live_chat_id'),
+    // Provenance: the id we migrated away from (audit/debug only). Additive, nullable.
+    migratedFromChatId: text('migrated_from_chat_id'),
     houseTimezone: text('house_timezone').notNull().default('Europe/Berlin'),
     responsePolicy: jsonb('response_policy')
       .notNull()

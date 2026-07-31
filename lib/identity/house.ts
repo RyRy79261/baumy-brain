@@ -14,6 +14,40 @@ export async function getHouseChatId(db: Database): Promise<string> {
   return cfg?.id ?? ''
 }
 
+// Alias seam (docs/spec/telegram.md D9). A group→supergroup upgrade changes the Telegram
+// chat_id, but the SCOPE key (getHouseChatId) must stay put or all memory orphans. So we split:
+//   - scopeId  = the stable memory scope (house_group_chat_id / env pin) — group_id everywhere.
+//   - sendId   = the CURRENT transport id (live_chat_id if set, else scopeId) — where sends land.
+//   - acceptIds = every id that counts as "the house" for inbound lane resolution (both, deduped).
+// One query, so the ingest hot path resolves all three at once.
+export interface HouseIds {
+  scopeId: string
+  sendId: string
+  acceptIds: string[]
+}
+
+export async function resolveHouseIds(db: Database): Promise<HouseIds> {
+  const override = process.env.BAUMY_HOUSE_CHAT_ID
+  const [cfg] = await db
+    .select({ scope: houseConfig.houseGroupChatId, live: houseConfig.liveChatId })
+    .from(houseConfig)
+    .limit(1)
+  // The env pin overrides the SCOPE only (never the live transport id — that is DB-driven,
+  // captured from Telegram's migration signal, so a redeploy isn't needed to follow a migration).
+  const scopeId = override && override !== '' ? override : (cfg?.scope ?? '')
+  const liveId = cfg?.live ?? ''
+  const sendId = liveId !== '' ? liveId : scopeId
+  const acceptIds = [...new Set([scopeId, sendId].filter((x) => x !== ''))]
+  return { scopeId, sendId, acceptIds }
+}
+
+// Where a proactive house send (reminder/digest/heads-up) lands: the live transport id, resolving
+// to the scope id before any migration. This IS the "code-resolved house group" the fixed-destination
+// invariant refers to (reminders.md) — post-alias it's just resolved at send time, not frozen.
+export async function getHouseSendId(db: Database): Promise<string> {
+  return (await resolveHouseIds(db)).sendId
+}
+
 // The house whose SHARED memory a message reads and writes — distinct from where a reply is
 // SENT (origin.chatId) and from WHO is speaking (origin.fromId). In the house group all three
 // collapse into one chat id; a member DM is exactly where they diverge — scope is the house,
