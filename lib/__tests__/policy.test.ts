@@ -41,11 +41,11 @@ describe('response policy (kill-switch + reply gate)', () => {
     expect(replyAllowed({ ...base, reply_frequency: 'balanced' }, 0.6, 'bins?')).toBe(false)
   })
 
-  it('setReplyFrequency round-trips via the singleton; default is balanced', async () => {
+  it('setReplyFrequency round-trips via the singleton; default is quiet', async () => {
     const db = await makeTestDb()
-    expect((await loadResponsePolicy(db)).reply_frequency).toBe('balanced') // default when unseeded
-    await setReplyFrequency(db, 'quiet')
-    expect((await loadResponsePolicy(db)).reply_frequency).toBe('quiet')
+    expect((await loadResponsePolicy(db)).reply_frequency).toBe('quiet') // default when unseeded (secretary voice)
+    await setReplyFrequency(db, 'balanced')
+    expect((await loadResponsePolicy(db)).reply_frequency).toBe('balanced')
     await setReplyFrequency(db, 'chatty')
     expect((await loadResponsePolicy(db)).reply_frequency).toBe('chatty')
   })
