@@ -35,6 +35,9 @@ type Events = {
   'reminder/cancelled': { data: { reminderId: string } }
   'telegram/my_chat_member': { data: { updateId: number; raw: unknown } }
   'telegram/chat_member': { data: { updateId: number; raw: unknown } }
+  // Group→supergroup migration (docs/spec/telegram.md D9): oldId/newId derived from the
+  // migrate_to_chat_id / migrate_from_chat_id service message (authenticated transport fields).
+  'telegram/chat_migrated': { data: { updateId: number; oldId: string; newId: string } }
 }
 
 // The inbound Telegram message payload — exported so the ingest handler can be invoked

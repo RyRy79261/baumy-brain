@@ -2,6 +2,7 @@ import type { InngestFunction } from 'inngest'
 import { handleTelegramMessage } from './ingest'
 import { handleCallbackQuery } from './callback'
 import { handleMyChatMember, handleChatMember } from './chat-member'
+import { handleChatMigrated } from './migration'
 import { reminderArm, reminderDeliver, reminderDigest } from './reminders'
 import { reembedSweep } from './reembed'
 import { reflectSweep } from './reflect'
@@ -14,6 +15,7 @@ export const functions: InngestFunction.Any[] = [
   handleCallbackQuery,
   handleMyChatMember,
   handleChatMember,
+  handleChatMigrated,
   reminderArm,
   reminderDeliver,
   reminderDigest,
