@@ -28,7 +28,7 @@ import { createPendingAction } from '@/lib/confirm/store'
 import { parseWhen, clampToWakingHours } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
 import { loadRoster, memberDisplayNames } from '@/lib/identity/roster'
-import { getHouseChatId, houseScopeForOrigin } from '@/lib/identity/house'
+import { resolveHouseIds, houseScopeForOrigin } from '@/lib/identity/house'
 import { houseTz } from '@/lib/env'
 import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
@@ -51,8 +51,11 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     // that were only ever seen as a raw id (so Baumy can attribute a name, not digits).
     const fromName =
       [event.data.fromFirstName, event.data.fromLastName].filter(Boolean).join(' ') || event.data.fromUsername || null
-    // House group id from house_config (captured on bot-add); env override wins.
-    const houseChatId = await getHouseChatId(createHttpDb())
+    // House ids from house_config (captured on bot-add; env pins the scope). `houseChatId` is the
+    // STABLE scope id (group_id everywhere); `acceptIds` also includes the live transport id so an
+    // inbound message from the migrated -100… supergroup still resolves to the house lane (alias
+    // seam, docs/spec/telegram.md D9). Reply destination stays the inbound chat (origin.chatId).
+    const { scopeId: houseChatId, acceptIds } = await resolveHouseIds(createHttpDb())
     // Owner-configurable response policy (kill-switch / confidence floor / mutes).
     const policy = await loadResponsePolicy(createHttpDb())
 
@@ -63,7 +66,9 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
       // plaintext at rest forever (the encryption layer exists precisely to avoid that).
       // update_id + chat_id are all the dedup needs.
       await db.insert(telegramUpdates).values({ updateId, chatId }).onConflictDoNothing()
-      if (chatId === houseChatId) await ensureRegistered(db, chatId, fromId, fromName)
+      // Register under the stable SCOPE id (not the inbound chat) so a post-migration supergroup
+      // message still writes its member/chat rows to the original scope, never a new orphan group.
+      if (acceptIds.includes(chatId)) await ensureRegistered(db, houseChatId, fromId, fromName)
     })
 
     const pf = prefilter(text)
@@ -75,6 +80,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
       { chatId, fromId, text: text ?? null, isPrivate: chatType === 'private', isBot, isForwarded },
       roster,
       houseChatId,
+      acceptIds,
     )
     // The house whose SHARED memory this message reads/writes — the SCOPE, distinct from the
     // reply DESTINATION (chatId). In the house group they're equal; in a member DM the scope is
@@ -223,7 +229,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         if ((ex.op === 'add' || ex.op === 'checkoff') && ex.items.length === 0) return { handled: false }
         // Destination belt: exactly the two TRANSPORT-authenticated targets — the house group, or
         // the authenticated DM sender's own chat. Never a free/LLM id (injection wall I2).
-        const isHouseReply = origin.lane === 'house' && chatId === houseChatId
+        const isHouseReply = origin.lane === 'house' && acceptIds.includes(chatId)
         const isDmReply = origin.lane === 'member_dm' && fromId != null && roster.isMember(fromId) && chatId === origin.chatId
         if (!isHouseReply && !isDmReply) return { handled: false }
         // Attribution = the AUTHENTICATED sender, never a name in the text (quarantine already
@@ -329,7 +335,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         // or the message sender's OWN private chat (member_dm). Never a free/LLM-supplied id
         // (injection wall I2/G1). Relaxes the old `chatId !== houseChatId` guard without deleting
         // the belt: a reply still can only land in the house group or the authenticated sender's DM.
-        const isHouseReply = origin.lane === 'house' && chatId === houseChatId
+        const isHouseReply = origin.lane === 'house' && acceptIds.includes(chatId)
         const isDmReply = isDm && fromId != null && roster.isMember(fromId) && chatId === origin.chatId
         if (!isHouseReply && !isDmReply) return
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)

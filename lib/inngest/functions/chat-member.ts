@@ -4,7 +4,7 @@ import { createHttpDb } from '@/db/client'
 import { houseConfig } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { parseMyChatMember, parseChatMember, upsertMember, deactivateMember } from '@/lib/identity/roster'
-import { getHouseChatId } from '@/lib/identity/house'
+import { resolveHouseIds } from '@/lib/identity/house'
 import { writeAudit } from '@/lib/audit'
 
 // Owner = whoever invited the bot (decision OWNER). Captured from the
@@ -58,8 +58,10 @@ export const handleChatMember = inngest.createFunction(
       // group may (de)activate a housemate. Otherwise, if the bot is admin in any second
       // group shared with a housemate, their leaving/joining THERE would silently
       // deactivate/reactivate them here.
-      const houseChatId = await getHouseChatId(db)
-      if (!houseChatId || chatId !== houseChatId) return { ignored: 'not-house' }
+      // Accept the alias set (scope + live transport id) so a status change in the migrated
+      // supergroup still counts as the house; register under the STABLE scope id (D9).
+      const { scopeId, acceptIds } = await resolveHouseIds(db)
+      if (!scopeId || chatId == null || !acceptIds.includes(chatId)) return { ignored: 'not-house' }
 
       if (status === 'left' || status === 'kicked' || status === 'banned') {
         await deactivateMember(db, userId)
@@ -67,7 +69,7 @@ export const handleChatMember = inngest.createFunction(
         return { deactivated: userId }
       }
       if (status === 'member' || status === 'administrator' || status === 'creator') {
-        await upsertMember(db, houseChatId, userId, name)
+        await upsertMember(db, scopeId, userId, name)
         return { active: userId }
       }
       return { ignored: status }
