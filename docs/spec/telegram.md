@@ -191,6 +191,43 @@ Both signals come from Telegram service fields / API errors, never from message 
 acting on them satisfies the write-gate. Also handle `parameters.retry_after` (flood control)
 with bounded backoff / Inngest retry. Confidence: high.
 
+**Status: implemented (alias variant).** The scope id (`house_config.house_group_chat_id`) is
+ALSO the `group_id` on every memory/fact/reminder row, so it is **never rewritten** — that would
+orphan all memory. Instead we split the seam: the scope id stays put and `house_config.live_chat_id`
+(additive, migration 0012) holds the current transport id. `resolveHouseIds(db)` returns
+`{ scopeId, sendId (= live ?? scope), acceptIds }`; lane resolution accepts the whole set, sends go
+to `sendId`, memory stays scoped to `scopeId`. Both channels converge onto `live_chat_id`:
+- **Inbound** — the webhook detects `migrate_to_chat_id`/`migrate_from_chat_id` → `telegram/chat_migrated`
+  → `convergeMigration` (`lib/inngest/functions/migration.ts`), which moves `live_chat_id` ONLY when
+  the migrating chat is one we already know as the house (scope or current live) — no hijack.
+- **Outbound** — `sendToHouseResilient` (`lib/telegram/house-send.ts`) catches the stale-id 400,
+  persists `live_chat_id`, and retries once. Repairs an already-migrated house on the next reminder.
+- **Manual** — `scripts/heal-house.ts` probes `getChat` and sets `live_chat_id` immediately (for a
+  house that migrated while no reminder was pending, so no outbound send had triggered the heal).
+
+The env `BAUMY_HOUSE_CHAT_ID` pins the **scope** only; the live id is DB-driven (no redeploy to
+follow a migration). `migrated_from_chat_id` records provenance.
+
+### D9a — Read receipts are NOT available to a bot (do not re-investigate)
+A bot **cannot** tell whether housemates have read a message it posted. The Bot API exposes no
+`views`/`read_by` field, no read/seen update, nothing via `getUpdates`/webhook. Client-side "seen by"
+receipts for small groups live only in the **MTProto client API** (`messages.getMessageReadParticipants`,
+size/expiry-capped), which bots can't call; channel view counters are MTProto-only too. The closest
+signal is a `message_reaction` update (Bot API 7.0) — a **deliberate reaction tap**, not a passive
+read — and receiving it needs the bot to be a group **admin** with `message_reaction` in
+`allowed_updates` (currently not subscribed). So "did they see it?" is unanswerable; the only proxy is
+asking the house to react and counting reactions. Verdict: not built, not feasible.
+
+### D9b — Forum topics: reminders route through a chosen topic (the "notification channel")
+A topics/forum supergroup has multiple topics; a bot posts into one via `message_thread_id`
+(omit → the General topic). There is **no list-topics Bot API** — a bot only learns a thread id by
+creating the topic, from a `ForumTopicCreated` service message, or off an inbound message's
+`message_thread_id`. So the owner **points** at one: `/notifyhere` run INSIDE the target topic captures
+that message's `message_thread_id` into `house_config.reminder_thread_id` (migration 0013);
+`sendToHouseResilient` reads it so all reminders/heads-ups post there. `/notifyoff` resets to General.
+Owner-only, house lane, capture-tier auto-commit (it only routes low-privilege reminder posts within
+the fixed house group), audited; the value is an authenticated `message_thread_id`, never text.
+
 ### D10 — Register `setWebhook` from a one-shot protected admin action, not Vercel cron
 `setWebhook` is a run-once deploy-time operation; Vercel cron is banned for cost. Trigger it
 from an admin-CLI `tsx` one-shot **or** a `BAUMY_ADMIN_SECRET`-guarded route, then verify with
