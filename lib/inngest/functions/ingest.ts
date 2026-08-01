@@ -90,6 +90,13 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     // while the reply goes to the private chat. Derived from the authenticated lane, never text.
     const houseScope = houseScopeForOrigin(origin, houseChatId)
 
+    // In a forum supergroup a WORDED reply must echo the topic it was asked in, or Telegram drops it
+    // into the General topic. Reactions attach to the message directly (no thread needed) and a DM has
+    // no topic, so `houseThreadId` is only set for a house-lane message that arrived inside a topic.
+    // Route every conversational house send through it (reminders use their own configured topic).
+    const houseThreadId = origin.lane === 'house' ? (messageThreadId ?? undefined) : undefined
+    const sayHouse = (body: string, opts?: { silent?: boolean }) => sendToHouse(chatId, body, { ...opts, threadId: houseThreadId })
+
     // Bug/feature report (/bug, /feature) → enrich into a clean GitHub
     // issue and file it on a confirm tap. Explicit slash command, works in the house group
     // OR a member DM, from an authenticated house member only. Runs before the DM-command
@@ -99,12 +106,12 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
       await step.run('report', async () => {
         const db = createHttpDb()
         if (!issuesConfigured()) {
-          await sendToHouse(chatId, "I'd file that, but issue reporting isn't wired up yet — the house owner needs to add a GitHub token. 🐈‍⬛")
+          await sayHouse("I'd file that, but issue reporting isn't wired up yet — the house owner needs to add a GitHub token. 🐈‍⬛")
           return
         }
         if (!report.body) {
           const eg = report.hint === 'feature' ? '/feature a dark mode for the dashboard' : '/bug the reminder fired twice'
-          await sendToHouse(chatId, `Tell me what to file, like:\n${eg}`)
+          await sayHouse(`Tell me what to file, like:\n${eg}`)
           return
         }
         const reporter = (await memberDisplayNames(db)).get(String(fromId)) ?? 'a housemate'
@@ -116,7 +123,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
           requestedBy: String(fromId),
         })
         const kind = enriched.type === 'feature' ? '✨ Feature' : '🐛 Bug'
-        await sendConfirmCard(chatId, `${kind}: ${enriched.title}\n\n${enriched.summary}\n\nFile this as a GitHub issue?`, pid)
+        await sendConfirmCard(chatId, `${kind}: ${enriched.title}\n\n${enriched.summary}\n\nFile this as a GitHub issue?`, pid, houseThreadId)
       })
       return { updateId, decision: 'report' as const }
     }
@@ -132,7 +139,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         // member DM, chatId is the private chat, which holds nothing. Reply to chatId.
         const scope = houseChatId || chatId
         const md = reportView === 'guests' ? await guestReport(db, scope) : await weeklyReport(db, scope)
-        await sendToHouse(chatId, md)
+        await sayHouse(md)
         await reactToMessage(chatId, messageId, null)
       })
       return { updateId, decision: 'report-view' as const }
@@ -296,7 +303,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
                   : mut.op === 'add'
                     ? addAck(mut.added, mut.already, items.length)
                     : checkoffAck(mut.checkedOff, mut.notFound, items)
-              await sendToHouse(chatId, out)
+              await sayHouse(out)
             } catch (err) {
               await releaseReply(db, updateId).catch(() => {})
               throw err
@@ -399,11 +406,11 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
             // can't act on what we found, say why (or ask) rather than a misleading proposal.
             if (!hasFacts && !(mode === 'purge' && hasScrub)) {
               if (mode === 'soft' && hasScrub) {
-                await sendToHouse(chatId, `That's only in past messages, not a fact I can just hide — say "permanently forget it" and I'll scrub it out for good. 😼`)
+                await sayHouse(`That's only in past messages, not a fact I can just hide — say "permanently forget it" and I'll scrub it out for good. 😼`)
               } else if (ex.values.length === 0 && !ex.subject) {
-                await sendToHouse(chatId, `What exactly should I forget? Name the specific thing — a name, number, that kind of thing 😼`)
+                await sayHouse(`What exactly should I forget? Name the specific thing — a name, number, that kind of thing 😼`)
               } else {
-                await sendToHouse(chatId, `Nothing like that in my memory, so nothing to forget 😼`)
+                await sayHouse(`Nothing like that in my memory, so nothing to forget 😼`)
               }
               return
             }
@@ -428,7 +435,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
               if (aliasCount) lines.push(`• drop ${aliasCount} alias${aliasCount === 1 ? '' : 'es'}`)
             }
             const head = mode === 'purge' ? "I'll permanently forget (no undo):" : "I'll forget (hidden, reversible):"
-            await sendConfirmCard(chatId, `${head}\n${lines.join('\n')}\n\nTap to confirm.`, pid)
+            await sendConfirmCard(chatId, `${head}\n${lines.join('\n')}\n\nTap to confirm.`, pid, houseThreadId)
             return
           }
           // Classifier flagged forget but it wasn't one → fall through to a normal reply.
@@ -508,7 +515,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         if (verdict.webSearch) {
           const ws = await webSearchAnswer(text ?? '', combined.filter((m) => !m.isSecure))
           if (ws.searched && ws.text) {
-            await sendToHouse(chatId, ws.text)
+            await sayHouse(ws.text)
             await reactToMessage(chatId, messageId, null) // 👀 → gone; the words are the reply
             return
           }
@@ -521,7 +528,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         // @-mentions Baumy directly, or ANY 1:1 DM, ALWAYS gets words, never a dismissive
         // thumbs-down (a lone 👎 in a private chat reads as a shrug, not an answer).
         if (answered || grounding.length === 0 || directed || isDm) {
-          await sendToHouse(chatId, reply)
+          await sayHouse(reply)
           await reactToMessage(chatId, messageId, null) // 👀 → gone; the words are the reply
         } else {
           await reactToMessage(chatId, messageId, '👎') // 👀 → 👎: ambient ask, nothing in the records
