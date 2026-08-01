@@ -68,8 +68,16 @@ are inside the 06:00–02:00 waking window, so the digest never sends at 3am.
   Exactly-once is a ceiling, not a floor: the staleness window above means a reminder can legitimately
   fire **zero** times if nothing delivered it within a day of its moment. That is the intended
   outcome — late enough and it is misinformation, not a reminder.
-- **Fixed destination.** Reminders/digests deliver only to the code-resolved house group
-  (`deliverChatId`), never an LLM-picked recipient.
+- **Fixed destination.** Reminders/digests deliver only to the code-resolved house group, never an
+  LLM-picked recipient. Post-supergroup-migration this is resolved at send time by
+  `sendToHouseResilient` to the CURRENT live house id (`house_config.live_chat_id ?? house_group_chat_id`),
+  which also self-heals a stale id on a 400 — so a row's frozen `deliverChatId` can't misdeliver
+  (docs/spec/telegram.md D9).
+- **Notification channel (forum topic).** If the house set one (`house_config.reminder_thread_id`, via
+  the owner running `/notifyhere` inside a topic), reminders + event heads-ups post into that topic
+  (`message_thread_id`); otherwise the General topic. Telegram has no list-topics API, so the id is
+  captured from the authenticated inbound `message_thread_id`, never chosen by the model
+  (docs/spec/telegram.md D9b).
 - **Honors `/pause`.** The digest is proactive output, so it skips when `global_enabled` is false
   (like the surfacing/consolidation crons).
 
