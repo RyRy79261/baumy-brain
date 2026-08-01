@@ -67,6 +67,21 @@ describe('sendToHouseResilient — supergroup migration self-heal', () => {
     expect(sendToHouse).toHaveBeenCalledTimes(1)
     expect(sendToHouse.mock.calls[0][0]).toBe(NEW)
   })
+
+  it('routes into the configured reminders topic (message_thread_id)', async () => {
+    const db = await makeTestDb()
+    await db.insert(houseConfig).values({ id: true, houseGroupChatId: OLD, reminderThreadId: 42 })
+    await sendToHouseResilient(db, 'reminder')
+    expect(sendToHouse.mock.calls[0][0]).toBe(OLD)
+    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: 42 })
+  })
+
+  it('no topic set → no thread id (General topic)', async () => {
+    const db = await makeTestDb()
+    await db.insert(houseConfig).values({ id: true, houseGroupChatId: OLD })
+    await sendToHouseResilient(db, 'reminder')
+    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: undefined })
+  })
 })
 
 describe('convergeMigration — inbound service-message convergence', () => {

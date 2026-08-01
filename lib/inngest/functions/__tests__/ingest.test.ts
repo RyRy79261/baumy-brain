@@ -4,6 +4,7 @@ import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { listItems } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
+import { resolveHouseIds, setReminderThread } from '@/lib/identity/house'
 import { addListItems } from '@/lib/lists/store'
 import type { ClassifierVerdict } from '@/lib/ai/classify'
 import type { TelegramMessageData } from '@/lib/inngest/client'
@@ -142,5 +143,55 @@ describe('ingest handler — shopping list end-to-end (real routing, mocked LLM/
     expect(sent).toContain('Shopping list')
     expect(sent).toContain('milk')
     expect(sent).toContain('eggs')
+  })
+})
+
+// The reminders "notification channel": an owner points reminders at a forum topic by running
+// /notifyhere INSIDE it. Authorization = authenticated owner id; value = authenticated
+// message_thread_id — never message text. (docs/spec/telegram.md)
+describe('ingest handler — /notifyhere reminders-topic capture (owner-gated, house lane)', () => {
+  const OWNER = 900
+  beforeEach(async () => {
+    dbh.db = await makeTestDb()
+    await ensureRegistered(dbh.db, HOUSE, null)
+    await upsertMember(dbh.db, HOUSE, String(OWNER), 'Boss', 'owner')
+    await upsertMember(dbh.db, HOUSE, String(MEMBER), 'Ryan', 'member')
+    classifyMock.mockReset()
+    extractMock.mockReset()
+    sendToHouse.mockClear()
+    reactToMessage.mockClear()
+  })
+
+  const houseCmd = (over: Partial<TelegramMessageData> = {}) =>
+    event({ chatId: HOUSE, chatType: 'supergroup', fromId: OWNER, ...over })
+
+  it('owner /notifyhere inside a topic pins it as the reminders channel + confirms in that topic', async () => {
+    const res = await runIngest(houseCmd({ text: '/notifyhere', messageThreadId: 55 }), step)
+    expect(res.decision).toBe('notify-config')
+    expect((await resolveHouseIds(dbh.db)).reminderThreadId).toBe(55)
+    expect(sendToHouse).toHaveBeenCalledTimes(1)
+    expect(sendToHouse.mock.calls[0][0]).toBe(HOUSE)
+    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: 55 })
+  })
+
+  it('/notifyoff resets to the General topic', async () => {
+    await setReminderThread(dbh.db, 55)
+    const res = await runIngest(houseCmd({ text: '/notifyoff', messageThreadId: 55 }), step)
+    expect(res.decision).toBe('notify-config')
+    expect((await resolveHouseIds(dbh.db)).reminderThreadId).toBeNull()
+  })
+
+  it('a NON-owner /notifyhere can NOT change the channel (falls through, owner-gated)', async () => {
+    classifyMock.mockResolvedValue(verdict({})) // chatter → no capture, no reply
+    const res = await runIngest(houseCmd({ fromId: MEMBER, text: '/notifyhere', messageThreadId: 55 }), step)
+    expect(res.decision).not.toBe('notify-config')
+    expect((await resolveHouseIds(dbh.db)).reminderThreadId).toBeNull()
+  })
+
+  it('owner /notifyhere in the General topic (no thread) pins nothing and says where to run it', async () => {
+    const res = await runIngest(houseCmd({ text: '/notifyhere', messageThreadId: null }), step)
+    expect(res.decision).toBe('notify-config')
+    expect((await resolveHouseIds(dbh.db)).reminderThreadId).toBeNull()
+    expect(String(sendToHouse.mock.calls[0][1])).toContain('INSIDE the topic')
   })
 })

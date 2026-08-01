@@ -28,7 +28,8 @@ import { createPendingAction } from '@/lib/confirm/store'
 import { parseWhen, clampToWakingHours } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
 import { loadRoster, memberDisplayNames } from '@/lib/identity/roster'
-import { resolveHouseIds, houseScopeForOrigin } from '@/lib/identity/house'
+import { resolveHouseIds, houseScopeForOrigin, parseNotifyCommand, setReminderThread } from '@/lib/identity/house'
+import { writeAudit } from '@/lib/audit'
 import { houseTz } from '@/lib/env'
 import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
@@ -47,6 +48,7 @@ type IngestStep = { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> }
 // wrapper below only forwards its context.
 export async function runIngest(event: { data: TelegramMessageData }, step: IngestStep) {
     const { updateId, messageId, chatId, fromId, text, chatType, isBot, isForwarded, replyToBot } = event.data
+    const messageThreadId = event.data.messageThreadId ?? null
     // Prefer the human name (first[+last]); fall back to @username. Backfills members
     // that were only ever seen as a raw id (so Baumy can attribute a name, not digits).
     const fromName =
@@ -134,6 +136,33 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         await reactToMessage(chatId, messageId, null)
       })
       return { updateId, decision: 'report-view' as const }
+    }
+
+    // Reminders "notification channel" (/notifyhere in the target topic, /notifyoff to reset). Owner
+    // only, HOUSE lane — the authorization is the authenticated owner id and the value is the
+    // authenticated message_thread_id, NEVER message text (injection wall intact). Auto-commits at
+    // the capture tier: it only routes low-privilege reminder posts to a topic WITHIN the fixed house
+    // group (no exfiltration surface — same spirit as reminders/list being confirm-exempt). Audited.
+    const notify = parseNotifyCommand(text ?? '')
+    if (notify && origin.lane === 'house' && fromId != null && roster.isOwner(fromId)) {
+      await step.run('notify-config', async () => {
+        const db = createHttpDb()
+        if (notify === 'off') {
+          await setReminderThread(db, null)
+          await writeAudit(db, 'reminder.topic.set', String(fromId), null, { threadId: null })
+          await sendToHouse(chatId, 'Reminders will post to the General topic from now on. 🐈', { threadId: messageThreadId ?? undefined })
+          return
+        }
+        if (messageThreadId == null) {
+          // Run in General (no topic thread) → nothing to pin. Tell them where to run it.
+          await sendToHouse(chatId, 'Run /notifyhere INSIDE the topic you want reminders in — this looks like the General topic. 😼')
+          return
+        }
+        await setReminderThread(db, messageThreadId)
+        await writeAudit(db, 'reminder.topic.set', String(fromId), null, { threadId: messageThreadId })
+        await sendToHouse(chatId, '📌 Got it — reminders and event heads-ups will post in this topic from now on.', { threadId: messageThreadId })
+      })
+      return { updateId, decision: 'notify-config' as const }
     }
 
     // Member-DM commands (house-management). Deterministic; no classify/LLM.

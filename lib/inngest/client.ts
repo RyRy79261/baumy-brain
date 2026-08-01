@@ -19,6 +19,9 @@ type Events = {
       isBot: boolean
       isForwarded: boolean
       replyToBot: boolean
+      // Forum-topic thread this message sits in (null = General / not a forum). Lets the owner point
+      // reminders at a topic via /notifyhere, and lets a reply thread back into the right topic.
+      messageThreadId?: number | null
     }
   }
   'telegram/callback.received': {

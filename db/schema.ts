@@ -112,6 +112,11 @@ export const houseConfig = pgTable(
     liveChatId: text('live_chat_id'),
     // Provenance: the id we migrated away from (audit/debug only). Additive, nullable.
     migratedFromChatId: text('migrated_from_chat_id'),
+    // The forum-topic thread that proactive reminders / event heads-ups post into (the "notification
+    // channel"). Null → the group isn't a forum, or reminders go to the General topic. Captured by
+    // the owner running /notifyhere INSIDE the target topic (Telegram has no list-topics API), so the
+    // value is a Telegram-authenticated message_thread_id, never message text. docs/spec/telegram.md.
+    reminderThreadId: bigint('reminder_thread_id', { mode: 'number' }),
     houseTimezone: text('house_timezone').notNull().default('Europe/Berlin'),
     responsePolicy: jsonb('response_policy')
       .notNull()
