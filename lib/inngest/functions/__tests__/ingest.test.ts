@@ -195,3 +195,36 @@ describe('ingest handler — /notifyhere reminders-topic capture (owner-gated, h
     expect(String(sendToHouse.mock.calls[0][1])).toContain('INSIDE the topic')
   })
 })
+
+// Forum-topic reply threading: a worded HOUSE reply must echo the topic it was asked in (else Telegram
+// drops it into General); a DM reply carries no thread. Driven via the /bug path with issues
+// unconfigured — a no-LLM sayHouse send — so it exercises the threading without a network call.
+describe('ingest handler — forum-topic reply threading', () => {
+  beforeEach(async () => {
+    dbh.db = await makeTestDb()
+    await ensureRegistered(dbh.db, HOUSE, null)
+    await upsertMember(dbh.db, HOUSE, String(MEMBER), 'Ryan', 'member')
+    classifyMock.mockReset()
+    extractMock.mockReset()
+    sendToHouse.mockClear()
+    reactToMessage.mockClear()
+  })
+
+  it('a worded house reply echoes the inbound topic (message_thread_id)', async () => {
+    const res = await runIngest(
+      event({ chatId: HOUSE, chatType: 'supergroup', fromId: MEMBER, text: '/bug the sink leaks', messageThreadId: 77 }),
+      step,
+    )
+    expect(res.decision).toBe('report')
+    expect(sendToHouse).toHaveBeenCalledTimes(1)
+    expect(sendToHouse.mock.calls[0][0]).toBe(HOUSE)
+    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: 77 })
+  })
+
+  it('a DM reply carries no topic thread', async () => {
+    const res = await runIngest(event({ chatId: DM, chatType: 'private', fromId: MEMBER, text: '/bug the sink leaks' }), step)
+    expect(res.decision).toBe('report')
+    expect(sendToHouse.mock.calls[0][0]).toBe(DM)
+    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: undefined })
+  })
+})

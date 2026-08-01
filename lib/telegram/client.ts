@@ -32,10 +32,12 @@ export async function sendToHouse(chatId: string, text: string, opts?: { silent?
 
 // Inline-keyboard confirm card (security B4). The tap — a callback_query from a
 // member's authenticated from.id — is the injection wall for a privileged action.
-export async function sendConfirmCard(chatId: string, text: string, actionId: string): Promise<void> {
+export async function sendConfirmCard(chatId: string, text: string, actionId: string, threadId?: number): Promise<void> {
   if (!chatId) throw new Error('[baumy/telegram] no chat id for confirm card')
   await api().sendMessage(chatId, text, {
     ...NO_PREVIEW,
+    // Land in the forum topic the request came from (else the card jumps to General); omitted elsewhere.
+    ...(threadId != null ? { message_thread_id: threadId } : {}),
     reply_markup: {
       inline_keyboard: [
         [
