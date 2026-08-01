@@ -1,0 +1,1 @@
+ALTER TABLE "baumy_house_config" ADD COLUMN "reminder_thread_id" bigint;

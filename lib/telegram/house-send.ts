@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { houseConfig } from '@/db/schema'
 import { sendToHouse } from '@/lib/telegram/client'
-import { getHouseSendId } from '@/lib/identity/house'
+import { resolveHouseIds } from '@/lib/identity/house'
 import { writeAudit } from '@/lib/audit'
 
 // The new -100… supergroup id Telegram hands back when you send to a STALE (pre-upgrade) group id:
@@ -24,9 +24,12 @@ function migrateTargetFrom(e: unknown): string | null {
 // since the message wouldn't have been heard otherwise). A non-migration failure propagates so the
 // caller's exactly-once release/retry (reminders.md) still runs.
 export async function sendToHouseResilient(db: Database, text: string, opts?: { silent?: boolean }): Promise<void> {
-  const sendId = await getHouseSendId(db)
+  // Resolve the live transport id AND the reminders topic in one read; both are code-resolved config
+  // (never LLM/message-supplied), so a reminder lands in the house's "notification channel" topic.
+  const { sendId, reminderThreadId } = await resolveHouseIds(db)
+  const sendOpts = { ...opts, threadId: reminderThreadId ?? undefined }
   try {
-    await sendToHouse(sendId, text, opts)
+    await sendToHouse(sendId, text, sendOpts)
   } catch (e) {
     const newId = migrateTargetFrom(e)
     if (!newId || newId === sendId) throw e
@@ -36,6 +39,6 @@ export async function sendToHouseResilient(db: Database, text: string, opts?: { 
       .set({ liveChatId: newId, migratedFromChatId: sendId, updatedAt: new Date() })
       .where(eq(houseConfig.id, true))
     await writeAudit(db, 'house.migrated', null, null, { from: sendId, to: newId, via: 'send-400' }).catch(() => {})
-    await sendToHouse(newId, text, opts) // retry once against the new id
+    await sendToHouse(newId, text, sendOpts) // retry once against the new id (same topic)
   }
 }

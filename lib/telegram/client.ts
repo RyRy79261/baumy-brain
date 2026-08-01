@@ -18,9 +18,16 @@ const NO_PREVIEW = { link_preview_options: { is_disabled: true } }
 
 // Fixed-destination send (architecture D9): the caller resolves the destination
 // (house config / stored deliver_chat_id / task group_id) — never the LLM.
-export async function sendToHouse(chatId: string, text: string, opts?: { silent?: boolean }): Promise<void> {
+export async function sendToHouse(chatId: string, text: string, opts?: { silent?: boolean; threadId?: number }): Promise<void> {
   if (!chatId) throw new Error('[baumy/telegram] no house chat id resolved (bot not added to a group yet?)')
-  await api().sendMessage(chatId, text, { ...NO_PREVIEW, disable_notification: opts?.silent ?? false })
+  await api().sendMessage(chatId, text, {
+    ...NO_PREVIEW,
+    disable_notification: opts?.silent ?? false,
+    // Forum-topic routing: land in a specific topic when one is set (reminders' "notification
+    // channel"), else omit → the General topic. Only valid in a forum supergroup; Telegram ignores
+    // it elsewhere. The id is code-resolved (config / echoed inbound thread), never LLM-chosen.
+    ...(opts?.threadId != null ? { message_thread_id: opts.threadId } : {}),
+  })
 }
 
 // Inline-keyboard confirm card (security B4). The tap — a callback_query from a

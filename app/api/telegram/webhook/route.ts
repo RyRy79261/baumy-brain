@@ -83,6 +83,8 @@ export async function POST(req: Request): Promise<Response> {
         fromLastName: msg.from?.last_name ?? null,
         fromUsername: msg.from?.username ?? null,
         text: msg.text ?? null,
+        // Forum-topic thread (null = General / not a forum) — for /notifyhere capture + reply threading.
+        messageThreadId: msg.is_topic_message ? (msg.message_thread_id ?? null) : null,
         // Trust signals resolved downstream: bot-origin / forwarded → quarantined.
         isBot: msg.from?.is_bot === true,
         isForwarded: msg.forward_origin != null,

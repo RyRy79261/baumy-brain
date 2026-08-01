@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { resolveOriginParts, type Roster } from '@/lib/core/origin'
-import { houseScopeForOrigin, resolveHouseIds } from '@/lib/identity/house'
+import { houseScopeForOrigin, resolveHouseIds, parseNotifyCommand } from '@/lib/identity/house'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { houseConfig } from '@/db/schema'
 
@@ -63,5 +63,19 @@ describe('resolveHouseIds (alias seam)', () => {
     expect(ids.scopeId).toBe('-100pin')
     expect(ids.sendId).toBe('-1003333333333')
     delete process.env.BAUMY_HOUSE_CHAT_ID
+  })
+})
+
+describe('parseNotifyCommand', () => {
+  it('matches /notifyhere and /notifyoff (incl. a @botname suffix), rejects near-misses', () => {
+    expect(parseNotifyCommand('/notifyhere')).toBe('here')
+    expect(parseNotifyCommand('  /notifyhere  ')).toBe('here')
+    expect(parseNotifyCommand('/notifyhere@BaumyBot')).toBe('here')
+    expect(parseNotifyCommand('/notifyoff')).toBe('off')
+    expect(parseNotifyCommand('/NotifyOff@BaumyBot please')).toBe('off')
+    expect(parseNotifyCommand('/notify')).toBeNull()
+    expect(parseNotifyCommand('notify here')).toBeNull()
+    expect(parseNotifyCommand('/notifyherenow')).toBeNull() // whole-word only
+    expect(parseNotifyCommand(null)).toBeNull()
   })
 })
