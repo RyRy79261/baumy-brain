@@ -228,6 +228,20 @@ that message's `message_thread_id` into `house_config.reminder_thread_id` (migra
 Owner-only, house lane, capture-tier auto-commit (it only routes low-privilege reminder posts within
 the fixed house group), audited; the value is an authenticated `message_thread_id`, never text.
 
+### D9c — Ask-Baumy topic + read-only introspection
+A dedicated "ask-Baumy"/concierge topic (`house_config.console_thread_id`, set by the owner's
+`/baumyhere` inside it; `/baumyoff` clears) where Baumy is **fully conversational** — a message there
+counts as `directed`, so it answers without an @mention, while everywhere else stays the quiet
+secretary. Plus read-only introspection read-outs (deterministic, available anywhere but handy there):
+`/reminders` (upcoming scheduled reminders) and `/recent` (recently-learned facts). **Both are
+SECRET-SAFE by construction** — they exclude `is_secure` rows, so a bulk "what do you know" can never
+dump a wifi/door/bank value; a secret is only ever decrypted for a *specific* direct question via the
+reply path's disclosure discretion, never in a read-out. **CRITICAL invariant: the topic changes
+VERBOSITY, not TRUST.** Messages there are still untrusted house text, introspection is read-only, and
+nothing privileged rides on the topic id (itself a Telegram-authenticated field) — a nicer lens on
+memory, never a backdoor. A real HTTP introspection API belongs in the authed dashboard, not a public
+endpoint.
+
 ### D10 — Register `setWebhook` from a one-shot protected admin action, not Vercel cron
 `setWebhook` is a run-once deploy-time operation; Vercel cron is banned for cost. Trigger it
 from an admin-CLI `tsx` one-shot **or** a `BAUMY_ADMIN_SECRET`-guarded route, then verify with

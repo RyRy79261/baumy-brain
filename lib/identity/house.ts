@@ -26,12 +26,19 @@ export interface HouseIds {
   acceptIds: string[]
   /** Forum topic proactive reminders post into (the "notification channel"); null = General topic. */
   reminderThreadId: number | null
+  /** Forum topic where Baumy is fully conversational (the "ask-Baumy" channel); null = none. */
+  consoleThreadId: number | null
 }
 
 export async function resolveHouseIds(db: Database): Promise<HouseIds> {
   const override = process.env.BAUMY_HOUSE_CHAT_ID
   const [cfg] = await db
-    .select({ scope: houseConfig.houseGroupChatId, live: houseConfig.liveChatId, thread: houseConfig.reminderThreadId })
+    .select({
+      scope: houseConfig.houseGroupChatId,
+      live: houseConfig.liveChatId,
+      thread: houseConfig.reminderThreadId,
+      console: houseConfig.consoleThreadId,
+    })
     .from(houseConfig)
     .limit(1)
   // The env pin overrides the SCOPE only (never the live transport id — that is DB-driven,
@@ -40,7 +47,7 @@ export async function resolveHouseIds(db: Database): Promise<HouseIds> {
   const liveId = cfg?.live ?? ''
   const sendId = liveId !== '' ? liveId : scopeId
   const acceptIds = [...new Set([scopeId, sendId].filter((x) => x !== ''))]
-  return { scopeId, sendId, acceptIds, reminderThreadId: cfg?.thread ?? null }
+  return { scopeId, sendId, acceptIds, reminderThreadId: cfg?.thread ?? null, consoleThreadId: cfg?.console ?? null }
 }
 
 // Where a proactive house send (reminder/digest/heads-up) lands: the live transport id, resolving
@@ -60,6 +67,14 @@ export function parseNotifyCommand(text: string | null | undefined): 'here' | 'o
   return m ? (m[1].toLowerCase() as 'here' | 'off') : null
 }
 
+// Detect the owner's ask-Baumy-topic command: /baumyhere (make THIS topic the conversational
+// channel) or /baumyoff (turn it off). Same shape/guarantees as parseNotifyCommand.
+export function parseConsoleCommand(text: string | null | undefined): 'here' | 'off' | null {
+  if (!text) return null
+  const m = text.trim().match(/^\/baumy(here|off)(?:@\w+)?\b/i)
+  return m ? (m[1].toLowerCase() as 'here' | 'off') : null
+}
+
 // Set (or clear, with null) the forum topic that proactive reminders post into. The thread id comes
 // from an authenticated inbound message_thread_id (the owner running /notifyhere inside the topic),
 // never from message text. Upserts the singleton. Owner-gated + audited at the call site.
@@ -68,6 +83,16 @@ export async function setReminderThread(db: Database, threadId: number | null): 
     .insert(houseConfig)
     .values({ id: true, reminderThreadId: threadId })
     .onConflictDoUpdate({ target: houseConfig.id, set: { reminderThreadId: threadId, updatedAt: new Date() } })
+}
+
+// Set (or clear, with null) the ask-Baumy conversational topic. Thread id comes from an authenticated
+// inbound message_thread_id (owner running /baumyhere inside the topic), never text. Owner-gated +
+// audited at the call site. This only widens VERBOSITY in that topic — never trust/authorization.
+export async function setConsoleThread(db: Database, threadId: number | null): Promise<void> {
+  await db
+    .insert(houseConfig)
+    .values({ id: true, consoleThreadId: threadId })
+    .onConflictDoUpdate({ target: houseConfig.id, set: { consoleThreadId: threadId, updatedAt: new Date() } })
 }
 
 // The house whose SHARED memory a message reads and writes — distinct from where a reply is

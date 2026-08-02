@@ -97,6 +97,11 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   a forum topic via `message_thread_id`; set by the owner's `/notifyhere` (capture-tier auto-commit,
   house lane, audited — value from the authenticated `message_thread_id`, never text). Read receipts are
   **not** obtainable via the Bot API (D9a) — don't try to add them.
+- **Ask-Baumy topic + introspection (`docs/spec/telegram.md` D9c):** `house_config.console_thread_id`
+  (owner `/baumyhere`) marks a topic where Baumy is fully conversational (a message there is treated as
+  `directed`). `/reminders` + `/recent` are deterministic, **secret-safe** read-only introspection
+  (exclude `is_secure`). The topic changes **verbosity, not trust** — still untrusted house text, no
+  privileged path rides on the topic id. A real introspection API belongs in the authed dashboard.
 - **Secrets at rest:** wifi/door/bank values are AES-256-GCM encrypted (`lib/core/crypto.ts`);
   only a non-secret descriptor is stored/embedded; decrypt only to answer a direct request,
   never in digests.
