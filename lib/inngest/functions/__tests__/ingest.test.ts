@@ -4,7 +4,7 @@ import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { listItems } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
-import { resolveHouseIds, setReminderThread } from '@/lib/identity/house'
+import { resolveHouseIds, setReminderThread, setConsoleThread } from '@/lib/identity/house'
 import { addListItems } from '@/lib/lists/store'
 import type { ClassifierVerdict } from '@/lib/ai/classify'
 import type { TelegramMessageData } from '@/lib/inngest/client'
@@ -20,6 +20,11 @@ const classifyMock = vi.fn<(t: string) => Promise<ClassifierVerdict>>()
 const extractMock = vi.fn<(t: string) => Promise<{ op: string; items: string[] }>>()
 const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
 const reactToMessage = vi.fn(async (..._a: unknown[]) => {})
+// The reply path (used only by the ask-Baumy conversational tests) — mocked so it never touches the
+// network. Recall/facts return empty; answer() returns a canned line.
+const answerMock = vi.fn(async (..._a: unknown[]) => ({ text: 'sure thing 🐈', answered: true }))
+const retrieveMock = vi.fn(async (..._a: unknown[]) => [])
+const factsQueryMock = vi.fn(async (..._a: unknown[]) => [])
 
 vi.mock('@/db/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/db/client')>()
@@ -39,6 +44,18 @@ vi.mock('@/lib/telegram/client', () => ({
   getBotUsername: async () => 'baumybot',
   sendConfirmCard: async () => {},
 }))
+vi.mock('@/lib/ai/reply', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/ai/reply')>()
+  return { ...actual, answer: (...a: unknown[]) => answerMock(...a) }
+})
+vi.mock('@/lib/memory/retrieve', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/memory/retrieve')>()
+  return { ...actual, retrieve: (...a: unknown[]) => retrieveMock(...a), retrieveExpanded: (...a: unknown[]) => retrieveMock(...a) }
+})
+vi.mock('@/lib/memory/facts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/memory/facts')>()
+  return { ...actual, currentFactsForQuery: (...a: unknown[]) => factsQueryMock(...a) }
+})
 
 const { runIngest } = await import('@/lib/inngest/functions/ingest')
 
@@ -226,5 +243,68 @@ describe('ingest handler — forum-topic reply threading', () => {
     expect(res.decision).toBe('report')
     expect(sendToHouse.mock.calls[0][0]).toBe(DM)
     expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: undefined })
+  })
+})
+
+// The ask-Baumy topic: fully conversational (answers without an @mention) in ONE designated topic,
+// quiet everywhere else. It changes verbosity, not trust — a plain statement still just captures
+// elsewhere. /baumyhere is owner-gated; the value is the authenticated message_thread_id.
+describe('ingest handler — ask-Baumy topic (/baumyhere + fully conversational)', () => {
+  const OWNER = 900
+  const CONSOLE_THREAD = 321
+  beforeEach(async () => {
+    dbh.db = await makeTestDb()
+    await ensureRegistered(dbh.db, HOUSE, null)
+    await upsertMember(dbh.db, HOUSE, String(OWNER), 'Boss', 'owner')
+    await upsertMember(dbh.db, HOUSE, String(MEMBER), 'Ryan', 'member')
+    classifyMock.mockReset()
+    extractMock.mockReset()
+    sendToHouse.mockClear()
+    reactToMessage.mockClear()
+    answerMock.mockClear()
+    retrieveMock.mockClear()
+    factsQueryMock.mockClear()
+  })
+
+  it('owner /baumyhere pins the ask-Baumy topic', async () => {
+    const res = await runIngest(
+      event({ chatId: HOUSE, chatType: 'supergroup', fromId: OWNER, text: '/baumyhere', messageThreadId: CONSOLE_THREAD }),
+      step,
+    )
+    expect(res.decision).toBe('console-config')
+    expect((await resolveHouseIds(dbh.db)).consoleThreadId).toBe(CONSOLE_THREAD)
+    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: CONSOLE_THREAD })
+  })
+
+  it('a NON-owner /baumyhere can NOT change it (owner-gated)', async () => {
+    classifyMock.mockResolvedValue(verdict({}))
+    const res = await runIngest(
+      event({ chatId: HOUSE, chatType: 'supergroup', fromId: MEMBER, text: '/baumyhere', messageThreadId: CONSOLE_THREAD }),
+      step,
+    )
+    expect(res.decision).not.toBe('console-config')
+    expect((await resolveHouseIds(dbh.db)).consoleThreadId).toBeNull()
+  })
+
+  it('answers a plain statement IN the ask-Baumy topic — no @mention needed', async () => {
+    await setConsoleThread(dbh.db, CONSOLE_THREAD)
+    classifyMock.mockResolvedValue(verdict({ intent: 'chatter', respond: 'ignore', confidence: 0.3 }))
+    await runIngest(
+      event({ chatId: HOUSE, chatType: 'supergroup', fromId: MEMBER, text: 'the boiler is making a weird noise', messageThreadId: CONSOLE_THREAD }),
+      step,
+    )
+    expect(answerMock).toHaveBeenCalledTimes(1) // fully conversational
+    expect(sendToHouse).toHaveBeenCalledTimes(1)
+    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: CONSOLE_THREAD }) // reply lands in the topic
+  })
+
+  it('stays QUIET on the same statement in a different topic (not the console)', async () => {
+    await setConsoleThread(dbh.db, CONSOLE_THREAD)
+    classifyMock.mockResolvedValue(verdict({ intent: 'chatter', respond: 'ignore', confidence: 0.3 }))
+    await runIngest(
+      event({ chatId: HOUSE, chatType: 'supergroup', fromId: MEMBER, text: 'the boiler is making a weird noise', messageThreadId: 999 }),
+      step,
+    )
+    expect(answerMock).not.toHaveBeenCalled() // quiet everywhere but the ask-Baumy topic
   })
 })

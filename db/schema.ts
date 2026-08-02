@@ -117,6 +117,11 @@ export const houseConfig = pgTable(
     // the owner running /notifyhere INSIDE the target topic (Telegram has no list-topics API), so the
     // value is a Telegram-authenticated message_thread_id, never message text. docs/spec/telegram.md.
     reminderThreadId: bigint('reminder_thread_id', { mode: 'number' }),
+    // The forum topic dedicated to TALKING TO Baumy (the "ask-Baumy"/concierge channel). In this
+    // topic Baumy is fully conversational (answers without an @mention) and read-only introspection
+    // commands are handy. Null → no such topic. It changes VERBOSITY, never trust: messages there are
+    // still untrusted house text, so nothing privileged rides on it. Set by the owner's /baumyhere.
+    consoleThreadId: bigint('console_thread_id', { mode: 'number' }),
     houseTimezone: text('house_timezone').notNull().default('Europe/Berlin'),
     responsePolicy: jsonb('response_policy')
       .notNull()

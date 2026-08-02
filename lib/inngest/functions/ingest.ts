@@ -23,12 +23,12 @@ import { findMemoryToForget, type ForgetMode } from '@/lib/memory/forget'
 import { enrichIssue, formatIssueBody } from '@/lib/ai/issue-enrich'
 import { issuesConfigured, labelsFor } from '@/lib/github/issues'
 import { parseReportCommand } from '@/lib/pipeline/report'
-import { parseHouseReport, weeklyReport, guestReport } from '@/lib/reports/reports'
+import { parseHouseReport, weeklyReport, guestReport, upcomingRemindersReport, recentLearningsReport } from '@/lib/reports/reports'
 import { createPendingAction } from '@/lib/confirm/store'
 import { parseWhen, clampToWakingHours } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
 import { loadRoster, memberDisplayNames } from '@/lib/identity/roster'
-import { resolveHouseIds, houseScopeForOrigin, parseNotifyCommand, setReminderThread } from '@/lib/identity/house'
+import { resolveHouseIds, houseScopeForOrigin, parseNotifyCommand, setReminderThread, parseConsoleCommand, setConsoleThread } from '@/lib/identity/house'
 import { writeAudit } from '@/lib/audit'
 import { houseTz } from '@/lib/env'
 import { handleCommand } from '@/lib/identity/commands'
@@ -57,7 +57,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     // STABLE scope id (group_id everywhere); `acceptIds` also includes the live transport id so an
     // inbound message from the migrated -100… supergroup still resolves to the house lane (alias
     // seam, docs/spec/telegram.md D9). Reply destination stays the inbound chat (origin.chatId).
-    const { scopeId: houseChatId, acceptIds } = await resolveHouseIds(createHttpDb())
+    const { scopeId: houseChatId, acceptIds, consoleThreadId } = await resolveHouseIds(createHttpDb())
     // Owner-configurable response policy (kill-switch / confidence floor / mutes).
     const policy = await loadResponsePolicy(createHttpDb())
 
@@ -138,7 +138,14 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         // READ scope is always the house group (all memory/facts are keyed there) — in a
         // member DM, chatId is the private chat, which holds nothing. Reply to chatId.
         const scope = houseChatId || chatId
-        const md = reportView === 'guests' ? await guestReport(db, scope) : await weeklyReport(db, scope)
+        const md =
+          reportView === 'guests'
+            ? await guestReport(db, scope)
+            : reportView === 'reminders'
+              ? await upcomingRemindersReport(db, scope, houseTz())
+              : reportView === 'recent'
+                ? await recentLearningsReport(db, scope)
+                : await weeklyReport(db, scope)
         await sayHouse(md)
         await reactToMessage(chatId, messageId, null)
       })
@@ -172,6 +179,35 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
       return { updateId, decision: 'notify-config' as const }
     }
 
+    // Ask-Baumy topic (/baumyhere in the target topic, /baumyoff to turn off). Owner only, house lane.
+    // Same guarantees as /notifyhere: identity = authenticated owner id, value = authenticated
+    // message_thread_id, never text. Auto-commit config; it only widens VERBOSITY in that topic (Baumy
+    // answers freely there) — it grants NO trust or privilege, so the injection wall is untouched. Audited.
+    const console_ = parseConsoleCommand(text ?? '')
+    if (console_ && origin.lane === 'house' && fromId != null && roster.isOwner(fromId)) {
+      await step.run('console-config', async () => {
+        const db = createHttpDb()
+        if (console_ === 'off') {
+          await setConsoleThread(db, null)
+          await writeAudit(db, 'console.topic.set', String(fromId), null, { threadId: null })
+          await sendToHouse(chatId, "Ask-Baumy mode off — I'll go back to only piping up when addressed. 🐈", { threadId: messageThreadId ?? undefined })
+          return
+        }
+        if (messageThreadId == null) {
+          await sendToHouse(chatId, 'Run /baumyhere INSIDE the topic you want to chat with me in — this looks like the General topic. 😼')
+          return
+        }
+        await setConsoleThread(db, messageThreadId)
+        await writeAudit(db, 'console.topic.set', String(fromId), null, { threadId: messageThreadId })
+        await sendToHouse(
+          chatId,
+          "🐈‍⬛ This is our channel now — ask me anything here (no need to @ me). Try 'what's coming up?', '/reminders', '/recent', or 'what do you know about the kitchen?'",
+          { threadId: messageThreadId },
+        )
+      })
+      return { updateId, decision: 'console-config' as const }
+    }
+
     // Member-DM commands (house-management). Deterministic; no classify/LLM.
     if (origin.lane === 'member_dm' && (text ?? '').trim().startsWith('/')) {
       await step.run('command', async () => handleCommand(origin, text ?? ''))
@@ -183,8 +219,12 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     const verdict = (await step.run('classify', async () => classify(text ?? ''))) as ClassifierVerdict
     const decision = decide(origin, verdict)
 
-    // "Directed at Baumy" uses the bot's REAL @username (getMe, cached), not a guess.
-    const directed = isDirectedAtBaumy(text ?? null, replyToBot === true, await getBotUsername())
+    // "Directed at Baumy" uses the bot's REAL @username (getMe, cached), not a guess. A message in the
+    // dedicated ask-Baumy topic counts as directed too — that's what makes Baumy fully conversational
+    // there (answer without an @mention). This only affects VERBOSITY, never trust: the topic id is a
+    // Telegram-authenticated field and the message is still untrusted house text.
+    const inConsoleTopic = origin.lane === 'house' && consoleThreadId != null && messageThreadId === consoleThreadId
+    const directed = inConsoleTopic || isDirectedAtBaumy(text ?? null, replyToBot === true, await getBotUsername())
 
     // Capture (evidence + facts) — ORTHOGONAL to the reply/reminder/task action, so a
     // reminder that also states a fact ("Zuzana arrives 10pm, staying in my room") is
