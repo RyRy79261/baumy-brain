@@ -15,13 +15,14 @@ import { houseTz } from '@/lib/env'
 // from house memory. LLM-formatted (the data is free-form facts + notes) but grounded
 // STRICTLY in what's stored — never invents — and degrades to a deterministic list on any
 // model failure. Secure values + quarantined (forwarded/bot) content are excluded.
-export type HouseReport = 'weekly' | 'guests'
+export type HouseReport = 'weekly' | 'guests' | 'reminders' | 'recent'
 
-// Detect a report slash command (/weekly, /guests) at the start of a message. Works in the
-// house group OR a DM; deterministic, no false positives; strips a @botname suffix.
+// Detect a report slash command (/weekly, /guests, /reminders, /recent) at the start of a message.
+// Works in the house group OR a DM; deterministic, no false positives; strips a @botname suffix.
+// /reminders + /recent are the read-only introspection read-outs (docs/spec/telegram.md D9c).
 export function parseHouseReport(text: string | null | undefined): HouseReport | null {
   if (!text) return null
-  const m = text.trim().match(/^\/(weekly|guests)(?:@\w+)?\b/i)
+  const m = text.trim().match(/^\/(weekly|guests|reminders|recent)(?:@\w+)?\b/i)
   return m ? (m[1].toLowerCase() as HouseReport) : null
 }
 
@@ -111,4 +112,56 @@ export async function guestReport(db: Database, groupId: string, now: Date = new
     console.error('guestReport: model failed — raw list:', err)
     return `Here's what I've got on guests:\n${grounding}`
   }
+}
+
+// House-local "Wed 3 Sep, 09:00" for a reminder's fire time (reminders have a time, unlike dated facts).
+const fmtDateTime = (d: Date | string, tz: string) =>
+  DateTime.fromJSDate(new Date(d)).setZone(tz).toFormat('ccc d LLL, HH:mm')
+
+// Introspection read-out: everything scheduled and still to come (docs/spec/telegram.md D9c). PURELY
+// DETERMINISTIC — a direct read of the reminders table, no model, no cost. Reminders aren't secret,
+// but this reads only status='scheduled' rows so it never leaks cancelled/sent noise. 🗓️ marks an
+// event heads-up, ⏰ an explicit reminder — matching how they'll actually post.
+export async function upcomingRemindersReport(db: Database, groupId: string, tz: string, now: Date = new Date()): Promise<string> {
+  const rows = await db
+    .select({ content: reminders.content, fireAt: reminders.fireAt, anchorKind: reminders.anchorKind })
+    .from(reminders)
+    .where(and(eq(reminders.groupId, groupId), eq(reminders.status, 'scheduled'), gte(reminders.fireAt, now)))
+    .orderBy(reminders.fireAt)
+    .limit(25)
+  if (rows.length === 0) return 'Nothing on the calendar right now — all clear 😺'
+  const lines = rows.map((r) => `${r.anchorKind === 'event_offset' ? '🗓️' : '⏰'} ${r.content} — ${fmtDateTime(r.fireAt, tz)}`)
+  return `Coming up:\n${lines.join('\n')}`
+}
+
+// Introspection read-out: the discrete facts Baumy has picked up lately (docs/spec/telegram.md D9c).
+// PURELY DETERMINISTIC (a direct read, no model). SECRET-SAFE by construction: is_secure rows are
+// excluded, so a bulk "what do you know" can never dump a wifi/door/bank value — a specific value is
+// only ever decrypted for a direct question via the reply path's disclosure discretion, never here.
+// Excludes quarantined (forwarded/bot) content and system-trust reflect PROFILES (those are
+// syntheses, not freshly-learned facts). Object may be a value or a linked entity (relationship edge).
+export async function recentLearningsReport(db: Database, groupId: string, now: Date = new Date()): Promise<string> {
+  const since = new Date(now.getTime() - 30 * 86_400_000)
+  const rows = rowsOf(
+    await db.execute(sql`
+      SELECT s.canonical_name AS subject,
+             f.predicate AS predicate,
+             COALESCE(f.object_value, o.canonical_name) AS object
+      FROM baumy_facts f
+      JOIN baumy_entities s ON f.subject_entity_id = s.id
+      LEFT JOIN baumy_entities o ON f.object_entity_id = o.id
+      WHERE f.group_id = ${groupId}
+        AND f.is_current = true
+        AND f.is_secure = false
+        AND f.trust_level <> 'quarantined'
+        AND f.trust_level <> 'system'
+        AND f.recorded_at >= ${since.toISOString()}
+      ORDER BY f.recorded_at DESC
+      LIMIT 12`),
+  )
+  const lines = rows
+    .filter((r) => r.object != null && String(r.object).trim() !== '')
+    .map((r) => `• ${r.subject as string} ${String(r.predicate).replace(/_/g, ' ')} ${r.object as string}`)
+  if (lines.length === 0) return "Haven't picked up anything new lately 😺"
+  return `Recently learned:\n${lines.join('\n')}`
 }

@@ -102,7 +102,26 @@ export const houseConfig = pgTable(
   'baumy_house_config',
   {
     id: boolean('id').primaryKey().default(true),
+    // The STABLE house scope id — the key every memory/fact/reminder row is group-scoped by.
+    // Captured on bot-add and NEVER rewritten on a supergroup migration (that would orphan all
+    // memory). The live transport id below rides the migration instead (docs/spec/telegram.md D9).
     houseGroupChatId: text('house_group_chat_id'),
+    // The CURRENT Telegram transport id (a -100… supergroup id after a group→supergroup upgrade).
+    // Null → the group hasn't migrated, so sends/inbound use house_group_chat_id. This is the
+    // "alias" seam: scope stays put (house_group_chat_id), transport follows the migration here.
+    liveChatId: text('live_chat_id'),
+    // Provenance: the id we migrated away from (audit/debug only). Additive, nullable.
+    migratedFromChatId: text('migrated_from_chat_id'),
+    // The forum-topic thread that proactive reminders / event heads-ups post into (the "notification
+    // channel"). Null → the group isn't a forum, or reminders go to the General topic. Captured by
+    // the owner running /notifyhere INSIDE the target topic (Telegram has no list-topics API), so the
+    // value is a Telegram-authenticated message_thread_id, never message text. docs/spec/telegram.md.
+    reminderThreadId: bigint('reminder_thread_id', { mode: 'number' }),
+    // The forum topic dedicated to TALKING TO Baumy (the "ask-Baumy"/concierge channel). In this
+    // topic Baumy is fully conversational (answers without an @mention) and read-only introspection
+    // commands are handy. Null → no such topic. It changes VERBOSITY, never trust: messages there are
+    // still untrusted house text, so nothing privileged rides on it. Set by the owner's /baumyhere.
+    consoleThreadId: bigint('console_thread_id', { mode: 'number' }),
     houseTimezone: text('house_timezone').notNull().default('Europe/Berlin'),
     responsePolicy: jsonb('response_policy')
       .notNull()

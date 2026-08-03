@@ -78,6 +78,29 @@ describe('resolveOrigin', () => {
     expect(o.privileged).toBe(false)
     expect(o.memoryTrust).toBe('quarantined')
   })
+
+  // Alias seam (docs/spec/telegram.md D9): after a group→supergroup migration the transport id
+  // changes, so a message arrives from a DIFFERENT chat id than the stored scope. It counts as the
+  // house ONLY when that live id is in the authenticated accept-set — never derived from text.
+  const OLD_SCOPE = '-100111'
+  const NEW_LIVE = '-1002222222222'
+  const supergroupMsg = (chatId: string, fromId: number, text: string): TelegramUpdate =>
+    ({
+      update_id: 12,
+      message: { message_id: 12, date: 0, chat: { id: Number(chatId), type: 'supergroup' }, from: { id: fromId }, text },
+    }) as unknown as TelegramUpdate
+
+  it('a message from the migrated live id resolves to the house lane when it is in the accept-set', () => {
+    const o = resolveOrigin(supergroupMsg(NEW_LIVE, 100, 'hi'), roster, OLD_SCOPE, [OLD_SCOPE, NEW_LIVE])
+    expect(o.lane).toBe('house')
+    expect(o.chatId).toBe(NEW_LIVE) // reply destination = the inbound (live) chat
+    expect(o.privileged).toBe(false) // still untrusted group text (injection wall unchanged)
+  })
+
+  it('without the alias in the accept-set, the same live-id message is NOT the house (fails closed)', () => {
+    const o = resolveOrigin(supergroupMsg(NEW_LIVE, 100, 'hi'), roster, OLD_SCOPE, [OLD_SCOPE])
+    expect(o.lane).toBe('ignore')
+  })
 })
 
 describe('allowedActions — the action↔origin policy', () => {

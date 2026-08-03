@@ -87,6 +87,21 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
 - **Fixed send destination:** `sendToHouse` targets a **code-resolved** chat id only. Replies
   are a **two-target allow-list** — the house group, or the authenticated DM sender's own chat
   (`origin.chatId`); reminders/digests → the fixed house group. The LLM never picks a recipient.
+- **Supergroup migration (alias seam, `docs/spec/telegram.md` D9):** the house `chat_id` changes on a
+  group→supergroup upgrade, but `house_group_chat_id` is ALSO the memory `group_id` — so it is the
+  stable **scope** and is NEVER rewritten. `house_config.live_chat_id` holds the current transport id;
+  `resolveHouseIds` → `{scopeId, sendId, acceptIds}` (lane accepts the alias set, sends use `sendId`,
+  memory stays on `scopeId`). It self-heals inbound (`convergeMigration`, bound to a known-house id —
+  no hijack) + outbound (`sendToHouseResilient` 400-retry); `scripts/heal-house.ts` is the manual kick.
+- **Reminder topic ("notification channel"):** `house_config.reminder_thread_id` routes reminders into
+  a forum topic via `message_thread_id`; set by the owner's `/notifyhere` (capture-tier auto-commit,
+  house lane, audited — value from the authenticated `message_thread_id`, never text). Read receipts are
+  **not** obtainable via the Bot API (D9a) — don't try to add them.
+- **Ask-Baumy topic + introspection (`docs/spec/telegram.md` D9c):** `house_config.console_thread_id`
+  (owner `/baumyhere`) marks a topic where Baumy is fully conversational (a message there is treated as
+  `directed`). `/reminders` + `/recent` are deterministic, **secret-safe** read-only introspection
+  (exclude `is_secure`). The topic changes **verbosity, not trust** — still untrusted house text, no
+  privileged path rides on the topic id. A real introspection API belongs in the authed dashboard.
 - **Secrets at rest:** wifi/door/bank values are AES-256-GCM encrypted (`lib/core/crypto.ts`);
   only a non-secret descriptor is stored/embedded; decrypt only to answer a direct request,
   never in digests.

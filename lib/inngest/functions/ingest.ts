@@ -23,12 +23,13 @@ import { findMemoryToForget, type ForgetMode } from '@/lib/memory/forget'
 import { enrichIssue, formatIssueBody } from '@/lib/ai/issue-enrich'
 import { issuesConfigured, labelsFor } from '@/lib/github/issues'
 import { parseReportCommand } from '@/lib/pipeline/report'
-import { parseHouseReport, weeklyReport, guestReport } from '@/lib/reports/reports'
+import { parseHouseReport, weeklyReport, guestReport, upcomingRemindersReport, recentLearningsReport } from '@/lib/reports/reports'
 import { createPendingAction } from '@/lib/confirm/store'
 import { parseWhen, clampToWakingHours } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
 import { loadRoster, memberDisplayNames } from '@/lib/identity/roster'
-import { getHouseChatId, houseScopeForOrigin } from '@/lib/identity/house'
+import { resolveHouseIds, houseScopeForOrigin, parseNotifyCommand, setReminderThread, parseConsoleCommand, setConsoleThread } from '@/lib/identity/house'
+import { writeAudit } from '@/lib/audit'
 import { DateTime } from 'luxon'
 import { houseTz } from '@/lib/env'
 import { now } from '@/lib/core/clock'
@@ -49,12 +50,16 @@ type IngestStep = { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> }
 // wrapper below only forwards its context.
 export async function runIngest(event: { data: TelegramMessageData }, step: IngestStep) {
     const { updateId, messageId, chatId, fromId, text, chatType, isBot, isForwarded, replyToBot } = event.data
+    const messageThreadId = event.data.messageThreadId ?? null
     // Prefer the human name (first[+last]); fall back to @username. Backfills members
     // that were only ever seen as a raw id (so Baumy can attribute a name, not digits).
     const fromName =
       [event.data.fromFirstName, event.data.fromLastName].filter(Boolean).join(' ') || event.data.fromUsername || null
-    // House group id from house_config (captured on bot-add); env override wins.
-    const houseChatId = await getHouseChatId(createHttpDb())
+    // House ids from house_config (captured on bot-add; env pins the scope). `houseChatId` is the
+    // STABLE scope id (group_id everywhere); `acceptIds` also includes the live transport id so an
+    // inbound message from the migrated -100… supergroup still resolves to the house lane (alias
+    // seam, docs/spec/telegram.md D9). Reply destination stays the inbound chat (origin.chatId).
+    const { scopeId: houseChatId, acceptIds, consoleThreadId } = await resolveHouseIds(createHttpDb())
     // Owner-configurable response policy (kill-switch / confidence floor / mutes).
     const policy = await loadResponsePolicy(createHttpDb())
 
@@ -65,7 +70,9 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
       // plaintext at rest forever (the encryption layer exists precisely to avoid that).
       // update_id + chat_id are all the dedup needs.
       await db.insert(telegramUpdates).values({ updateId, chatId }).onConflictDoNothing()
-      if (chatId === houseChatId) await ensureRegistered(db, chatId, fromId, fromName)
+      // Register under the stable SCOPE id (not the inbound chat) so a post-migration supergroup
+      // message still writes its member/chat rows to the original scope, never a new orphan group.
+      if (acceptIds.includes(chatId)) await ensureRegistered(db, houseChatId, fromId, fromName)
     })
 
     const pf = prefilter(text)
@@ -77,12 +84,20 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
       { chatId, fromId, text: text ?? null, isPrivate: chatType === 'private', isBot, isForwarded },
       roster,
       houseChatId,
+      acceptIds,
     )
     // The house whose SHARED memory this message reads/writes — the SCOPE, distinct from the
     // reply DESTINATION (chatId). In the house group they're equal; in a member DM the scope is
     // still the house (so a DM query grounds on house memory and a DM fact writes THROUGH to it)
     // while the reply goes to the private chat. Derived from the authenticated lane, never text.
     const houseScope = houseScopeForOrigin(origin, houseChatId)
+
+    // In a forum supergroup a WORDED reply must echo the topic it was asked in, or Telegram drops it
+    // into the General topic. Reactions attach to the message directly (no thread needed) and a DM has
+    // no topic, so `houseThreadId` is only set for a house-lane message that arrived inside a topic.
+    // Route every conversational house send through it (reminders use their own configured topic).
+    const houseThreadId = origin.lane === 'house' ? (messageThreadId ?? undefined) : undefined
+    const sayHouse = (body: string, opts?: { silent?: boolean }) => sendToHouse(chatId, body, { ...opts, threadId: houseThreadId })
 
     // Bug/feature report (/bug, /feature) → enrich into a clean GitHub
     // issue and file it on a confirm tap. Explicit slash command, works in the house group
@@ -93,12 +108,12 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
       await step.run('report', async () => {
         const db = createHttpDb()
         if (!issuesConfigured()) {
-          await sendToHouse(chatId, "I'd file that, but issue reporting isn't wired up yet — the house owner needs to add a GitHub token. 🐈‍⬛")
+          await sayHouse("I'd file that, but issue reporting isn't wired up yet — the house owner needs to add a GitHub token. 🐈‍⬛")
           return
         }
         if (!report.body) {
           const eg = report.hint === 'feature' ? '/feature a dark mode for the dashboard' : '/bug the reminder fired twice'
-          await sendToHouse(chatId, `Tell me what to file, like:\n${eg}`)
+          await sayHouse(`Tell me what to file, like:\n${eg}`)
           return
         }
         const reporter = (await memberDisplayNames(db)).get(String(fromId)) ?? 'a housemate'
@@ -110,7 +125,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
           requestedBy: String(fromId),
         })
         const kind = enriched.type === 'feature' ? '✨ Feature' : '🐛 Bug'
-        await sendConfirmCard(chatId, `${kind}: ${enriched.title}\n\n${enriched.summary}\n\nFile this as a GitHub issue?`, pid)
+        await sendConfirmCard(chatId, `${kind}: ${enriched.title}\n\n${enriched.summary}\n\nFile this as a GitHub issue?`, pid, houseThreadId)
       })
       return { updateId, decision: 'report' as const }
     }
@@ -125,11 +140,74 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         // READ scope is always the house group (all memory/facts are keyed there) — in a
         // member DM, chatId is the private chat, which holds nothing. Reply to chatId.
         const scope = houseChatId || chatId
-        const md = reportView === 'guests' ? await guestReport(db, scope) : await weeklyReport(db, scope)
-        await sendToHouse(chatId, md)
+        const md =
+          reportView === 'guests'
+            ? await guestReport(db, scope)
+            : reportView === 'reminders'
+              ? await upcomingRemindersReport(db, scope, houseTz())
+              : reportView === 'recent'
+                ? await recentLearningsReport(db, scope)
+                : await weeklyReport(db, scope)
+        await sayHouse(md)
         await reactToMessage(chatId, messageId, null)
       })
       return { updateId, decision: 'report-view' as const }
+    }
+
+    // Reminders "notification channel" (/notifyhere in the target topic, /notifyoff to reset). Owner
+    // only, HOUSE lane — the authorization is the authenticated owner id and the value is the
+    // authenticated message_thread_id, NEVER message text (injection wall intact). Auto-commits at
+    // the capture tier: it only routes low-privilege reminder posts to a topic WITHIN the fixed house
+    // group (no exfiltration surface — same spirit as reminders/list being confirm-exempt). Audited.
+    const notify = parseNotifyCommand(text ?? '')
+    if (notify && origin.lane === 'house' && fromId != null && roster.isOwner(fromId)) {
+      await step.run('notify-config', async () => {
+        const db = createHttpDb()
+        if (notify === 'off') {
+          await setReminderThread(db, null)
+          await writeAudit(db, 'reminder.topic.set', String(fromId), null, { threadId: null })
+          await sendToHouse(chatId, 'Reminders will post to the General topic from now on. 🐈', { threadId: messageThreadId ?? undefined })
+          return
+        }
+        if (messageThreadId == null) {
+          // Run in General (no topic thread) → nothing to pin. Tell them where to run it.
+          await sendToHouse(chatId, 'Run /notifyhere INSIDE the topic you want reminders in — this looks like the General topic. 😼')
+          return
+        }
+        await setReminderThread(db, messageThreadId)
+        await writeAudit(db, 'reminder.topic.set', String(fromId), null, { threadId: messageThreadId })
+        await sendToHouse(chatId, '📌 Got it — reminders and event heads-ups will post in this topic from now on.', { threadId: messageThreadId })
+      })
+      return { updateId, decision: 'notify-config' as const }
+    }
+
+    // Ask-Baumy topic (/baumyhere in the target topic, /baumyoff to turn off). Owner only, house lane.
+    // Same guarantees as /notifyhere: identity = authenticated owner id, value = authenticated
+    // message_thread_id, never text. Auto-commit config; it only widens VERBOSITY in that topic (Baumy
+    // answers freely there) — it grants NO trust or privilege, so the injection wall is untouched. Audited.
+    const console_ = parseConsoleCommand(text ?? '')
+    if (console_ && origin.lane === 'house' && fromId != null && roster.isOwner(fromId)) {
+      await step.run('console-config', async () => {
+        const db = createHttpDb()
+        if (console_ === 'off') {
+          await setConsoleThread(db, null)
+          await writeAudit(db, 'console.topic.set', String(fromId), null, { threadId: null })
+          await sendToHouse(chatId, "Ask-Baumy mode off — I'll go back to only piping up when addressed. 🐈", { threadId: messageThreadId ?? undefined })
+          return
+        }
+        if (messageThreadId == null) {
+          await sendToHouse(chatId, 'Run /baumyhere INSIDE the topic you want to chat with me in — this looks like the General topic. 😼')
+          return
+        }
+        await setConsoleThread(db, messageThreadId)
+        await writeAudit(db, 'console.topic.set', String(fromId), null, { threadId: messageThreadId })
+        await sendToHouse(
+          chatId,
+          "🐈‍⬛ This is our channel now — ask me anything here (no need to @ me). Try 'what's coming up?', '/reminders', '/recent', or 'what do you know about the kitchen?'",
+          { threadId: messageThreadId },
+        )
+      })
+      return { updateId, decision: 'console-config' as const }
     }
 
     // Member-DM commands (house-management). Deterministic; no classify/LLM.
@@ -143,8 +221,12 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     const verdict = (await step.run('classify', async () => classify(text ?? ''))) as ClassifierVerdict
     const decision = decide(origin, verdict)
 
-    // "Directed at Baumy" uses the bot's REAL @username (getMe, cached), not a guess.
-    const directed = isDirectedAtBaumy(text ?? null, replyToBot === true, await getBotUsername())
+    // "Directed at Baumy" uses the bot's REAL @username (getMe, cached), not a guess. A message in the
+    // dedicated ask-Baumy topic counts as directed too — that's what makes Baumy fully conversational
+    // there (answer without an @mention). This only affects VERBOSITY, never trust: the topic id is a
+    // Telegram-authenticated field and the message is still untrusted house text.
+    const inConsoleTopic = origin.lane === 'house' && consoleThreadId != null && messageThreadId === consoleThreadId
+    const directed = inConsoleTopic || isDirectedAtBaumy(text ?? null, replyToBot === true, await getBotUsername())
 
     // Capture (evidence + facts) — ORTHOGONAL to the reply/reminder/task action, so a
     // reminder that also states a fact ("Zuzana arrives 10pm, staying in my room") is
@@ -225,7 +307,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         if ((ex.op === 'add' || ex.op === 'checkoff') && ex.items.length === 0) return { handled: false }
         // Destination belt: exactly the two TRANSPORT-authenticated targets — the house group, or
         // the authenticated DM sender's own chat. Never a free/LLM id (injection wall I2).
-        const isHouseReply = origin.lane === 'house' && chatId === houseChatId
+        const isHouseReply = origin.lane === 'house' && acceptIds.includes(chatId)
         const isDmReply = origin.lane === 'member_dm' && fromId != null && roster.isMember(fromId) && chatId === origin.chatId
         if (!isHouseReply && !isDmReply) return { handled: false }
         // Attribution = the AUTHENTICATED sender, never a name in the text (quarantine already
@@ -263,7 +345,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
                   : mut.op === 'add'
                     ? addAck(mut.added, mut.already, items.length)
                     : checkoffAck(mut.checkedOff, mut.notFound, items)
-              await sendToHouse(chatId, out)
+              await sayHouse(out)
             } catch (err) {
               await releaseReply(db, updateId).catch(() => {})
               throw err
@@ -331,7 +413,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         // or the message sender's OWN private chat (member_dm). Never a free/LLM-supplied id
         // (injection wall I2/G1). Relaxes the old `chatId !== houseChatId` guard without deleting
         // the belt: a reply still can only land in the house group or the authenticated sender's DM.
-        const isHouseReply = origin.lane === 'house' && chatId === houseChatId
+        const isHouseReply = origin.lane === 'house' && acceptIds.includes(chatId)
         const isDmReply = isDm && fromId != null && roster.isMember(fromId) && chatId === origin.chatId
         if (!isHouseReply && !isDmReply) return
         if (!(await claimReply(db, updateId))) return // one-send-per-inbound (D12)
@@ -366,11 +448,11 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
             // can't act on what we found, say why (or ask) rather than a misleading proposal.
             if (!hasFacts && !(mode === 'purge' && hasScrub)) {
               if (mode === 'soft' && hasScrub) {
-                await sendToHouse(chatId, `That's only in past messages, not a fact I can just hide — say "permanently forget it" and I'll scrub it out for good. 😼`)
+                await sayHouse(`That's only in past messages, not a fact I can just hide — say "permanently forget it" and I'll scrub it out for good. 😼`)
               } else if (ex.values.length === 0 && !ex.subject) {
-                await sendToHouse(chatId, `What exactly should I forget? Name the specific thing — a name, number, that kind of thing 😼`)
+                await sayHouse(`What exactly should I forget? Name the specific thing — a name, number, that kind of thing 😼`)
               } else {
-                await sendToHouse(chatId, `Nothing like that in my memory, so nothing to forget 😼`)
+                await sayHouse(`Nothing like that in my memory, so nothing to forget 😼`)
               }
               return
             }
@@ -395,7 +477,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
               if (aliasCount) lines.push(`• drop ${aliasCount} alias${aliasCount === 1 ? '' : 'es'}`)
             }
             const head = mode === 'purge' ? "I'll permanently forget (no undo):" : "I'll forget (hidden, reversible):"
-            await sendConfirmCard(chatId, `${head}\n${lines.join('\n')}\n\nTap to confirm.`, pid)
+            await sendConfirmCard(chatId, `${head}\n${lines.join('\n')}\n\nTap to confirm.`, pid, houseThreadId)
             return
           }
           // Classifier flagged forget but it wasn't one → fall through to a normal reply.
@@ -475,7 +557,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         if (verdict.webSearch) {
           const ws = await webSearchAnswer(text ?? '', combined.filter((m) => !m.isSecure))
           if (ws.searched && ws.text) {
-            await sendToHouse(chatId, ws.text)
+            await sayHouse(ws.text)
             await reactToMessage(chatId, messageId, null) // 👀 → gone; the words are the reply
             return
           }
@@ -488,7 +570,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         // @-mentions Baumy directly, or ANY 1:1 DM, ALWAYS gets words, never a dismissive
         // thumbs-down (a lone 👎 in a private chat reads as a shrug, not an answer).
         if (answered || grounding.length === 0 || directed || isDm) {
-          await sendToHouse(chatId, reply)
+          await sayHouse(reply)
           await reactToMessage(chatId, messageId, null) // 👀 → gone; the words are the reply
         } else {
           await reactToMessage(chatId, messageId, '👎') // 👀 → 👎: ambient ask, nothing in the records

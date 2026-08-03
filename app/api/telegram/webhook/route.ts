@@ -52,6 +52,19 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ ok: true })
     }
 
+    // Group→supergroup migration (docs/spec/telegram.md D9): a service message carries
+    // migrate_to_chat_id (delivered in the OLD group) or migrate_from_chat_id (in the NEW
+    // supergroup). Derive both ids and converge the house transport id downstream — from
+    // Telegram-authenticated service fields, never message text. Handled before the generic
+    // message forward (a migrate message has no text and must not fall through to ingest).
+    const mig = update.message ?? update.edited_message
+    if (mig && (mig.migrate_to_chat_id != null || mig.migrate_from_chat_id != null)) {
+      const oldId = mig.migrate_to_chat_id != null ? String(mig.chat.id) : String(mig.migrate_from_chat_id)
+      const newId = mig.migrate_to_chat_id != null ? String(mig.migrate_to_chat_id) : String(mig.chat.id)
+      await inngest.send({ id: `tg:mig:${update.update_id}`, name: 'telegram/chat_migrated', data: { updateId: update.update_id, oldId, newId } })
+      return Response.json({ ok: true })
+    }
+
     // In-shape message? Forward it. Scope (house group vs known-member DM vs
     // ignore) is resolved DOWNSTREAM from house_config — the webhook needs no chat id.
     const msg = update.message ?? update.edited_message
@@ -70,6 +83,8 @@ export async function POST(req: Request): Promise<Response> {
         fromLastName: msg.from?.last_name ?? null,
         fromUsername: msg.from?.username ?? null,
         text: msg.text ?? null,
+        // Forum-topic thread (null = General / not a forum) — for /notifyhere capture + reply threading.
+        messageThreadId: msg.is_topic_message ? (msg.message_thread_id ?? null) : null,
         // Trust signals resolved downstream: bot-origin / forwarded → quarantined.
         isBot: msg.from?.is_bot === true,
         isForwarded: msg.forward_origin != null,

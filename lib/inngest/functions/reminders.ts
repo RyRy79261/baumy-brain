@@ -4,7 +4,7 @@ import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { reminders } from '@/db/schema'
 import { claimReminder, markSent, dueScheduled, releaseReminder, reapStaleFiring, expireStaleScheduled } from '@/lib/reminders/store'
-import { sendToHouse } from '@/lib/telegram/client'
+import { sendToHouseResilient } from '@/lib/telegram/house-send'
 import { getHouseChatId } from '@/lib/identity/house'
 import { loadResponsePolicy } from '@/lib/policy'
 import { houseTz } from '@/lib/env'
@@ -74,7 +74,9 @@ export const reminderDeliver = inngest.createFunction(
       const db = createHttpDb()
       if (!(await claimReminder(db, reminderId))) return // another path already claimed it
       try {
-        await sendToHouse(row.deliverChatId, reminderBody(row.anchorKind, row.content))
+        // Destination resolved in code to the CURRENT live house id (self-heals a supergroup
+        // migration — the frozen deliver_chat_id may predate it). Fixed-destination invariant intact.
+        await sendToHouseResilient(db, reminderBody(row.anchorKind, row.content))
       } catch (e) {
         await releaseReminder(db, reminderId) // SEND failed → back to scheduled so it retries (never zero-fire)
         throw e
@@ -115,13 +117,16 @@ export async function deliverDueReminders(
 
   let sent = 0
   let messages = 0
-  for (const [dest, group] of byDest) {
+  // All reminders deliver to the house group; the destination is resolved in code at send time to the
+  // CURRENT live id (sendToHouseResilient) — so a supergroup migration self-heals even if a row's
+  // frozen deliver_chat_id predates it. The byDest grouping stays as a defensive batch boundary.
+  for (const group of byDest.values()) {
     const claimed: DueRow[] = []
     for (const r of group) if (await claimReminder(db, r.id)) claimed.push(r)
     if (claimed.length === 0) continue
     const body = claimed.map((r) => reminderBody(r.anchorKind, r.content)).join('\n')
     try {
-      await sendToHouse(dest, body)
+      await sendToHouseResilient(db, body)
     } catch (e) {
       for (const r of claimed) await releaseReminder(db, r.id)
       throw e

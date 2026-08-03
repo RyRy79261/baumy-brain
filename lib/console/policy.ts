@@ -90,7 +90,11 @@ export const POLICY: Record<string, TablePolicy> = {
 
   houseConfig: {
     id: prov('singleton row'),
-    houseGroupChatId: prov('the fixed send destination — code-resolved, never LLM-chosen'),
+    houseGroupChatId: prov('the fixed send destination / memory scope — code-resolved, never LLM-chosen'),
+    liveChatId: prov('current transport id after a group→supergroup migration — code-resolved (self-heals on the stale-id 400), never LLM-chosen'),
+    migratedFromChatId: prov('provenance: the chat id we migrated away from'),
+    reminderThreadId: prov('forum topic reminders post into — code-resolved from an authenticated message_thread_id (/notifyhere), never hand-edited'),
+    consoleThreadId: prov('forum topic where Baumy is conversational — code-resolved from an authenticated message_thread_id (/baumyhere), never hand-edited'),
     houseTimezone: open('house timezone — affects every cron slot and every date resolution'),
     responsePolicy: open('edit via the typed setters on the settings page (pause, confidence floor, muted topics, reminder frequency)'),
     dailySpendCapUsd: open('spend cap'),
