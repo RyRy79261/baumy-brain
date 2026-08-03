@@ -8,6 +8,7 @@ import { sendToHouseResilient } from '@/lib/telegram/house-send'
 import { getHouseChatId } from '@/lib/identity/house'
 import { loadResponsePolicy } from '@/lib/policy'
 import { houseTz } from '@/lib/env'
+import { now } from '@/lib/core/clock'
 
 const ARM_WINDOW_DAYS = 6 // Inngest Free caps a single sleep at 7 days
 type DueRow = Awaited<ReturnType<typeof dueScheduled>>[number]
@@ -154,9 +155,10 @@ export const reminderDigest = inngest.createFunction(
       const policy = await loadResponsePolicy(db)
       if (!policy.global_enabled) return { skipped: 'paused' as const } // proactive output honors /pause
       // 'once' a day = the morning slot only; the 20:00 run no-ops.
-      const eveningSlot = DateTime.now().setZone(houseTz()).hour >= 14
+      const at = now()
+      const eveningSlot = DateTime.fromJSDate(at).setZone(houseTz()).hour >= 14
       if (policy.reminder_frequency === 'once' && eveningSlot) return { skipped: 'once-morning-only' as const }
-      return deliverDueReminders(db, new Date())
+      return deliverDueReminders(db, at)
     })
   },
 )

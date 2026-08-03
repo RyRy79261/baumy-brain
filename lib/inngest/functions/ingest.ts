@@ -30,7 +30,9 @@ import { createReminder } from '@/lib/reminders/store'
 import { loadRoster, memberDisplayNames } from '@/lib/identity/roster'
 import { resolveHouseIds, houseScopeForOrigin, parseNotifyCommand, setReminderThread, parseConsoleCommand, setConsoleThread } from '@/lib/identity/house'
 import { writeAudit } from '@/lib/audit'
+import { DateTime } from 'luxon'
 import { houseTz } from '@/lib/env'
+import { now } from '@/lib/core/clock'
 import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
 import { loadResponsePolicy, replyAllowed } from '@/lib/policy'
@@ -264,7 +266,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
             // Resolve a dated fact's time phrase to an absolute event_at NOW, while "tomorrow" is
             // still unambiguous (it can't be resolved later at scan time). Non-dated / unparseable
             // → null. This is what the proactive event-surfacing scan reads (event-surfacing.md).
-            const eventAt = f.whenText?.trim() ? (parseWhen(f.whenText, houseTz())?.fireAt ?? null) : null
+            const eventAt = f.whenText?.trim() ? (parseWhen(f.whenText, houseTz(), DateTime.fromJSDate(now()))?.fireAt ?? null) : null
             // trust=origin.memoryTrust: a member DM is 'trusted' (rank 3) and MAY supersede a
             // group 'untrusted' fact (rank 2), never a 'system' reflect fact (rank 4). Scope is
             // the house so the write lands in shared memory (trust-gated in reconcileFact).
@@ -363,7 +365,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         const db = createHttpDb()
         const ex = await extractReminder(text ?? '')
         if (!ex.isReminder || !ex.content.trim()) return false // empty content would post a bare "⏰"
-        const parsed = parseWhen(ex.whenText, houseTz()) // resolve "9am" in the house timezone
+        const parsed = parseWhen(ex.whenText, houseTz(), DateTime.fromJSDate(now())) // resolve "9am" in the house timezone
         if (!parsed) return false
         const id = await createReminder(db, {
           groupId: houseScope, // scope = the house (a DM-set reminder belongs to the house, not a silo)
