@@ -4,6 +4,7 @@ import { entities, facts, members, memoryItems } from '@/db/schema'
 import { encryptSecret } from '@/lib/core/crypto'
 import { scanSensitivity } from '@/lib/core/sensitivity'
 import { PROFILE_PREDICATE } from '@/lib/memory/reflect'
+import { now as clockNow } from '@/lib/core/clock'
 import type { Trust } from '@/lib/core/origin'
 
 // Trust ranking for contradiction resolution. A fact may only supersede an
@@ -200,7 +201,11 @@ export async function reconcileFact(
     keyVersion: isSecure ? 1 : null,
     authoredBy: input.authoredBy,
     trustLevel: input.trustLevel,
-    validFrom: new Date(),
+    validFrom: clockNow(),
+    // Explicit, not the column default: recorded_at is load-bearing (the reflect cron compares it
+    // against a person's newest profile), and a Postgres defaultNow() is unreachable from a
+    // simulated clock — it would silently stamp real time inside a sandbox run.
+    recordedAt: clockNow(),
     isCurrent: true,
     // Provenance: the evidence note this fact was distilled from (with authoredBy = who).
     sourceMemoryItemId: input.memoryItemId ?? null,
@@ -250,7 +255,7 @@ export async function reconcileFact(
   // autocommitted writes, the retry sees NO current incumbent and cleanly re-ADDs — so there
   // are never two is_current rows (which could persistently surface a stale value). The brief
   // window where the fact has no current value self-heals on the retry.
-  const now = new Date()
+  const now = clockNow()
   await db.update(facts).set({ isCurrent: false, validTo: now, invalidatedAt: now }).where(eq(facts.id, existing.id))
   // The new row DERIVES FROM the incumbent it replaces (its parent), mirroring the incumbent's
   // forward supersededBy pointer — so the supersession chain is walkable in both directions.

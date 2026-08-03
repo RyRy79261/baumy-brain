@@ -1,4 +1,6 @@
 import { requireAdmin } from '@/lib/auth/require-admin'
+import { createHttpDb } from '@/db/client'
+import { loadRoster } from '@/lib/identity/roster'
 
 // Authorization gate for the whole /admin surface (architecture D3, spec D2/D8).
 // requireAdmin re-checks the LIVE grant against the DB on every request — the
@@ -18,11 +20,17 @@ export default async function PrivateLayout({ children }: { children: React.Reac
     )
   }
 
+  // The console is owner-only (docs/spec/sandbox-console.md). Hiding the link is cosmetic — the
+  // page itself re-checks requireOwner, so a member who guesses the URL still gets nothing.
+  const roster = await loadRoster(createHttpDb())
+  const isOwner = roster.isOwner(Number(session.uid))
+
   const NAV: Array<[string, string]> = [
     ['Members', '/admin'],
     ['Memory', '/admin/memory'],
     ['Reminders', '/admin/reminders'],
     ['Settings', '/admin/settings'],
+    ...(isOwner ? ([['Console', '/admin/console']] as Array<[string, string]>) : []),
   ]
   return (
     <div style={{ fontFamily: 'system-ui' }}>
