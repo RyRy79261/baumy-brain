@@ -118,6 +118,30 @@ No ids to copy anywhere. (First invite wins — adding the bot to a *different* 
 
 ---
 
+## Troubleshooting — "Baumy has gone quiet"
+When Baumy stops reading or answering in the group, the code is almost never the problem — it's live
+state, and there are about eight places it can break. Run the doctor with the **production** env
+(`vercel env pull`) rather than guessing:
+
+```bash
+pnpm doctor                 # read-only: walks Telegram → webhook → Inngest → lane → policy → send
+pnpm doctor --probe-topics  # also validates the configured forum-topic ids (briefly shows "typing…")
+```
+
+It prints a findings list with a concrete fix per problem. The decisive line is step 5, the inbound
+ledger: **updates landing** means Telegram, the webhook and Inngest are all healthy and the fault is
+downstream (paused switch, topic id, roster); **nothing landing** means the fault is upstream and
+nothing in the app will ever see a message. The usual suspects, in rough order of frequency:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Slash commands work, ambient messages are ignored | Telegram **privacy mode** is back ON | BotFather → Group Privacy → off, then **remove and re-add** the bot (existing chats keep the old setting) |
+| Nothing at all arrives; `pending_update_count` climbing | Webhook secret drifted (Telegram logs a 401) | Re-run `scripts/set-webhook.ts` with the deployed `TELEGRAM_WEBHOOK_SECRET` |
+| Group silent, DMs still answer | `/pause` is on (`global_enabled: false`) — pause is lane-scoped | DM `/resume`, or flip it in the dashboard |
+| Group upgraded to a supergroup, then went deaf | `live_chat_id` is stale, so inbound falls to the `ignore` lane | `scripts/heal-house.ts <new -100… id>` (never rewrites the memory scope) |
+| The ask-Baumy topic doesn't answer without an @mention | `console_thread_id` doesn't match a real thread | Run `/baumyhere` **inside** that topic (captures the authenticated `message_thread_id`) |
+| DMs get no reply at all | Roster is empty — the member-DM lane fails closed | Post once in the group to register, or set `BAUMY_OWNER_ID` |
+
 ## Local development (optional, no deploy)
 Use a **separate dev bot** + a **private test group** (never the prod token).
 ```bash

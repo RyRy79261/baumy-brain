@@ -41,6 +41,7 @@ pnpm db:migrate     # apply migrations (needs DATABASE_URL_UNPOOLED)
 pnpm dev            # next dev
 pnpm inngest:dev    # local Inngest dev server
 node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram webhook
+pnpm doctor         # "Baumy has gone quiet" — read-only probe of the whole inbound chain
 ```
 
 ## Working cadence (follow this)
