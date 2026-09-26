@@ -173,6 +173,14 @@ describe('scanSensitivity', () => {
     expect(scanSensitivity('door code 4821').isSecure).toBe(true)
     expect(scanSensitivity('gate combination is 7-2-9').isSecure).toBe(true)
   })
+  // A snake_case fact triple ("wifi has_password hunter3") is scanned like prose — otherwise the
+  // value was stored in plaintext and echoed back into the group by the ack (C15).
+  it('flags a secret named by a snake_case predicate', () => {
+    expect(scanSensitivity('wifi has_password hunter3').isSecure).toBe(true)
+    expect(scanSensitivity('front door door_code 4821').isSecure).toBe(true)
+    expect(scanSensitivity('wifi network_password hunter3').isSecure).toBe(true)
+    expect(scanSensitivity('bins collection_day thursday').isSecure).toBe(false)
+  })
   it('does not flag ordinary house chatter', () => {
     expect(scanSensitivity('we are out of oat milk').isSecure).toBe(false)
     expect(scanSensitivity('Marta arrives Friday, 5 nights').isSecure).toBe(false)

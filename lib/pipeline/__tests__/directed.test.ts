@@ -24,12 +24,19 @@ describe('isDirectedAtBaumy', () => {
 
 describe('addressesByName — the short name only as a vocative (C10)', () => {
   it('true at the start ("Baumy, …", "hey baumy …") or closing the message ("…, baumy?", "thanks baumy")', () => {
-    for (const t of ['Baumy, when is bin day', 'baumy what is for dinner', 'hey baumy are you around?', 'ok baumy, remind us', 'when are the bins out, baumy?', 'thanks baumy', 'is it bin day baumy?', 'Baumy is it bin day?']) {
+    for (const t of ['Baumy, when is bin day', 'baumy what is for dinner', 'hey baumy are you around?', 'ok baumy, remind us', 'when are the bins out, baumy?', 'thanks baumy', 'Baumy is it bin day?']) {
       expect(addressesByName(t, U), t).toBe(true)
     }
   })
   it('false for talk ABOUT Baumy: possessives, mid-sentence mentions, third-person statements', () => {
     for (const t of ["Baumy's reminders are annoying lol", 'Marco, ask baumy, it knows', 'baumy keeps pinging me', 'Baumy is annoying', 'I told baumy about it yesterday', 'baumyish vibes']) {
+      expect(addressesByName(t, U), t).toBe(false)
+    }
+  })
+  // A bare trailing "baumy?" is as often the object of the sentence as a vocative. It is left to the
+  // classifier (the undirected row, asksBaumy + the reply floor) rather than forcing an answer.
+  it('false for a bare trailing "… baumy?" with no vocative punctuation', () => {
+    for (const t of ['did you ask baumy?', 'is anyone else annoyed by baumy?', 'is it bin day baumy?']) {
       expect(addressesByName(t, U), t).toBe(false)
     }
   })

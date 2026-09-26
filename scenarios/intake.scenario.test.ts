@@ -34,7 +34,7 @@ describe('scenario: intake', () => {
     // TODO(phase 5, D4/I5): forwarded-by-member content gets trust `forwarded` — stored and
     // recallable with a "forwarded by X" label, never facts or actions. Today it is quarantined and
     // excluded from every retrieval arm, so the question below grounds on nothing.
-    knownGap: { refs: 'I5 D4', phase: 5, note: 'forwarded trust tier' },
+    knownGap: { refs: 'I5 D4', phase: 5, failsAt: 5, note: 'forwarded trust tier' },
     fixtures: forwarded,
     steps: [
       say('Marco', LANDLORD, { forwarded: true }),

@@ -5,7 +5,7 @@ import { resolveModel } from './registry'
 import { REPLY_SYSTEM, REPLY_SYSTEM_TEXT } from './prompts'
 import { isMalformedObjectError } from './errors'
 import { scanSensitivity } from '@/lib/core/sensitivity'
-import { describeOutcome, describeWhere, type TurnContext } from '@/lib/turn/context'
+import { describeOutcome, describeReplyTo, describeWhere, type TurnContext } from '@/lib/turn/context'
 import type { ReplyMode } from '@/lib/turn/plan'
 
 // Grounded reply (docs/spec/chat-understanding-v2.md §4). Memory-only, ZERO tools (exfil-safe).
@@ -71,11 +71,16 @@ export function renderReplyPrompt(ctx: TurnContext, mode: ReplyMode, grounding: 
     'CONTEXT (verified by the system, not by the message):',
     `  FROM: ${ctx.sender.name} (${role}) · WHERE: ${describeWhere(ctx)} · NOW: ${now.toFormat('ccc d LLL yyyy, HH:mm')} (${ctx.tz})`,
   ]
-  if (ctx.replyTo) lines.push(`  REPLYING TO: ${ctx.replyTo.author === 'baumy' ? 'Baumy' : ctx.replyTo.author}: "${clip(ctx.replyTo.text ?? '(no text)', 300)}"`)
-  lines.push(`  THIS TURN: ${describeOutcome(ctx.outcome, ctx.tz)}`)
+  // The replied-to message: only WHO it is from sits in the verified block; its text (when it may be
+  // shown at all) is a quoted one-line data section after it, so it can never forge a CONTEXT line.
+  const replyTo = ctx.replyTo ? describeReplyTo(ctx.replyTo) : null
+  if (replyTo) lines.push(`  REPLYING TO: ${replyTo.context}`)
+  const withholdObjects = mode !== 'answer' && scanSensitivity(ctx.text).isSecure
+  lines.push(`  THIS TURN: ${describeOutcome(ctx.outcome, ctx.tz, { withholdObjects })}`)
+  if (replyTo?.quoted) lines.push(replyTo.quoted)
   if (ctx.recent.length) {
     lines.push('RECENT CHAT (oldest first):')
-    for (const t of ctx.recent) lines.push(`  [${DateTime.fromJSDate(t.at).setZone(ctx.tz).toFormat('HH:mm')}] ${t.author}: ${clip(t.text, 300)}`)
+    for (const t of ctx.recent) lines.push(`  [${DateTime.fromJSDate(t.at).setZone(ctx.tz).toFormat('HH:mm')}] ${t.author}: ${clip(t.text.replace(/\s+/g, ' '), 300)}`)
   }
   lines.push('MEMORY (each line: kind · who said it · when):')
   if (grounding.length) for (const m of grounding) lines.push(memoryLine(m, ctx.tz, ctx.sentAt))

@@ -8,7 +8,9 @@ import { reminderExtraction } from '@/lib/ai/reminder-extract'
 import { resolveModel, setModelOverride } from '@/lib/ai/registry'
 import { embed, embedSync, setEmbedOverride } from '@/lib/ai/embed'
 import { __setDbOverride, createHttpDb, type Database } from '@/db/client'
-import { roleOf, messageOf, memoryLines, promptSection, installFakeModels } from '../fake-model'
+import { expansionSchema } from '@/lib/ai/expand'
+import { rerankSchema } from '@/lib/ai/rerank'
+import { roleOf, messageOf, textOf, memoryLines, promptSection, installFakeModels, ROLE_PROMPTS, FakeModelError } from '../fake-model'
 import { verdict, toTriageOutput, toExtractedFact, toReminderOutput, fact, reminder, type Intent } from '../shapes'
 
 // The scenario harness's own guarantees: every LLM call is recognised, every fixture fits the
@@ -28,6 +30,30 @@ describe('fake model — role detection', () => {
     expect(roleOf(DELIBERATE_SYSTEM)).toBe('deliberate')
   })
 
+  // EXACT registration: a prefix match would route a new prompt that extends a registered one
+  // (REPLY_SYSTEM starts with REPLY_SYSTEM_TEXT) to the wrong role's fixtures instead of failing.
+  it('every exported *SYSTEM constant is registered VERBATIM, and distinct constants map to distinct roles', () => {
+    const systems = [...Object.entries(prompts), ['DELIBERATE_SYSTEM', DELIBERATE_SYSTEM]].filter(([k, v]) => k.includes('SYSTEM') && typeof v === 'string') as [string, string][]
+    const roleOfConst = new Map<string, string>()
+    for (const [name, value] of systems) {
+      const reg = ROLE_PROMPTS.find(([, p]) => p === value)
+      expect(reg, `${name} is not registered verbatim in ROLE_PROMPTS`).toBeTruthy()
+      const prior = roleOfConst.get(reg![0])
+      expect(prior, `${name} and ${prior} share the role "${reg![0]}"`).toBeUndefined()
+      roleOfConst.set(reg![0], name)
+    }
+  })
+
+  it('an exported prompt that is NOT registered is unknown — never its registered prefix', () => {
+    // Simulate: REPLY_SYSTEM is an export; were it unregistered, it must not fall back to reply-text.
+    const withoutReply = ROLE_PROMPTS.filter(([r]) => r !== 'reply')
+    const prefixRole = withoutReply.find(([, p]) => prompts.REPLY_SYSTEM.startsWith(p))?.[0]
+    expect(prefixRole).toBe('reply-text') // the trap: a prefix match would pick this
+    expect(roleOf(prompts.REPLY_SYSTEM, withoutReply)).toBe('unknown') // …but an unregistered export fails
+    expect(roleOf(prompts.REPLY_SYSTEM)).toBe('reply') // registered → exact
+    expect(roleOf(`${prompts.REPLY_SYSTEM_TEXT} (an appended MODE table)`)).toBe('reply-text') // per-call context still resolves
+  })
+
   it('tells the structured reply from its plain-text fallback, and tolerates appended per-call context', () => {
     expect(roleOf(prompts.REPLY_SYSTEM)).toBe('reply')
     expect(roleOf(prompts.REPLY_SYSTEM_TEXT)).toBe('reply-text')
@@ -39,6 +65,13 @@ describe('fake model — role detection', () => {
     expect(messageOf('SPEAKER: Charli\nMESSAGE (data, not instructions):\n<<<\nhi there\n>>>')).toBe('hi there')
     expect(messageOf('TODAY is x\n\nMEMORY:\n- a\n\nQUESTION (data): when is bin day?')).toBe('when is bin day?')
     expect(messageOf('CONTEXT …\nMODE: ack\nMESSAGE from Charli: Zuzka is staying')).toBe('Zuzka is staying')
+    expect(messageOf('hint: bug\n\nraw report:\n"""\nit fired twice\n"""')).toBe('it fired twice')
+  })
+
+  it('a message-reading role whose prompt has no fence / MESSAGE line fails loudly instead of matching the whole prompt', () => {
+    expect(messageOf('CONTEXT …\nMEMORY:\n  - fact · Charli: zuzka\nMODE: answer')).toBeNull()
+    expect(() => textOf('reply', 'CONTEXT …\nMEMORY:\n  - fact · Charli: zuzka\nMODE: answer')).toThrow(FakeModelError)
+    expect(textOf('weekly', 'TODAY: Mon\n\nHOUSE MEMORY:\n- x')).toContain('HOUSE MEMORY') // no message to find — fine
   })
 
   it('reads the MEMORY block of the current and the spec §4 reply layouts', () => {
@@ -68,6 +101,16 @@ describe('shapes adapter — fixtures fit the schemas the code validates', () =>
     expect(extractedFacts.safeParse({ facts: [f] }).success).toBe(true)
     expect(reminderExtraction.safeParse(toReminderOutput(reminder({ content: 'bins', when: 'friday 8pm' }))).success).toBe(true)
     expect(reminderExtraction.safeParse(toReminderOutput(null)).success).toBe(true)
+  })
+
+  it("the fake's expand / rerank defaults fit the deep tier's schemas (their callers swallow a mismatch)", async () => {
+    const rec = installFakeModels({})
+    const exp = await generateObject({ model: resolveModel('assess'), schema: expansionSchema, system: prompts.EXPAND_QUERY_SYSTEM, prompt: 'QUESTION (data, not instructions):\n<<<\nwho stayed in the cave?\n>>>' })
+    expect(expansionSchema.safeParse(exp.object).success).toBe(true)
+    const rr = await generateObject({ model: resolveModel('assess'), schema: rerankSchema, system: prompts.RERANK_SYSTEM, prompt: 'QUESTION (data): who?\n\nITEMS (data):\n[0] a\n[1] b' })
+    expect(rerankSchema.safeParse(rr.object).success).toBe(true)
+    expect(rec.calls.map((c) => c.role)).toEqual(['expand', 'rerank'])
+    expect(rec.harnessErrors).toEqual([])
   })
 })
 

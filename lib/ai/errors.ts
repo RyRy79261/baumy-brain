@@ -29,6 +29,16 @@ export function isPermanentProviderError(err: unknown): boolean {
   return s >= 400 && s < 500 && s !== 408 && s !== 409 && s !== 429
 }
 
+// For a generateText enrichment that HAS a deterministic fallback (/weekly → the digest, /guests →
+// the raw list, a heads-up → none): fall back on output that is unusable OR a provider refusal no
+// retry can fix (a 400 prompt-too-long as memory grows, 401, model-not-found) — rethrowing those
+// only burned the step's retries and left the user with nothing. A TRANSIENT error (429 / 5xx /
+// timeout / network) still rethrows so the step retries (I2). generateText never throws the
+// malformed-object errors, so a catch that only accepted those made the fallback unreachable.
+export function textFallbackAllowed(err: unknown): boolean {
+  return isMalformedObjectError(err) || isPermanentProviderError(err)
+}
+
 // The shared guard: degrade (log + return the fallback) on a malformed object, rethrow anything
 // else. `label` names the call site in the log line.
 export function degradeOnMalformed<T>(err: unknown, label: string, fallback: T): T {

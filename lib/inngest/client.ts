@@ -26,7 +26,7 @@ type Events = {
       // `fromId` is compared to Baumy's own bot id (C8); `isTopicRoot` marks the forum topic's
       // creation service message, which Telegram sets as reply_to_message on EVERY message in a
       // topic and must never count as a reply (C9); `text` is its text or caption (context only).
-      replyToMessage?: { fromId: number | null; isBot: boolean; text: string | null; isTopicRoot: boolean } | null
+      replyToMessage?: { fromId: number | null; isBot: boolean; isForwarded?: boolean; text: string | null; isTopicRoot: boolean } | null
       // message.sender_chat.id — an admin posting anonymously ("as the group") sends
       // from=@GroupAnonymousBot with sender_chat = the house; that is house text, not bot content (I8).
       senderChatId?: string | null

@@ -77,13 +77,14 @@ These are the steps in `dsl.ts`. Expectations check the most recent turn.
 | Step | What it does |
 |---|---|
 | `say(person, text, opts)` | A message. `opts` can include `dm`, `topic: 'console' \| threadId`, `replyToBaumy: true \| text`, `replyTo`, `mention` (exact @username), `forwarded`, `anonymousAdmin`, `edit` (same message_id as the speaker's previous message) and `throws` (ingest must throw). |
+| `tap(person, 'confirm' \| 'cancel')` | Taps the latest confirm card's button as `person` — the real callback handler (the confirm-tap wall), in the chat the card was sent to. |
 | `advance({ days, hours, minutes })` | Moves the clock. Each cron fires at its own instant, and whatever it posts becomes the turn. |
 | `expectReaction(emoji \| null \| { not })` | The reaction left on the message once the turn settled. A 👀 that was later cleared counts as none. |
 | `expectWords({ contains, notContains, judge })` | Words in the originating chat. `judge` is checked only in live mode. |
 | `expectNoWords()` / `expectSilent()` | No words / nothing visible at all (not even a 👀 flash). |
 | `expectPrompt(role, regex \| substring \| predicate, 'model was told …')` | What the latest `role` call was given. `memoryLines(prompt)` and `promptSection(prompt, 'MODE')` help here. |
 | `expectNoPrompt(role, why)` | That role was never called on this turn. |
-| `expectFact({ subject, predicate, object, by, current, count })` | Facts in the house scope. |
+| `expectFact({ subject, predicate, object, by, current, trust, count })` | Facts in the house scope (`trust` = the stored tier). |
 | `expectReminder({ content, at: 'yyyy-MM-dd HH:mm', status, count })` | Reminders in the house scope. |
 | `expectDb(async (db, run) => …, why)` / `check(why, fn)` | Escape hatches. |
 
@@ -102,10 +103,11 @@ converts them to the schemas the code validates today.
 ### Known gaps
 
 Sometimes the code doesn't yet do what the spec says. In that case, still write the scenario, with
-`knownGap: { refs: 'C1 C3', phase: 1 }`.
+`knownGap: { refs: 'C1 C3', phase: 1, failsAt: 4 }` — `failsAt` is the 1-based step it is blocked at.
 
 - It runs as `it.fails`, so it stays green while broken.
 - It turns red the moment it starts passing. When that happens, delete the `knownGap` line.
-- A known gap must fail **at an expectation**. If the harness itself crashes, the scenario is
-  reported red, so a broken harness never passes as a known gap.
+- A known gap must fail **at an expectation, at or after its `failsAt` step**. If the harness itself
+  crashes, or an EARLIER step fails (a regression in behaviour that works today), the scenario is
+  reported red — neither ever passes as the known gap.
 - Use `SCENARIOS_SHOW_GAPS=1` to see the exact step where each gap fails.

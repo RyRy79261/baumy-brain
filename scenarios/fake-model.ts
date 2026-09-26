@@ -1,6 +1,7 @@
 import { APICallError, wrapLanguageModel, type LanguageModelMiddleware } from 'ai'
 import { setModelOverride } from '@/lib/ai/registry'
 import type { Role } from '@/lib/ai/models'
+import * as prompts from '@/lib/ai/prompts'
 import {
   TRIAGE_SYSTEM,
   EXTRACT_FACTS_SYSTEM,
@@ -67,8 +68,14 @@ export interface ModelCall {
   output: string
 }
 
+/** A fault in the scripted model itself (an unregistered prompt, a prompt layout it cannot read) —
+ *  as opposed to a fixture deliberately throwing (a scripted outage). Always fails the scenario. */
+export class FakeModelError extends Error {
+  override name = 'FakeModelError'
+}
+
 // Longest constant first, so a prompt that EXTENDS another (REPLY_SYSTEM ⊃ REPLY_SYSTEM_TEXT) wins.
-const ROLE_PROMPTS: [CallRole, string][] = (
+export const ROLE_PROMPTS: [CallRole, string][] = (
   [
     ['triage', TRIAGE_SYSTEM],
     ['extract', EXTRACT_FACTS_SYSTEM],
@@ -90,21 +97,41 @@ const ROLE_PROMPTS: [CallRole, string][] = (
   ] as [CallRole, string][]
 ).sort((a, b) => b[1].length - a[1].length)
 
-export function roleOf(system: string): CallRole {
-  const exact = ROLE_PROMPTS.find(([, p]) => p === system)
+// Every exported *SYSTEM constant. One that is not registered above must never be mistaken for the
+// registered prompt it happens to extend (REPLY_SYSTEM starts with REPLY_SYSTEM_TEXT): it is
+// 'unknown', which fails loudly, instead of silently answering from the wrong role's fixtures.
+const EXPORTED_SYSTEMS = new Set(
+  [...Object.entries(prompts), ['DELIBERATE_SYSTEM', DELIBERATE_SYSTEM]].filter(([k, v]) => k.includes('SYSTEM') && typeof v === 'string').map(([, v]) => v as string),
+)
+
+export function roleOf(system: string, registry: [CallRole, string][] = ROLE_PROMPTS): CallRole {
+  const exact = registry.find(([, p]) => p === system)
   if (exact) return exact[0]
+  if (EXPORTED_SYSTEMS.has(system)) return 'unknown' // an exported prompt nobody registered
   // A system prompt built as constant + per-call context (a later phase may append a MODE table).
-  const prefixed = ROLE_PROMPTS.find(([, p]) => system.startsWith(p))
+  const prefixed = registry.find(([, p]) => system.startsWith(p))
   return prefixed ? prefixed[0] : 'unknown'
 }
 
-// The message a call is about: the fenced <<<…>>> block the extractors use, else the last
-// QUESTION/MESSAGE line (reply, rerank, websearch), else the whole prompt.
-export function messageOf(prompt: string): string {
-  const fenced = prompt.match(/<<<\n([\s\S]*?)\n>>>/)
+// The message a call is about: the fenced <<<…>>> (or """…""") block the extractors use, else the
+// last QUESTION/MESSAGE line (reply, rerank, websearch). null when the prompt has neither.
+export function messageOf(prompt: string): string | null {
+  const fenced = prompt.match(/<<<\n([\s\S]*?)\n>>>/) ?? prompt.match(/"""\n([\s\S]*?)\n"""/)
   if (fenced) return fenced[1]
   const lines = [...prompt.matchAll(/^(?:QUESTION|MESSAGE)[^:\n]*:\s*(.*)$/gm)]
   if (lines.length) return lines[lines.length - 1][1].trim()
+  return null
+}
+
+// Roles whose fixtures are a function of the message text. If their prompt layout changes so the
+// message can no longer be found, a fixture must not silently regex over MEMORY / THIS TURN instead.
+const TEXT_ROLES = new Set<CallRole>(['triage', 'extract', 'reminder', 'list', 'forget', 'reply', 'reply-text', 'websearch', 'expand', 'rerank', 'issue'])
+
+export function textOf(role: CallRole, prompt: string, strict = true): string {
+  const m = messageOf(prompt)
+  if (m != null) return m
+  if (strict && TEXT_ROLES.has(role))
+    throw new FakeModelError(`[scenarios/fake-model] no <<<…>>> fence or QUESTION/MESSAGE line in the ${role} prompt — its layout changed; update messageOf:\n${prompt.slice(0, 300)}`)
   return prompt
 }
 
@@ -134,6 +161,8 @@ export interface Fixtures {
   reflect?: (call: ModelCall) => string
   websearch?: (text: string, call: ModelCall) => string
   report?: (call: ModelCall) => string
+  /** Deep-tier query expansion (paraphrases + a HyDE sentence). Default: none. */
+  expand?: (text: string, call: ModelCall) => { variants: string[]; hypothetical: string }
 }
 
 /** The lines of the MEMORY block a reply prompt carries ("- …" entries only). */
@@ -208,7 +237,7 @@ function answerFor(call: ModelCall, fx: Fixtures): string {
     case 'guests':
       return fx.report ? fx.report(call) : 'Quiet week in the house 😼'
     case 'expand':
-      return json({ variants: [], hypothetical: '' })
+      return json(fx.expand ? fx.expand(call.text, call) : { variants: [], hypothetical: '' })
     case 'rerank':
       return json({ scores: [] })
     case 'issue':
@@ -218,7 +247,7 @@ function answerFor(call: ModelCall, fx: Fixtures): string {
     case 'deliberate':
       return 'ok'
     case 'unknown':
-      throw new Error(
+      throw new FakeModelError(
         `[scenarios/fake-model] unrecognised system prompt — add its constant to ROLE_PROMPTS in scenarios/fake-model.ts:\n${call.system.slice(0, 200)}`,
       )
   }
@@ -240,12 +269,17 @@ function readParams(params: CallParams): { system: string; prompt: string } {
 
 function describeCall(tier: Role, params: CallParams): ModelCall {
   const { system, prompt } = readParams(params)
-  return { role: roleOf(system), tier, system, prompt, text: messageOf(prompt), output: '' }
+  const role = roleOf(system)
+  return { role, tier, system, prompt, text: textOf(role, prompt, false), output: '' }
 }
 
 export interface ModelRecorder {
   /** Every LLM call so far, in order. */
   calls: ModelCall[]
+  /** FakeModelErrors raised so far. The pipeline wraps several calls in best-effort `catch {}` (the
+   *  deep-tier expand / rerank / graph walk), which would swallow them — the DSL checks this after
+   *  every step so a broken fake can never pass silently. */
+  harnessErrors: string[]
   uninstall(): void
 }
 
@@ -262,6 +296,7 @@ const recordingMiddleware = (tier: Role, calls: ModelCall[]): LanguageModelMiddl
 /** Offline: every role answers from `fixtures` (or a safe default). No network. */
 export function installFakeModels(fixtures: Fixtures): ModelRecorder {
   const calls: ModelCall[] = []
+  const harnessErrors: string[] = []
   setModelOverride((tier) => {
     const fake: LanguageModelV2 = {
       specificationVersion: 'v2',
@@ -273,8 +308,15 @@ export function installFakeModels(fixtures: Fixtures): ModelRecorder {
       },
       doGenerate: async (params) => {
         const { system, prompt } = readParams(params)
-        const call: ModelCall = { role: roleOf(system), tier, system, prompt, text: messageOf(prompt), output: '' }
-        const text = answerFor(call, fixtures)
+        let text: string
+        try {
+          const role = roleOf(system)
+          const call: ModelCall = { role, tier, system, prompt, text: textOf(role, prompt), output: '' }
+          text = answerFor(call, fixtures)
+        } catch (err) {
+          if (err instanceof FakeModelError) harnessErrors.push(err.message)
+          throw err
+        }
         return {
           content: [{ type: 'text', text }],
           finishReason: 'stop',
@@ -285,14 +327,14 @@ export function installFakeModels(fixtures: Fixtures): ModelRecorder {
     }
     return wrapLanguageModel({ model: fake, middleware: recordingMiddleware(tier, calls) })
   })
-  return { calls, uninstall: () => setModelOverride(null) }
+  return { calls, harnessErrors, uninstall: () => setModelOverride(null) }
 }
 
 /** Live: the real models, wrapped so every call is still recorded for prompt assertions. */
 export function installRecordingModels(): ModelRecorder {
   const calls: ModelCall[] = []
   setModelOverride((tier, real) => wrapLanguageModel({ model: real(), middleware: recordingMiddleware(tier, calls) }))
-  return { calls, uninstall: () => setModelOverride(null) }
+  return { calls, harnessErrors: [], uninstall: () => setModelOverride(null) }
 }
 
 /**

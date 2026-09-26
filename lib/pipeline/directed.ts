@@ -12,9 +12,11 @@ const THIRD_PERSON = /^\s+(?:is|was|has|had|keeps|kept|isn't|wasn't|doesn't|didn
 const OPENERS = '(?:hey|hi|hello|hiya|yo|oi|ok|okay|so|and|also|dear|morning|evening|thanks|thank you|thx|ty|cheers)'
 
 // The short name ("baumy" for @baumy_bot) used as a VOCATIVE (C10): at the start of the message
-// ("Baumy, …", "hey baumy …") or closing it ("…, baumy?", "thanks baumy"). A mid-sentence mention
-// ("Marco, ask baumy, it knows") or a possessive ("Baumy's reminders are annoying") is talk ABOUT
-// Baumy, not to it — the classifier can still judge `asksBaumy` for those.
+// ("Baumy, …", "hey baumy …") or closing it after punctuation or a thanks-word ("…, baumy?",
+// "thanks baumy"). A mid-sentence mention ("Marco, ask baumy, it knows"), a possessive ("Baumy's
+// reminders are annoying") or a bare trailing name ("did you ask baumy?", "is anyone else annoyed by
+// baumy?") is talk ABOUT Baumy, not to it. Those stay undirected: the classifier's `asksBaumy` can
+// still route a genuine unaddressed ask ("is it bin day baumy?") through the undirected row.
 export function addressesByName(text: string | null, botUsername: string): boolean {
   const uname = (botUsername ?? '').toLowerCase()
   const short = uname.replace(/_?bot$/, '')
@@ -27,8 +29,9 @@ export function addressesByName(text: string | null, botUsername: string): boole
     const rest = t.slice(start.index + start[0].length)
     if (!THIRD_PERSON.test(rest) || /\?\s*$/.test(t)) return true
   }
-  // Closing vocative: after a comma/punctuation or a thanks-word, or "… baumy?" at the very end.
-  return new RegExp(`(?:[,;:!.]\\s*|\\b(?:thanks|thank you|thx|ty|cheers|please|pls)\\s+)${n}\\s*[?!.]*\\s*$|\\s${n}\\s*\\?+\\s*$`, 'i').test(t)
+  // Closing vocative: only after a comma/punctuation or a thanks-word — a bare "… baumy?" can just as
+  // well be the object of the sentence ("did you ask baumy?").
+  return new RegExp(`(?:[,;:!.]\\s*|\\b(?:thanks|thank you|thx|ty|cheers|please|pls)\\s+)${n}\\s*[?!.]*\\s*$`, 'i').test(t)
 }
 
 // An exact "@username" mention anywhere in the text.
@@ -72,6 +75,8 @@ export function isDirectedAtBaumy(text: string | null, replyToBaumy: boolean, bo
 export interface ReplyToMessage {
   fromId: number | null
   isBot: boolean
+  /** The replied-to message was itself forwarded (its `from` is the forwarder, not the author). */
+  isForwarded?: boolean
   text: string | null
   /** The forum topic's creation service message — Telegram sets it as reply_to_message on EVERY
    *  ordinary message in a topic, so it is never a real reply (C9). */

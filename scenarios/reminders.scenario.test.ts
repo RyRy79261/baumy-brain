@@ -76,6 +76,30 @@ describe('scenario: reminders', () => {
     ],
   })
 
+  scenario('answering the clarifying question creates the reminder (A2/A3 follow-through)', {
+    people: HOUSE,
+    startAt: start,
+    // The clarify mode must be answerable: the open request is kept, and "at 8pm" in reply to
+    // Baumy's question completes it — the extractor is shown the pending request and the question.
+    fixtures: {
+      ...fixtures,
+      reminder: (t, c) =>
+        /PENDING REMINDER.*landlord/.test(c.prompt) && /8pm/.test(t) ? reminder({ content: 'call the landlord', when: 'at 8pm' }) : fixtures.reminder(t),
+      reply: (_t, c) => (/^MODE: clarify$/m.test(c.prompt) ? 'When should I remind you?' : 'Done — tonight, 20:00 ⏰'),
+    },
+    steps: [
+      say('Ryan', VAGUE, { mention: true }),
+      expectPrompt('reply', /^MODE: clarify$/m, 'Baumy asks for the time'),
+      expectReminder({ count: 0 }),
+      say('Ryan', 'at 8pm', { replyToBaumy: true }),
+      expectPrompt('reminder', /PENDING REMINDER \(still needs a time; data\): "call the landlord"/, 'the extractor was shown the open request'),
+      expectPrompt('reminder', /BAUMY ASKED \(data\): "When should I remind you\?"/, '…and the question it answers'),
+      expectReminder({ content: /landlord/, at: '2026-09-28 20:00', status: 'scheduled', count: 1 }),
+      expectPrompt('reply', /^MODE: confirm$/m, 'the completed reminder is confirmed with its time'),
+      expectWords({ judge: 'Confirms a reminder to call the landlord tonight at 8pm / 20:00.' }),
+    ],
+  })
+
   scenario('an undirected "remind us" in the group creates no reminder', {
     people: HOUSE,
     startAt: start,
@@ -89,7 +113,7 @@ describe('scenario: reminders', () => {
     startAt: start,
     // I1: an edit arrives as a new update with the same message_id and re-runs everything —
     // duplicate reminder, second reply. Spec §8: the edit supersedes, never re-replies.
-    knownGap: { refs: 'I1', phase: 5, note: 'baumy_messages edit mapping' },
+    knownGap: { refs: 'I1', phase: 5, failsAt: 5, note: 'baumy_messages edit mapping' },
     fixtures,
     steps: [
       say('Ryan', BINS, { mention: true }),

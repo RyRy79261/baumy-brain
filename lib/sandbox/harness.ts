@@ -2,6 +2,7 @@ import { DateTime } from 'luxon'
 import { type Database } from '@/db/client'
 import { type TelegramMessageData } from '@/lib/inngest/client'
 import { runIngest } from '@/lib/inngest/functions/ingest'
+import { runCallback } from '@/lib/inngest/functions/callback'
 import { deliverDueReminders } from '@/lib/inngest/functions/reminders'
 import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
@@ -96,7 +97,7 @@ export interface SendOptions {
   /** Reply to someone else's message: a sandbox person (`who`), or a raw transport author (`fromId`
    *  / `isBot`, e.g. another bot in the group — C8), optionally the forum topic-root service
    *  message (`isTopicRoot` — C9: Telegram sets it on every message in a topic). */
-  replyTo?: { who?: string | number; fromId?: number | null; isBot?: boolean; text?: string | null; isTopicRoot?: boolean }
+  replyTo?: { who?: string | number; fromId?: number | null; isBot?: boolean; forwarded?: boolean; text?: string | null; isTopicRoot?: boolean }
   /** @-mention Baumy: prefixes the text with "@baumy_bot " (C12 — the token must never reach memory). */
   mention?: boolean
   /** Post as an anonymous group admin: from = @GroupAnonymousBot, sender_chat = the house (I8). */
@@ -147,6 +148,33 @@ export async function sendAs(sb: Sandbox, who: string | number, text: string, op
   return entries
 }
 
+/**
+ * Tap a confirm card's button as one of the sandbox's people — the callback_query half of the
+ * confirm-tap wall (docs/spec/chat-understanding-v2.md §8, A1). `actionId` is the card's pending
+ * action id (a captured confirm card carries it as `meta`); `chatId` is where the card was sent (the
+ * house group or the tapper's DM). Drives the real callback handler; returns what Baumy did.
+ */
+export async function tapAs(
+  sb: Sandbox,
+  who: string | number,
+  actionId: string,
+  opts: { verb?: 'confirm' | 'cancel'; chatId?: string; messageId?: number } = {},
+): Promise<TranscriptEntry[]> {
+  const person = findPerson(sb, who)
+  const updateId = sb.seq++
+  const data = {
+    callbackId: `cb${updateId}`,
+    fromId: person.id,
+    chatId: opts.chatId ?? sb.houseChatId,
+    messageId: opts.messageId ?? updateId,
+    data: `${opts.verb === 'cancel' ? 'x' : 'c'}:${actionId}`,
+  }
+  const { sent } = await captureOutbound(async () => withSimulatedTime(sb.now, () => runCallback({ data }, inlineStep)))
+  const entries = sent.map((m) => ({ ...m, cause: `${person.name}: tap ${opts.verb ?? 'confirm'}` }))
+  sb.transcript.push(...entries)
+  return entries
+}
+
 function findPerson(sb: Sandbox, who: string | number): SandboxPerson {
   const person = sb.people.find((p) => p.id === who || p.name.toLowerCase() === String(who).toLowerCase())
   if (!person) throw new Error(`[sandbox] no such person: ${who}. Known: ${sb.people.map((p) => p.name).join(', ')}`)
@@ -168,7 +196,13 @@ function replyFields(sb: Sandbox, opts: SendOptions): Pick<TelegramMessageData, 
     const isBot = target ? false : (r.isBot ?? false)
     return {
       replyToBot: isBot,
-      replyToMessage: { fromId: target ? target.id : (r.fromId ?? null), isBot, text: r.text ?? null, isTopicRoot: r.isTopicRoot ?? false },
+      replyToMessage: {
+        fromId: target ? target.id : (r.fromId ?? null),
+        isBot,
+        isForwarded: r.forwarded ?? false,
+        text: r.text ?? null,
+        isTopicRoot: r.isTopicRoot ?? false,
+      },
     }
   }
   return { replyToBot: false, replyToMessage: null }

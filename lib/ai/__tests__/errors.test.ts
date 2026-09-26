@@ -102,3 +102,20 @@ describe('web search: a PERMANENT refusal falls back to the memory reply (retryi
     expect(await webSearchAnswer('look it up')).toEqual({ text: '', searched: false })
   })
 })
+
+// A generateText enrichment with a deterministic fallback: a permanent refusal (prompt too long as
+// memory grows, auth, model gone) falls back instead of burning retries and sending nothing.
+describe('text enrichments: a PERMANENT refusal falls back; a transient error still rethrows', () => {
+  const refused = () => new APICallError({ message: 'prompt is too long', url: 'u', requestBodyValues: {}, statusCode: 400, isRetryable: false })
+  it('textFallbackAllowed: malformed or permanent only', async () => {
+    const { textFallbackAllowed } = await import('@/lib/ai/errors')
+    expect(textFallbackAllowed(refused())).toBe(true)
+    expect(textFallbackAllowed(malformed())).toBe(true)
+    expect(textFallbackAllowed(overloaded())).toBe(false)
+    expect(textFallbackAllowed(new Error('fetch failed'))).toBe(false)
+  })
+  it('writeHeadsUp → null (schedules nothing) on a 400', async () => {
+    genText.mockRejectedValue(refused())
+    expect(await writeHeadsUp([{ subject: 'zuzka', predicate: 'arrives_on', object: 'sat' }], 'tomorrow', 'Sat 27 Sep')).toBeNull()
+  })
+})

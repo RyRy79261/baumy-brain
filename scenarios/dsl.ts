@@ -7,7 +7,7 @@ import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { embedSync, setEmbedOverride } from '@/lib/ai/embed'
 import { setConsoleThread } from '@/lib/identity/house'
 import { inngest } from '@/lib/inngest/client'
-import { createSandbox, sendAs, advanceBy, type Sandbox, type SandboxPerson, type SendOptions, type TranscriptEntry } from '@/lib/sandbox/harness'
+import { createSandbox, sendAs, tapAs, advanceBy, type Sandbox, type SandboxPerson, type SendOptions, type TranscriptEntry } from '@/lib/sandbox/harness'
 import { installFakeModels, installRecordingModels, type CallRole, type Fixtures, type ModelCall, type ModelRecorder } from './fake-model'
 import { judgeReply } from './judge'
 
@@ -33,6 +33,12 @@ export interface KnownGap {
   refs: string
   /** The chat-understanding-v2 phase whose landing flips it to passing. */
   phase: number
+  /**
+   * The 1-based step the gap is blocked at. The scenario must fail at THIS step (or a later one):
+   * a failure at an earlier step is a regression in behaviour that already works, so the known gap
+   * then reports red instead of hiding it.
+   */
+  failsAt: number
   note?: string
 }
 
@@ -57,7 +63,7 @@ export interface Step {
 }
 
 export interface Turn {
-  kind: 'say' | 'advance'
+  kind: 'say' | 'advance' | 'tap'
   /** Who spoke (say) or what ran (advance). */
   who: string
   text: string
@@ -106,14 +112,22 @@ export function scenario(name: string, spec: ScenarioSpec): void {
   it(name, () => runScenario(spec, 'offline'), OFFLINE_TIMEOUT)
 }
 
-// A known-gap scenario must fail AT AN EXPECTATION. If the harness itself crashes, swallow it (after
-// logging) so `it.fails` reports the scenario red — a broken harness must never look like a known gap.
+// A known-gap scenario must fail AT AN EXPECTATION, at or after its `failsAt` step. Anything else is
+// swallowed (after logging) so `it.fails` reports the scenario red: a broken harness, or a regression
+// in an EARLIER step (behaviour that works today), must never look like the known gap.
 async function runKnownGap(spec: ScenarioSpec): Promise<void> {
   try {
     await runScenario(spec, 'offline')
   } catch (err) {
-    if (err instanceof ExpectationFailure || (err as Error)?.name === 'AssertionError') throw err
-    console.error('[scenarios] known-gap scenario crashed in the harness, not at an expectation:', err)
+    const atExpectation = err instanceof ExpectationFailure || (err as Error)?.name === 'AssertionError'
+    const step = Number(/^step (\d+) —/.exec((err as Error)?.message ?? '')?.[1] ?? NaN)
+    if (atExpectation && step >= (spec.knownGap?.failsAt ?? Infinity)) throw err
+    console.error(
+      atExpectation
+        ? `[scenarios] known-gap scenario failed at step ${step}, BEFORE its failsAt step ${spec.knownGap?.failsAt} — a regression, not the gap:`
+        : '[scenarios] known-gap scenario crashed in the harness, not at an expectation:',
+      err,
+    )
   }
 }
 
@@ -155,7 +169,11 @@ async function runScenario(spec: ScenarioSpec, mode: 'offline' | 'live'): Promis
     const r: Run = { sb, db, mode, models, spec: { ...spec, people }, turns: [], events }
     for (const [i, step] of spec.steps.entries()) {
       try {
+        const faults = models.harnessErrors.length
         await step.run(r)
+        // A fault in the scripted model the pipeline swallowed (a best-effort `catch {}`) is still a
+        // broken scenario — a plain Error, so a known gap reports it red too.
+        if (models.harnessErrors.length > faults) throw new Error(`the fake model failed:\n${models.harnessErrors.slice(faults).join('\n')}`)
       } catch (err) {
         if (err instanceof Error) err.message = `step ${i + 1} — ${step.label}:\n${err.message}`
         throw err
@@ -245,6 +263,25 @@ export function say(who: string, text: string, opts: SayOptions = {}): Step {
         const msg = error instanceof Error ? error.message : String(error)
         if (opts.throws instanceof RegExp && !opts.throws.test(msg)) fail(`ingest threw, but not ${opts.throws}: ${msg}`)
       }
+    },
+  }
+}
+
+/**
+ * Tap the most recent confirm card's button as `who` (the confirm-tap wall's second half): drives the
+ * real callback handler with the card's pending-action id, in the chat the card was sent to.
+ */
+export function tap(who: string, verb: 'confirm' | 'cancel' = 'confirm'): Step {
+  return {
+    label: `${who} taps ${verb}`,
+    async run(r) {
+      const person = r.spec.people.find((p) => p.name.toLowerCase() === who.toLowerCase())
+      if (!person) throw new Error(`[scenarios] no such person: ${who}`)
+      const card = r.turns.flatMap((t) => t.entries).filter((e) => e.kind === 'confirm-card').at(-1)
+      if (!card?.meta) fail('no confirm card has been sent to tap')
+      const before = r.models.calls.length
+      const entries = await tapAs(r.sb, person.id, card!.meta!, { verb, chatId: card!.chatId })
+      r.turns.push({ kind: 'tap', who: person.name, text: verb, messageId: -1, dm: card!.chatId !== r.sb.houseChatId, entries, calls: r.models.calls.slice(before) })
     },
   }
 }
@@ -448,6 +485,9 @@ export interface FactExpectation {
   /** The person the fact is attributed to (by sandbox name). */
   by?: string
   current?: boolean
+  /** The stored trust tier ('trusted' for a member DM, 'untrusted' for group text …) — a security
+   *  invariant: it decides which facts may supersede which. */
+  trust?: string
 }
 
 /** At least one fact in the house scope matches (or, with `count: 0`, none does). */
@@ -463,7 +503,8 @@ export function expectFact(want: FactExpectation & { count?: number }): Step {
           (!want.predicate || matches(f.predicate, want.predicate)) &&
           (!want.object || matches(f.object ?? '', want.object)) &&
           (!byId || f.authored_by === byId) &&
-          (want.current === undefined || f.is_current === want.current),
+          (want.current === undefined || f.is_current === want.current) &&
+          (!want.trust || f.trust_level === want.trust),
       )
       const show = rows.map((f) => `${f.subject} | ${f.predicate} | ${f.object} (by ${f.author_name ?? f.authored_by}, ${f.trust_level})`).join('\n  ') || '(none)'
       if (want.count !== undefined ? hit.length !== want.count : hit.length === 0)

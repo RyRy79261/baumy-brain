@@ -12,116 +12,131 @@ import { answerCallback, editMessageText } from '@/lib/telegram/client'
 // Telegram-authenticated button press; only an ACTIVE member/owner from.id may
 // resolve a pending action. The press is the injection wall — group text can
 // propose a privileged action but only a human tap executes it.
+//
+// Exported as a plain function (like runIngest) so the sandbox can drive a real TAP — the second half
+// of the confirm wall — through the same code; the Inngest wrapper below only forwards its context.
+export interface CallbackData {
+  callbackId: string
+  fromId: number
+  chatId: string
+  messageId?: number | null
+  data: string
+}
+type CallbackStep = { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> }
+
+export async function runCallback(event: { data: CallbackData }, step: CallbackStep) {
+  const { callbackId, fromId, chatId, messageId, data } = event.data
+  const db = createHttpDb()
+
+  // Fail closed: only an active member/owner may confirm.
+  const roster = await loadRoster(db)
+  if (!roster.isMember(fromId)) {
+    await answerCallback(callbackId, 'Not authorized.')
+    return { ignored: 'not-member' }
+  }
+
+  const [verb, id] = data.split(':')
+  if ((verb !== 'c' && verb !== 'x') || !id) {
+    await answerCallback(callbackId)
+    return { ignored: 'bad-data' }
+  }
+
+  if (verb === 'x') {
+    await step.run('cancel', () => resolvePendingAction(db, id, 'cancelled'))
+    await answerCallback(callbackId, 'Cancelled')
+    if (messageId) await editMessageText(chatId, messageId, '✖️ Cancelled.')
+    return { cancelled: id }
+  }
+
+  // Resolve in its OWN step so the result is MEMOIZED: a retry after a downstream effect
+  // fails replays the action here WITHOUT re-flipping the row, so the effect can safely
+  // re-run instead of being silently lost to "already handled".
+  const action = await step.run('resolve', () => resolvePendingAction(db, id, 'confirmed'))
+  if (!action) {
+    await answerCallback(callbackId, 'This already expired or was handled.')
+    return { ignored: 'not-pending' }
+  }
+
+  // NOTE: reminders AUTO-COMMIT (they only post text to the fixed house group) — they are
+  // deliberately exempt from this confirm wall, so there is no 'reminder.create' action (a
+  // 'reminder.draft' row is internal state — resolvePendingAction refuses to flip it).
+  // The wall gates only genuinely privileged actions: memory.forget and github.issue.
+
+  if (action.actionType === 'memory.forget') {
+    // The TAP is the wall: the delete targets the exact fact ids + value strings resolved
+    // at propose time (payload), scoped to this house, and runs only now. Facts are
+    // removed; source messages are only surgically scrubbed on a purge, never deleted.
+    //
+    // SCOPE = the pending action's STORED groupId (the house scope ingest resolved from the
+    // authenticated lane at propose time) — NEVER the chat the button was tapped in (A1). A
+    // card DMed to a member, or tapped in the migrated -100… supergroup, has a chatId that
+    // owns no memory rows, so scoping by it deleted nothing while reporting "Forgotten".
+    // Belt: the stored scope must still be THE house scope; otherwise fail closed.
+    const { scopeId } = await resolveHouseIds(db)
+    if (!scopeId || action.groupId !== scopeId) {
+      await answerCallback(callbackId, 'This no longer applies.')
+      if (messageId) await editMessageText(chatId, messageId, '✖️ Not applied — this card no longer matches the house.')
+      return { ignored: 'scope-mismatch' }
+    }
+    const p = action.payload as {
+      mode: ForgetMode
+      factIds: string[]
+      scrubValues: string[]
+      noteIds: string[]
+      aliasHits: AliasHit[]
+      summary: string
+    }
+    const res = await step.run('forget', () =>
+      forgetMemory(db, action.groupId, {
+        factIds: p.factIds ?? [],
+        scrubValues: p.scrubValues ?? [],
+        noteIds: p.noteIds ?? [],
+        aliasHits: p.aliasHits ?? [],
+        mode: p.mode,
+      }),
+    )
+    await step.run('forget-audit', () =>
+      writeAudit(db, 'memory.forget', String(fromId), p.summary ?? null, {
+        mode: p.mode,
+        facts: res.facts,
+        messagesScrubbed: res.messagesScrubbed,
+        aliasesRemoved: res.aliasesRemoved,
+      }),
+    )
+    const verb = p.mode === 'purge' ? 'Purged' : 'Forgotten'
+    const bits = [
+      `${res.facts} fact${res.facts === 1 ? '' : 's'}`,
+      res.messagesScrubbed ? `scrubbed ${res.messagesScrubbed} message${res.messagesScrubbed === 1 ? '' : 's'}` : '',
+      res.aliasesRemoved ? `${res.aliasesRemoved} alias${res.aliasesRemoved === 1 ? '' : 'es'}` : '',
+    ].filter(Boolean)
+    const detail = bits.join(' + ')
+    await answerCallback(callbackId, verb)
+    if (messageId) await editMessageText(chatId, messageId, `${p.mode === 'purge' ? '🔥' : '🧽'} ${verb} — ${detail}.`)
+    return { confirmed: id, forgot: res.facts, scrubbed: res.messagesScrubbed }
+  }
+
+  if (action.actionType === 'github.issue') {
+    // File the enriched report as a GitHub issue (details resolved at propose time).
+    const p = action.payload as { title: string; body: string; labels: string[]; type: string }
+    // In its own step so a retry does NOT file a duplicate issue (createIssue is not idempotent).
+    const issue = await step.run('github-issue', () => createIssue({ title: p.title, body: p.body, labels: p.labels }))
+    await step.run('issue-audit', () => writeAudit(db, 'github.issue', String(fromId), p.title, { type: p.type, number: issue?.number ?? null }))
+    if (issue) {
+      await answerCallback(callbackId, 'Filed')
+      if (messageId) await editMessageText(chatId, messageId, `✅ Filed #${issue.number} — ${issue.url}`)
+    } else {
+      await answerCallback(callbackId, "Couldn't file")
+      if (messageId) await editMessageText(chatId, messageId, "⚠️ Couldn't file that — GitHub isn't set up or the API errored. Nothing was posted.")
+    }
+    return { confirmed: id, issue: issue?.number ?? null }
+  }
+
+  await answerCallback(callbackId, 'Done')
+  return { confirmed: id, actionType: action.actionType }
+}
+
 export const handleCallbackQuery = inngest.createFunction(
   { id: 'handle-callback-query', retries: 2 },
   { event: 'telegram/callback.received' },
-  async ({ event, step }) => {
-    const { callbackId, fromId, chatId, messageId, data } = event.data
-    const db = createHttpDb()
-
-    // Fail closed: only an active member/owner may confirm.
-    const roster = await loadRoster(db)
-    if (!roster.isMember(fromId)) {
-      await answerCallback(callbackId, 'Not authorized.')
-      return { ignored: 'not-member' }
-    }
-
-    const [verb, id] = data.split(':')
-    if ((verb !== 'c' && verb !== 'x') || !id) {
-      await answerCallback(callbackId)
-      return { ignored: 'bad-data' }
-    }
-
-    if (verb === 'x') {
-      await step.run('cancel', () => resolvePendingAction(db, id, 'cancelled'))
-      await answerCallback(callbackId, 'Cancelled')
-      if (messageId) await editMessageText(chatId, messageId, '✖️ Cancelled.')
-      return { cancelled: id }
-    }
-
-    // Resolve in its OWN step so the result is MEMOIZED: a retry after a downstream effect
-    // fails replays the action here WITHOUT re-flipping the row, so the effect can safely
-    // re-run instead of being silently lost to "already handled".
-    const action = await step.run('resolve', () => resolvePendingAction(db, id, 'confirmed'))
-    if (!action) {
-      await answerCallback(callbackId, 'This already expired or was handled.')
-      return { ignored: 'not-pending' }
-    }
-
-    // NOTE: reminders AUTO-COMMIT (they only post text to the fixed house group) — they are
-    // deliberately exempt from this confirm wall, so there is no 'reminder.create' action.
-    // The wall gates only genuinely privileged actions: memory.forget and github.issue.
-
-    if (action.actionType === 'memory.forget') {
-      // The TAP is the wall: the delete targets the exact fact ids + value strings resolved
-      // at propose time (payload), scoped to this house, and runs only now. Facts are
-      // removed; source messages are only surgically scrubbed on a purge, never deleted.
-      //
-      // SCOPE = the pending action's STORED groupId (the house scope ingest resolved from the
-      // authenticated lane at propose time) — NEVER the chat the button was tapped in (A1). A
-      // card DMed to a member, or tapped in the migrated -100… supergroup, has a chatId that
-      // owns no memory rows, so scoping by it deleted nothing while reporting "Forgotten".
-      // Belt: the stored scope must still be THE house scope; otherwise fail closed.
-      const { scopeId } = await resolveHouseIds(db)
-      if (!scopeId || action.groupId !== scopeId) {
-        await answerCallback(callbackId, 'This no longer applies.')
-        if (messageId) await editMessageText(chatId, messageId, '✖️ Not applied — this card no longer matches the house.')
-        return { ignored: 'scope-mismatch' }
-      }
-      const p = action.payload as {
-        mode: ForgetMode
-        factIds: string[]
-        scrubValues: string[]
-        noteIds: string[]
-        aliasHits: AliasHit[]
-        summary: string
-      }
-      const res = await step.run('forget', () =>
-        forgetMemory(db, action.groupId, {
-          factIds: p.factIds ?? [],
-          scrubValues: p.scrubValues ?? [],
-          noteIds: p.noteIds ?? [],
-          aliasHits: p.aliasHits ?? [],
-          mode: p.mode,
-        }),
-      )
-      await step.run('forget-audit', () =>
-        writeAudit(db, 'memory.forget', String(fromId), p.summary ?? null, {
-          mode: p.mode,
-          facts: res.facts,
-          messagesScrubbed: res.messagesScrubbed,
-          aliasesRemoved: res.aliasesRemoved,
-        }),
-      )
-      const verb = p.mode === 'purge' ? 'Purged' : 'Forgotten'
-      const bits = [
-        `${res.facts} fact${res.facts === 1 ? '' : 's'}`,
-        res.messagesScrubbed ? `scrubbed ${res.messagesScrubbed} message${res.messagesScrubbed === 1 ? '' : 's'}` : '',
-        res.aliasesRemoved ? `${res.aliasesRemoved} alias${res.aliasesRemoved === 1 ? '' : 'es'}` : '',
-      ].filter(Boolean)
-      const detail = bits.join(' + ')
-      await answerCallback(callbackId, verb)
-      if (messageId) await editMessageText(chatId, messageId, `${p.mode === 'purge' ? '🔥' : '🧽'} ${verb} — ${detail}.`)
-      return { confirmed: id, forgot: res.facts, scrubbed: res.messagesScrubbed }
-    }
-
-    if (action.actionType === 'github.issue') {
-      // File the enriched report as a GitHub issue (details resolved at propose time).
-      const p = action.payload as { title: string; body: string; labels: string[]; type: string }
-      // In its own step so a retry does NOT file a duplicate issue (createIssue is not idempotent).
-      const issue = await step.run('github-issue', () => createIssue({ title: p.title, body: p.body, labels: p.labels }))
-      await step.run('issue-audit', () => writeAudit(db, 'github.issue', String(fromId), p.title, { type: p.type, number: issue?.number ?? null }))
-      if (issue) {
-        await answerCallback(callbackId, 'Filed')
-        if (messageId) await editMessageText(chatId, messageId, `✅ Filed #${issue.number} — ${issue.url}`)
-      } else {
-        await answerCallback(callbackId, "Couldn't file")
-        if (messageId) await editMessageText(chatId, messageId, "⚠️ Couldn't file that — GitHub isn't set up or the API errored. Nothing was posted.")
-      }
-      return { confirmed: id, issue: issue?.number ?? null }
-    }
-
-    await answerCallback(callbackId, 'Done')
-    return { confirmed: id, actionType: action.actionType }
-  },
+  ({ event, step }) => runCallback(event, step as unknown as CallbackStep),
 )

@@ -7,6 +7,7 @@ import { extractForget } from '@/lib/ai/forget-extract'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
 import { parseWhen, clampToWakingHours } from '@/lib/reminders/parse'
 import { createReminder } from '@/lib/reminders/store'
+import { saveReminderDraft } from '@/lib/reminders/draft'
 import { findMemoryToForget, type ForgetMode } from '@/lib/memory/forget'
 import { createPendingAction } from '@/lib/confirm/store'
 import { memberDisplayNames } from '@/lib/identity/roster'
@@ -62,18 +63,36 @@ type ReminderStepResult =
   | { status: 'needs_time' | 'past' | 'unparsed'; content: string }
   | { status: 'none' }
 
-export async function runReminder(step: TurnStep, ctx: TurnContext, deliverChatId: string): Promise<ReminderOutcome | undefined> {
+// `draft` = an earlier request from this sender in this chat that is still waiting for its time
+// (lib/reminders/draft.ts): "at 8pm" in reply to "when should I remind you?" completes it — the
+// extractor is shown the open request and Baumy's question. Every failure (needs_time / unparsed /
+// past) stores a fresh draft, so the clarifying question Baumy asks can actually be answered.
+export async function runReminder(
+  step: TurnStep,
+  ctx: TurnContext,
+  deliverChatId: string,
+  draft: { content: string } | null = null,
+): Promise<ReminderOutcome | undefined> {
   const r = (await step.run('reminder', async (): Promise<ReminderStepResult> => {
     const db = createHttpDb()
     const speaker = ctx.authorId ? ((await memberDisplayNames(db)).get(ctx.authorId) ?? ctx.sender.name) : null
-    const ex = await extractReminder(ctx.text, speaker)
-    const content = ex.content.trim()
-    if (!ex.isReminder || !content) return { status: 'none' } // empty content would post a bare "⏰"
-    if (!ex.whenText.trim()) return { status: 'needs_time', content }
+    const baumyAsked = ctx.replyTo?.author === 'baumy' ? ctx.replyTo.text : null
+    const ex = await extractReminder(ctx.text, speaker, draft ? { pending: draft.content, baumyAsked } : null)
+    // A follow-up that only supplies the time ("8pm") completes the open request's content.
+    const content = ex.content.trim() || draft?.content.trim() || ''
+    const isReminder = ex.isReminder || (draft != null && ex.whenText.trim() !== '')
+    if (!isReminder || !content) return { status: 'none' } // empty content would post a bare "⏰"
+    // Remember the open request (scope = house, keyed on chat + requester) so the answer to the
+    // clarifying question can complete it. An anonymous admin has no requester to key it on.
+    const failed = async (status: 'needs_time' | 'past' | 'unparsed'): Promise<ReminderStepResult> => {
+      if (ctx.authorId) await saveReminderDraft(db, { groupId: ctx.houseScope, chatId: ctx.chatId, requestedBy: ctx.authorId }, content)
+      return { status, content }
+    }
+    if (!ex.whenText.trim()) return failed('needs_time')
     const at = DateTime.fromJSDate(now())
     const parsed = parseWhen(ex.whenText, ctx.tz, at) // resolve "9am" in the house timezone
-    if (!parsed) return { status: 'unparsed', content }
-    if (parsed.fireAt.getTime() <= at.toMillis()) return { status: 'past', content }
+    if (!parsed) return failed('unparsed')
+    if (parsed.fireAt.getTime() <= at.toMillis()) return failed('past')
     // Fire near the requested time, but never in the 02:00–06:00 dead zone (no 3am pings).
     const fireAt = clampToWakingHours(parsed.fireAt, ctx.tz)
     const id = await createReminder(db, {

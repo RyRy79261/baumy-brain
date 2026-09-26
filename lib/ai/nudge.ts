@@ -1,7 +1,7 @@
 import { generateText, type LanguageModel } from 'ai'
 import { resolveModel } from './registry'
 import { WRITE_HEADSUP_SYSTEM } from './prompts'
-import { isMalformedObjectError } from './errors'
+import { textFallbackAllowed } from './errors'
 
 // The proactive heads-up LINE (docs/spec/event-surfacing.md). Deliberately generateText, NOT
 // generateObject: this is prose the house reads, and the previous version assembled it from
@@ -53,8 +53,8 @@ export async function writeHeadsUp(
     const { text } = await generateText({ model, system: WRITE_HEADSUP_SYSTEM, prompt })
     return sanitiseHeadsUp(text)
   } catch (err) {
-    if (!isMalformedObjectError(err)) throw err
-    console.error('writeHeadsUp malformed — skipping this heads-up:', err)
+    if (!textFallbackAllowed(err)) throw err
+    console.error('writeHeadsUp unusable or refused — skipping this heads-up:', err)
     return null
   }
 }

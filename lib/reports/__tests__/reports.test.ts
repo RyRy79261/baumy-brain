@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { APICallError } from 'ai'
 
 let captured: { prompt?: string; system?: string } = {}
 const genText = vi.fn(async (args: { prompt?: string; system?: string }) => {
@@ -130,15 +131,35 @@ describe('recentLearningsReport (introspection — deterministic, secret-safe)',
 // I2: a transient provider error must propagate (the report step retries) — only unusable output
 // degrades to the deterministic fallback.
 describe('report model failures', () => {
-  it('a transient error rethrows; a malformed output degrades to the deterministic digest', async () => {
+  // What generateText really throws: an APICallError. A transient one (529) rethrows so the step
+  // retries; a permanent one (400 prompt-too-long as memory grows, 401, model gone) can never succeed
+  // on retry, so the report falls back to the deterministic digest / raw list instead of nothing.
+  const apiError = (statusCode: number, isRetryable: boolean) =>
+    new APICallError({ message: statusCode === 400 ? 'prompt is too long' : 'Overloaded', url: 'u', requestBodyValues: {}, statusCode, isRetryable })
+
+  it('weekly: a transient error rethrows; a permanent refusal degrades to the deterministic digest', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     await captureMemory({ groupId: GROUP, content: 'the boiler got serviced', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
-    genText.mockRejectedValueOnce(new Error('Overloaded'))
+    genText.mockRejectedValueOnce(apiError(529, true))
     await expect(weeklyReport(db, GROUP)).rejects.toThrow('Overloaded')
-    genText.mockRejectedValueOnce(new Error('No object generated: response did not match schema'))
-    await expect(weeklyReport(db, GROUP)).resolves.not.toBe('REPORT OK')
+    genText.mockRejectedValueOnce(apiError(400, false))
+    const out = await weeklyReport(db, GROUP)
+    expect(out).not.toBe('REPORT OK')
+    expect(out.length).toBeGreaterThan(0)
+    err.mockRestore()
+  })
+
+  it('guests: a permanent refusal degrades to the raw list', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', predicate: 'staying_in', object: "charli's room" }, authoredBy: null, trustLevel: 'untrusted' })
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    genText.mockRejectedValueOnce(apiError(400, false))
+    expect(await guestReport(db, GROUP)).toMatch(/^Here's what I've got on guests:[\s\S]*zuzka/)
+    genText.mockRejectedValueOnce(apiError(529, true))
+    await expect(guestReport(db, GROUP)).rejects.toThrow('Overloaded')
     err.mockRestore()
   })
 })

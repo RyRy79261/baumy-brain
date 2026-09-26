@@ -26,6 +26,7 @@ export type PlanRow =
   | 'reminder-failed-undirected'
   | 'reminder-undirected'
   | 'reminder-not-extracted'
+  | 'reminder-paused'
   | 'degraded-directed'
   | 'degraded'
   | 'ask-directed'
@@ -108,6 +109,9 @@ function planMain(ctx: TurnContext, policy: ResponsePolicy, directed: boolean): 
   // "noted" (A2/A3). Undirected reminders are not created at all (A9), so those rows are silent.
   if (o.reminder) {
     if (o.reminder.status === 'set') return directed ? words('confirm', 'reminder-set') : react('👍', 'reminder-set-undirected')
+    // Asked while the house is paused (only a DM gets this far — a paused group is silent above):
+    // nothing to clarify, so answer honestly with THIS TURN saying why nothing was scheduled.
+    if (o.reminder.status === 'paused') return directed ? words('answer', 'reminder-paused', { onMiss: 'words' }) : none('reminder-undirected')
     return directed ? words('clarify', 'reminder-failed') : none('reminder-failed-undirected')
   }
   if (v?.intent === 'reminder') {

@@ -10,12 +10,12 @@ import { currentFactsForQuery } from '@/lib/memory/facts'
 import { buildDigest } from '@/lib/reports/digest'
 import { houseToday } from '@/lib/core/clock'
 import { houseTz } from '@/lib/env'
-import { isMalformedObjectError } from '@/lib/ai/errors'
+import { textFallbackAllowed } from '@/lib/ai/errors'
 
 // On-demand house reports (owner feature): a slash command generates a formatted report
 // from house memory. LLM-formatted (the data is free-form facts + notes) but grounded
 // STRICTLY in what's stored — never invents — and degrades to a deterministic list when the
-// model's output is unusable. A transient provider error rethrows so the report step retries (I2). Secure values + quarantined (forwarded/bot) content are excluded.
+// model's output is unusable or the provider permanently refuses. A transient provider error rethrows so the report step retries (I2). Secure values + quarantined (forwarded/bot) content are excluded.
 export type HouseReport = 'weekly' | 'guests' | 'reminders' | 'recent'
 
 // Detect a report slash command (/weekly, /guests, /reminders, /recent) at the start of a message.
@@ -64,8 +64,8 @@ export async function weeklyReport(db: Database, groupId: string, now: Date = ne
     const t = text.trim()
     return t || (await buildDigest(db, groupId, now))
   } catch (err) {
-    if (!isMalformedObjectError(err)) throw err
-    console.error('weeklyReport: model output unusable — deterministic digest:', err)
+    if (!textFallbackAllowed(err)) throw err
+    console.error('weeklyReport: model output unusable or refused — deterministic digest:', err)
     return buildDigest(db, groupId, now)
   }
 }
@@ -111,8 +111,8 @@ export async function guestReport(db: Database, groupId: string, now: Date = new
     })
     return text.trim() || `Here's what I've got on guests:\n${grounding}`
   } catch (err) {
-    if (!isMalformedObjectError(err)) throw err
-    console.error('guestReport: model output unusable — raw list:', err)
+    if (!textFallbackAllowed(err)) throw err
+    console.error('guestReport: model output unusable or refused — raw list:', err)
     return `Here's what I've got on guests:\n${grounding}`
   }
 }

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { resolveModel } from './registry'
 import { TRIAGE_SYSTEM } from './prompts'
 import { degradeOnMalformed } from './errors'
+import { describeReplyTo, type ReplyToContext } from '@/lib/turn/context'
 
 // The cheap high-volume triage (docs/spec/chat-understanding-v2.md §2). One Haiku pass reads the
 // message IN CONTEXT (lane, directedness + why, ask-Baumy topic, what it replies to) and says what
@@ -54,15 +55,14 @@ export interface TriageContext {
   lane: 'house' | 'member_dm'
   directed: { value: boolean; why: string | null }
   inConsoleTopic: boolean
-  /** Who the message replies to ('Baumy' or a housemate's name) and that message's text. */
-  replyTo?: { author: string; text: string | null } | null
+  /** The message this one replies to (lib/turn/context.ts ReplyToContext): its text only when the
+   *  author is Baumy or a housemate in their own words — rendered as quoted data, never CONTEXT. */
+  replyTo?: ReplyToContext | null
   /** First name of the sender. */
   from?: string | null
   /** Housemates' first names — so "Charli, are you home?" reads as addressed to a person. */
   housemates?: string[]
 }
-
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s)
 
 export function triageHeader(c: TriageContext): string {
   const lines = [
@@ -72,7 +72,10 @@ export function triageHeader(c: TriageContext): string {
   ]
   if (c.from) lines.push(`  FROM: ${c.from}`)
   if (c.housemates?.length) lines.push(`  HOUSEMATES: ${c.housemates.join(', ')}`)
-  if (c.replyTo) lines.push(`  REPLYING TO: ${c.replyTo.author}${c.replyTo.text ? `: "${clip(c.replyTo.text, 280)}"` : ''}`)
+  // Only WHO it replies to is verified; the replied-to text follows as a quoted, one-line data line.
+  const r = c.replyTo ? describeReplyTo(c.replyTo) : null
+  if (r) lines.push(`  REPLYING TO: ${r.context}`)
+  if (r?.quoted) lines.push(r.quoted)
   return lines.join('\n')
 }
 

@@ -174,6 +174,16 @@ describe('planResponse — reminders (A2/A3/A9)', () => {
   it('A9: an undirected "remind us" (never created) is silent — even if its facts were captured', () => {
     expect(plan({ verdict: V({ intent: 'reminder', worthRemembering: true }), outcome: { captured: CAPTURED } })).toEqual({ kind: 'none', row: 'reminder-undirected' })
   })
+  it('a DM reminder while the house is paused → answer words (THIS TURN says why), never a vague "didn\'t set it"', () => {
+    const o = { reminder: { status: 'paused' as const } }
+    expect(plan({ lane: 'member_dm', policy: PAUSED, verdict: V({ intent: 'reminder' }), outcome: o })).toEqual({
+      kind: 'words',
+      mode: 'answer',
+      onMiss: 'words',
+      row: 'reminder-paused',
+    })
+    expect(plan({ why: 'mention', policy: PAUSED, outcome: o })).toEqual({ kind: 'none', row: 'paused' }) // the group stays silent
+  })
   it('directed, but the extractor found no reminder in it → answer (the reply is told nothing was set)', () => {
     expect(plan({ why: 'mention', verdict: V({ intent: 'reminder' }) })).toMatchObject({ kind: 'words', mode: 'answer', row: 'reminder-not-extracted' })
   })

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { resolveOriginParts, type Roster } from '@/lib/core/origin'
-import { decide, shouldCapture, listOpProposed, type Verdict } from '@/lib/core/decide'
+import { decide, shouldCapture, listOpProposed, reminderFollowUpAllowed, type Verdict } from '@/lib/core/decide'
 
 const HOUSE = '-1001234567890'
 beforeAll(() => {
@@ -130,5 +130,22 @@ describe('injection corpus — group text never escalates to a privileged action
       const d = decide(houseOrigin(100, text), verdict, directed)
       expect(['capture', 'reply', 'reminder', 'drop']).toContain(d)
     }
+  })
+})
+
+// Completing an open reminder draft (the answer to "when should I remind you?") rides the same wall
+// as a fresh reminder: directed, authenticated, not quarantined, not an explicit forget / list op.
+describe('reminderFollowUpAllowed', () => {
+  it('directed house text or a member DM from an authenticated sender may complete a draft', () => {
+    expect(reminderFollowUpAllowed(houseOrigin(), V({ intent: 'chatter' }), true, '100')).toBe(true)
+    expect(reminderFollowUpAllowed(memberDm(), V({ intent: 'statement' }), false, '200')).toBe(true)
+  })
+  it('never undirected group text, an anonymous sender, forwarded content, a forget or a list op', () => {
+    expect(reminderFollowUpAllowed(houseOrigin(), V({}), false, '100')).toBe(false)
+    expect(reminderFollowUpAllowed(houseOrigin(), V({}), true, null)).toBe(false)
+    const fwd = resolveOriginParts({ chatId: HOUSE, fromId: 100, text: 'x', isPrivate: false, isForwarded: true }, roster)
+    expect(reminderFollowUpAllowed(fwd, V({}), true, '100')).toBe(false)
+    expect(reminderFollowUpAllowed(houseOrigin(), V({ intent: 'forget' }), true, '100')).toBe(false)
+    expect(reminderFollowUpAllowed(houseOrigin(), { intent: 'request', list: 'add' }, true, '100')).toBe(false)
   })
 })

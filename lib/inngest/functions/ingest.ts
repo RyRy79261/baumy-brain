@@ -2,7 +2,7 @@ import { inngest, type TelegramMessageData } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { telegramUpdates } from '@/db/schema'
 import { resolveOriginParts } from '@/lib/core/origin'
-import { decide, shouldCapture, listOpProposed } from '@/lib/core/decide'
+import { decide, shouldCapture, listOpProposed, reminderFollowUpAllowed } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
 import { ensureRegistered } from '@/lib/memory/write'
@@ -14,10 +14,11 @@ import { loadResponsePolicy } from '@/lib/policy'
 import { directedness, repliesToBaumy, stripBotMention } from '@/lib/pipeline/directed'
 import { isSecretQuestion } from '@/lib/core/sensitivity'
 import { sendToHouse, getBotUsername, getBotId } from '@/lib/telegram/client'
-import { buildTurnContext } from '@/lib/turn/context'
+import { buildTurnContext, type ReplyToContext } from '@/lib/turn/context'
 import { planResponse } from '@/lib/turn/plan'
 import { runCapture } from '@/lib/turn/capture'
 import { runList, runReminder, runForget } from '@/lib/turn/actions'
+import { takeReminderDraft } from '@/lib/reminders/draft'
 import { executePlan } from '@/lib/turn/respond'
 import { runCommands } from '@/lib/turn/commands'
 import type { TurnStep } from '@/lib/turn/step'
@@ -110,7 +111,18 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // ── The turn (spec §1) ───────────────────────────────────────────────────────────────────────
   const names = await memberDisplayNames(createHttpDb())
   const firstName = (n: string) => n.split(/\s+/)[0]
-  const replyAuthor = !replyTo || replyTo.isTopicRoot ? null : replyToBaumy ? 'baumy' : replyTo.fromId != null ? (names.get(String(replyTo.fromId)) ?? 'someone') : 'someone'
+  // The replied-to message, as the models may be told it (ReplyToContext). Its TEXT only when the
+  // author is Baumy or a roster housemate in their own words: another bot's post or a forwarded
+  // message is quarantined content — it must never ground a reply, nor read as the forwarder's words.
+  const replyCtx = ((): ReplyToContext | null => {
+    if (!replyTo || replyTo.isTopicRoot) return null
+    if (replyToBaumy) return { author: 'baumy', text: replyTo.text }
+    const name = replyTo.fromId != null ? (names.get(String(replyTo.fromId)) ?? null) : null
+    if (replyTo.isBot) return { author: 'another bot', text: null, withheld: 'bot' }
+    if (replyTo.isForwarded) return { author: name ?? 'someone', text: null, withheld: 'forwarded' }
+    if (replyTo.fromId == null || !roster.isMember(replyTo.fromId)) return { author: 'someone', text: null, withheld: 'not_a_housemate' }
+    return { author: name ?? 'a housemate', text: replyTo.text }
+  })()
   const ctx = buildTurnContext({
     updateId,
     messageId,
@@ -128,7 +140,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     threadId: messageThreadId,
     isConsole: inConsoleTopic,
     directed,
-    replyTo: replyAuthor ? { author: replyAuthor, text: replyTo?.text ?? null } : null,
+    replyTo: replyCtx,
     text,
   })
 
@@ -138,7 +150,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
       lane,
       directed,
       inConsoleTopic,
-      replyTo: ctx.replyTo ? { author: ctx.replyTo.author === 'baumy' ? 'Baumy' : ctx.replyTo.author, text: ctx.replyTo.text } : null,
+      replyTo: ctx.replyTo,
       from: authorId ? ctx.sender.firstName : null,
       housemates: [...new Set([...names.values()].map(firstName))].slice(0, 20),
     }),
@@ -164,9 +176,20 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   if (houseScope && canReply && listOpProposed(origin, verdict.list, policy.global_enabled, verdict.intent)) {
     ctx.outcome.list = await runList(step, ctx)
   }
-  // Reminders honour pause in BOTH lanes (they post to the house group) — unchanged from pre-v2.
-  if (decision === 'reminder' && policy.global_enabled) {
-    ctx.outcome.reminder = await runReminder(step, ctx, houseChatId)
+  // Reminders honour pause in BOTH lanes (they post to the house group) — unchanged from pre-v2 —
+  // but a paused one is an explicit outcome, so a DM ask hears WHY nothing was scheduled.
+  // A directed message may also complete an earlier reminder still waiting for its time (the answer
+  // to Baumy's clarifying question): the open draft is taken one-shot and handed to the extractor.
+  if (policy.global_enabled) {
+    const draft =
+      houseScope && authorId && reminderFollowUpAllowed(origin, verdict, directed.value, authorId)
+        ? ((await step.run('reminder-draft', () => takeReminderDraft(createHttpDb(), { groupId: houseScope, chatId, requestedBy: authorId }))) as {
+            content: string
+          } | null)
+        : null
+    if (decision === 'reminder' || draft) ctx.outcome.reminder = await runReminder(step, ctx, houseChatId, draft)
+  } else if (decision === 'reminder') {
+    ctx.outcome.reminder = { status: 'paused' }
   }
   if (decision === 'forget' && canSpeak && canReply) {
     ctx.outcome.forget = await runForget(step, ctx)

@@ -70,4 +70,13 @@ describe('describeOutcome — THIS TURN', () => {
     expect(f.secure).toBe(true)
     expect(describeOutcome({ captured: { memoryItemId: 'n', factIds: ['f'], learned: [f], rejected: [] } }, 'Europe/Berlin')).not.toContain('hunter2')
   })
+  it('…also when the extractor names the predicate in snake_case (has_password, door_code)', () => {
+    for (const [subject, predicate, object] of [['wifi', 'has_password', 'hunter3'], ['front door', 'door_code', '4821']]) {
+      const f = summarizeFact({ subject, predicate, object }, null)
+      expect(f, predicate).toMatchObject({ secure: true, object: '(secret — stored encrypted)' })
+    }
+  })
+  it('a paused reminder says why nothing was scheduled', () => {
+    expect(describeOutcome({ reminder: { status: 'paused' } }, 'Europe/Berlin')).toMatch(/no reminder was created — Baumy is paused/)
+  })
 })

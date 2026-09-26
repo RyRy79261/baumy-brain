@@ -45,15 +45,15 @@ export async function gatherGrounding(db: Database, ctx: TurnContext, opts: { de
     let expansions: string[] = []
     try {
       expansions = await expandQuery(query)
-    } catch {
-      /* fall back to the raw query */
+    } catch (err) {
+      console.warn('[baumy/grounding] query expansion failed — using the raw query:', err instanceof Error ? err.message : err)
     }
     const ropts = { groupId: scope, k: 30, floor: 0.05, excludeIds: excludeNotes }
     memories = expansions.length ? await retrieveExpanded(query, expansions, ropts, { db }) : await retrieve(query, ropts, { db })
     try {
       memories = await rerank(query, memories)
-    } catch {
-      /* keep the fusion order */
+    } catch (err) {
+      console.warn('[baumy/grounding] re-rank failed — keeping the fusion order:', err instanceof Error ? err.message : err)
     }
   } else {
     memories = await retrieve(query, { groupId: scope, k: 8, floor: 0.2, excludeIds: excludeNotes }, { db })
@@ -67,8 +67,9 @@ export async function gatherGrounding(db: Database, ctx: TurnContext, opts: { de
   if (deep) {
     try {
       graphItems = (await gatherGraphContext(db, scope, query)).filter((g) => !g.factId || !excludeFacts.includes(g.factId))
-    } catch {
-      /* graph traversal is enrichment only — never fail the reply on it */
+    } catch (err) {
+      // Graph traversal is enrichment only — never fail the reply on it (but never hide it either).
+      console.warn('[baumy/grounding] graph walk failed — no graph context:', err instanceof Error ? err.message : err)
     }
   }
 

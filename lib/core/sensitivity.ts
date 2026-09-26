@@ -40,8 +40,12 @@ export interface SensitivityResult {
 
 export function scanSensitivity(text: string | null | undefined): SensitivityResult {
   if (!text) return { isSecure: false, matched: -1, descriptor: '' }
+  // Extracted fact triples arrive with snake_case predicates ("wifi has_password hunter3", "front
+  // door door_code 4821"); `\b` and `\s*` never match across "_", so the scan read those as not
+  // secret — stored the value in plaintext and echoed it in an ack. Treat "_" as a word break.
+  const t = text.replace(/_/g, ' ')
   for (let i = 0; i < PATTERNS.length; i++) {
-    if (PATTERNS[i].test(text)) return { isSecure: true, matched: i, descriptor: DESCRIPTORS[i] }
+    if (PATTERNS[i].test(t)) return { isSecure: true, matched: i, descriptor: DESCRIPTORS[i] }
   }
   return { isSecure: false, matched: -1, descriptor: '' }
 }

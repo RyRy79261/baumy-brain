@@ -113,6 +113,9 @@ function replyToMessageOf(msg: TelegramMessage) {
   return {
     fromId: r.from?.id ?? null,
     isBot: r.from?.is_bot === true,
+    // A forwarded message's `from` is the FORWARDER, not the author of the words: the pipeline must
+    // never show its text as that housemate's own (quarantine / D4).
+    isForwarded: r.forward_origin != null,
     text: r.text ?? r.caption ?? null,
     isTopicRoot,
   }
