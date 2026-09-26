@@ -21,14 +21,17 @@ import { runList, runReminder, runForget } from '@/lib/turn/actions'
 import { takeReminderDraft } from '@/lib/reminders/draft'
 import { executePlan } from '@/lib/turn/respond'
 import { runCommands } from '@/lib/turn/commands'
+import { appendInbound, recentTurns, linkProduced, withholdTurn } from '@/lib/turn/window'
+import type { WindowTurn } from '@/lib/turn/context'
 import type { TurnStep } from '@/lib/turn/step'
 
 type IngestStep = TurnStep
 
 // The reactive ingest pipeline (architecture D10, docs/spec/chat-understanding-v2.md):
 //
-//   intake:  record-inbound → origin (real roster) → directedness → pre-filter → slash commands
-//   turn:    TurnContext (deterministic) → classify (in context) → write-gate
+//   intake:  record-inbound → origin (real roster) → directedness → window-append → pre-filter
+//            → slash commands
+//   turn:    window-read → TurnContext (deterministic) → classify (in context) → write-gate
 //            → capture (evidence + facts) → actions (list / reminder / forget) → ctx.outcome
 //            → ONE planResponse(ctx) → execute (reaction | deterministic text | reply-model words)
 //
@@ -55,7 +58,8 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
 
   await step.run('record-inbound', async () => {
     const db = createHttpDb()
-    // Idempotency record ONLY — do NOT persist the message body (it can contain a secret).
+    // Idempotency record ONLY — the ledger never holds the message body. (The text lives only in the
+    // 48h conversation window, secret-redacted — window-append below, spec §5.)
     await db.insert(telegramUpdates).values({ updateId, chatId }).onConflictDoNothing()
     // Register under the stable SCOPE id (not the inbound chat). A BOT sender (GroupAnonymousBot for
     // an anonymous admin, a poll bot) is never registered as a housemate (I8).
@@ -101,6 +105,35 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // What Baumy reasons over: the @mention stripped (C12) — directedness above already used it.
   const text = stripBotMention(rawText, botUsername)
 
+  // The 48h conversation window (spec §5): every in-scope message, BEFORE the noise filter (an "ok"
+  // or "lol" is still part of the conversation) — but never another bot's post (quarantined bot
+  // content never grounds anything). A member-forwarded message is kept LABELLED as forwarded (the
+  // forwarder is recorded, never as the author of those words). Secret-redacted before it is stored.
+  // Best-effort: the window is context, so a failure here must not fail (and retry) the whole turn.
+  const botContent = isBot === true && !origin.anonymous
+  if (houseScope && !botContent) {
+    await step.run('window-append', async () => {
+      try {
+        const forwarded = isForwarded === true
+        await appendInbound(createHttpDb(), {
+          groupId: houseScope,
+          chatId,
+          messageId,
+          authorKind: origin.anonymous ? 'anon' : 'member',
+          authorMemberId: forwarded ? (fromId != null ? String(fromId) : null) : authorId,
+          authorName: origin.anonymous ? null : fromName,
+          text,
+          trust: forwarded ? 'forwarded' : origin.memoryTrust,
+          replyToMessageId: replyTo && !replyTo.isTopicRoot ? (replyTo.messageId ?? null) : null,
+          threadId: lane === 'house' ? messageThreadId : null,
+          sentAt: now(),
+        })
+      } catch (err) {
+        console.warn('[baumy/ingest] conversation-window append failed:', err instanceof Error ? err.message : err)
+      }
+    })
+  }
+
   const pf = prefilter(text, { directed: directed.value, dm: lane === 'member_dm' })
   if (!pf.keep) return { updateId, decision: 'drop' as const, reason: pf.reason }
 
@@ -110,6 +143,28 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
 
   // ── The turn (spec §1) ───────────────────────────────────────────────────────────────────────
   const names = await memberDisplayNames(createHttpDb())
+  // The last turns of THIS chat (and topic) within 48h, Baumy's own replies included — memoized, so
+  // triage and the reply (a later step) read the same conversation. Excludes this message itself.
+  const sentAt = now()
+  const recent = houseScope
+    ? (
+        (await step.run('window-read', async () => {
+          try {
+            return await recentTurns(createHttpDb(), {
+              groupId: houseScope,
+              chatId,
+              threadId: lane === 'house' ? messageThreadId : null,
+              at: sentAt,
+              excludeMessageId: messageId,
+            })
+          } catch (err) {
+            // Context only: without it the turn still runs (as it did before the window existed).
+            console.warn('[baumy/ingest] conversation-window read failed:', err instanceof Error ? err.message : err)
+            return []
+          }
+        })) as (Omit<WindowTurn, 'at'> & { at: string | Date })[]
+      ).map((t) => ({ ...t, at: new Date(t.at) }))
+    : []
   const firstName = (n: string) => n.split(/\s+/)[0]
   // The replied-to message, as the models may be told it (ReplyToContext). Its TEXT only when the
   // author is Baumy or a roster housemate in their own words: another bot's post or a forwarded
@@ -135,13 +190,14 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     anonymous: origin.anonymous === true,
     authorId,
     trust: origin.memoryTrust,
-    sentAt: now(),
+    sentAt,
     tz: houseTz(),
     threadId: messageThreadId,
     isConsole: inConsoleTopic,
     directed,
     replyTo: replyCtx,
     text,
+    recent,
   })
 
   // Triage IN CONTEXT (memoized): lane, directed + why, console topic, who it replies to (spec §2).
@@ -153,10 +209,16 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
       replyTo: ctx.replyTo,
       from: authorId ? ctx.sender.firstName : null,
       housemates: [...new Set([...names.values()].map(firstName))].slice(0, 20),
+      recent: { turns: recent, tz: ctx.tz, now: sentAt },
     }),
   )) as ClassifierVerdict
   ctx.verdict = verdict
   const decision = decide(origin, verdict, directed.value)
+  // A forget request is never captured (storing "delete X" re-adds X) — nor kept verbatim in the
+  // conversation window: only that something was asked to be forgotten.
+  if (decision === 'forget' && houseScope && !botContent) {
+    await step.run('window-withhold', () => withholdTurn(createHttpDb(), { chatId, messageId }, '[asked Baumy to forget something — withheld]'))
+  }
 
   // Destination belt: exactly two TRANSPORT-authenticated targets — the house group, or the
   // authenticated DM sender's own chat. Never a free/LLM id (injection wall).
@@ -193,6 +255,22 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   }
   if (decision === 'forget' && canSpeak && canReply) {
     ctx.outcome.forget = await runForget(step, ctx)
+  }
+
+  // What this message produced, on its window row — the map an edit needs to supersede it (I1).
+  const reminderId = ctx.outcome.reminder?.status === 'set' ? ctx.outcome.reminder.id : undefined
+  if (houseScope && (ctx.outcome.captured || reminderId)) {
+    await step.run('window-link', async () => {
+      try {
+        await linkProduced(
+          createHttpDb(),
+          { chatId, messageId },
+          { memoryItemId: ctx.outcome.captured?.memoryItemId, factIds: ctx.outcome.captured?.factIds, reminderIds: reminderId ? [reminderId] : [] },
+        )
+      } catch (err) {
+        console.warn('[baumy/ingest] conversation-window link failed:', err instanceof Error ? err.message : err)
+      }
+    })
   }
 
   // ONE decision about Baumy's voice, from what the turn is and what actually happened (spec §3).

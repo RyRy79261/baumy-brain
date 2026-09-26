@@ -6,6 +6,7 @@ import { runCallback } from '@/lib/inngest/functions/callback'
 import { deliverDueReminders } from '@/lib/inngest/functions/reminders'
 import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
+import { purgeWindow } from '@/lib/turn/window'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { houseConfig } from '@/db/schema'
@@ -185,9 +186,13 @@ function findPerson(sb: Sandbox, who: string | number): SandboxPerson {
 function replyFields(sb: Sandbox, opts: SendOptions): Pick<TelegramMessageData, 'replyToBot' | 'replyToMessage'> {
   const toBaumy = opts.replyToBaumy ?? opts.replyToBot
   if (toBaumy) {
+    // The Baumy message being replied to: the latest one with that text (or simply the latest one),
+    // so its synthetic message id links the reply in the conversation window like Telegram's would.
+    const text = typeof toBaumy === 'string' ? toBaumy : null
+    const said = [...sb.transcript].reverse().find((e) => (e.kind === 'message' || e.kind === 'confirm-card') && (text == null || e.text === text))
     return {
       replyToBot: true,
-      replyToMessage: { fromId: SANDBOX_BOT_ID, isBot: true, text: typeof toBaumy === 'string' ? toBaumy : null, isTopicRoot: false },
+      replyToMessage: { fromId: SANDBOX_BOT_ID, isBot: true, text, isTopicRoot: false, messageId: said?.messageId ?? null },
     }
   }
   if (opts.replyTo) {
@@ -221,6 +226,16 @@ interface Job {
 }
 
 const JOBS: Job[] = [
+  {
+    // The conversation window's 48h purge (production runs it hourly; once a day is enough here, as
+    // every window read also filters by 48h). Driven at its own simulated instant like every job.
+    id: 'window-purge',
+    hour: 4,
+    minute: 17,
+    run: async (sb, at) => {
+      await purgeWindow(sb.db, at)
+    },
+  },
   {
     id: 'consolidation',
     hour: 22,

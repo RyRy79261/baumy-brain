@@ -149,7 +149,7 @@ describe('telegram webhook — reply + sender_chat forwarding', () => {
 
   it('forwards the replied-to author id, bot flag and text (or caption) — directedness is decided downstream by bot id', async () => {
     await POST(req(msg({ reply_to_message: { message_id: 7, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 5555, is_bot: true, first_name: 'Poll' }, text: 'Poll closes at 9' } })))
-    expect(sentData().replyToMessage).toEqual({ fromId: 5555, isBot: true, isForwarded: false, text: 'Poll closes at 9', isTopicRoot: false })
+    expect(sentData().replyToMessage).toEqual({ fromId: 5555, isBot: true, isForwarded: false, text: 'Poll closes at 9', isTopicRoot: false, messageId: 7 })
     send.mockClear()
     await POST(req(msg({ reply_to_message: { message_id: 8, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 42, is_bot: false, first_name: 'Ana' }, caption: 'the new sofa' } })))
     expect(sentData().replyToMessage).toMatchObject({ fromId: 42, isBot: false, isForwarded: false, text: 'the new sofa' })

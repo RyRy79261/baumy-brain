@@ -74,6 +74,16 @@ describe('classify (triage, spec §2)', () => {
     expect(TRIAGE_SYSTEM).toMatch(/STATES durable house info AND asks something is not a question: label it "request" with worthRemembering true/)
   })
 
+  it('phase 2 (C5): the last few turns follow CONTEXT as a quoted RECENT CHAT block', () => {
+    const turns = Array.from({ length: 9 }, (_, i) => ({ at: new Date(`2026-09-26T19:0${i}:00Z`), author: 'Marco', baumy: false, forwarded: false, text: `m${i + 1}` }))
+    const h = triageHeader({ lane: 'house', directed: { value: false, why: null }, inConsoleTopic: false, recent: { turns, tz: 'Europe/Berlin', now: new Date('2026-09-26T19:30:00Z') } })
+    const lines = h.split('\n')
+    expect(lines.findIndex((l) => l.startsWith('RECENT CHAT'))).toBeGreaterThan(lines.findIndex((l) => l.includes('DIRECTED AT BAUMY')))
+    // the cheap model gets only the last 6 turns
+    expect(lines.filter((l) => l.includes('Marco:')).map((l) => l.split(': ')[1])).toEqual(['"m4"', '"m5"', '"m6"', '"m7"', '"m8"', '"m9"'])
+    expect(TRIAGE_SYSTEM).toMatch(/RECENT CHAT/)
+  })
+
   it('the header names a DM and the ask-Baumy topic', () => {
     expect(triageHeader({ lane: 'member_dm', directed: { value: true, why: 'dm' }, inConsoleTopic: false })).toContain('a private DM to Baumy')
     expect(triageHeader({ lane: 'house', directed: { value: true, why: 'console_topic' }, inConsoleTopic: true })).toContain('DIRECTED AT BAUMY: yes (console_topic)')

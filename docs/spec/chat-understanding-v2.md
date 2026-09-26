@@ -199,6 +199,28 @@ purged** by a cron (and ignored by reads). Reads: last 12 turns of the same chat
 forum), newest last. Forwarded rows are labelled; bot/quarantined rows are excluded. The window is
 context only — it never writes facts and is never shown to anyone.
 
+**As implemented (phase 2):**
+- Columns: `author_kind` (`member` | `baumy` | `anon`) + `author_member_id` (FK, so "baumy" is a kind,
+  not an id), `author_name`, `text_redacted`, `trust` (`trusted`/`untrusted`, `forwarded`, `system`
+  for Baumy), `reply_to_message_id` (the webhook now forwards `reply_to_message.message_id`),
+  `thread_id`, `sent_at`, a `seq` identity (the "newest last" tie-break — a turn runs at one instant
+  under the sandbox clock), and the edit map for phase 5: `produced_memory_item_id`,
+  `produced_fact_ids`, `produced_reminder_ids` (linked at the end of the turn). Unique on
+  `(chat_id, message_id)`: an edit replaces the stored text. Migrations 0017/0018.
+- Redaction is **whole-message**: `scanSensitivity` matches the label ("wifi password"), not the value,
+  so a secure message is stored as `[a message containing <descriptor> — withheld]`. Belts: a reply
+  that disclosed a decrypted secret is windowed as a placeholder; a forget request and a forget
+  confirm card are withheld; a confirmed purge scrubs its values from the window; render re-scans.
+- Inbound rows are appended in ingest right after lane resolution, before the noise pre-filter (an
+  "ok" is part of the conversation). Baumy's sends are appended in `lib/telegram/client.ts`
+  (`sendToHouse`, `sendConfirmCard`) — the scope resolved from the destination (house alias ids, or an
+  active member's DM), best-effort after the send. Login DMs (`sendDmLoginResponse`, magic links) and
+  card edits are not windowed.
+- The read is memoized (`window-read` step) and excludes the message being answered. The reply gets up
+  to 12 turns ("Baumy (you)" for its own), triage the last 6, both as a `RECENT CHAT (…quoted data…)`
+  block of one JSON-quoted line per turn, after the REPLIED TO line and before MEMORY / the MESSAGE.
+- Purge: `windowPurge` (hourly Inngest cron, `now()`); the sandbox drives it daily at 04:17.
+
 ## 6. Time model (phase 3)
 
 - Extraction prompts get `MESSAGE SENT: Fri 26 Sep 2026 21:40 Europe/Berlin` **and a 21-day calendar

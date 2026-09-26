@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
-import { memoryItems, reminders, pendingActions, houseConfig } from '@/db/schema'
+import { memoryItems, reminders, pendingActions, houseConfig, messages } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { reconcileFact } from '@/lib/memory/facts'
@@ -454,5 +454,72 @@ describe('exactly-once — the claim-and-release belt survives the refactor', ()
     expect(sendToHouse).toHaveBeenCalledTimes(2)
     await run({ data: { ...e.data } }, step) // a duplicate delivery with a fresh (non-memoized) step
     expect(sendToHouse).toHaveBeenCalledTimes(2) // claimReply refuses the second send
+  })
+})
+
+describe('the conversation window (phase 2, spec §5 — C5)', () => {
+  const windowRows = async () => (await dbh.db.select().from(messages).orderBy(messages.seq)) as (typeof messages.$inferSelect)[]
+
+  it('every in-scope message is appended after lane resolution, and the next turn reads it (triage AND reply)', async () => {
+    await run(ev({ fromId: MARCO, fromFirstName: 'Marco', text: "Zuzka's coming friday" }))
+    classifyMock.mockResolvedValue(V({ intent: 'question', asksBaumy: true }))
+    await run(ev({ text: '@baumy_bot which room is she in?' }))
+    const rows = await windowRows()
+    expect(rows.map((r) => [r.authorKind, r.authorMemberId, r.authorName, r.trust, r.textRedacted])).toEqual([
+      ['member', String(MARCO), 'Marco', 'untrusted', "Zuzka's coming friday"],
+      ['member', String(CHARLI), 'Charli', 'untrusted', 'which room is she in?'], // the @mention stripped (C12)
+    ])
+    // The turn being answered is the MESSAGE, not a RECENT CHAT line.
+    expect(lastAnswer().ctx.recent.map((t) => [t.author, t.text])).toEqual([['Marco', "Zuzka's coming friday"]])
+    const triageCtx = classifyMock.mock.calls.at(-1)![1] as { recent: { turns: { text: string }[] } }
+    expect(triageCtx.recent.turns.map((t) => t.text)).toEqual(["Zuzka's coming friday"])
+  })
+
+  it('never stores another bot’s post or an out-of-scope message; a forward is labelled and attributed to the forwarder only', async () => {
+    await run(ev({ fromId: 5555, fromFirstName: 'PollBot', isBot: true, text: 'Poll: pizza or pasta?' }))
+    await run(ev({ chatId: '-100elsewhere', text: 'hello from another group' }))
+    await run(ev({ fromId: MARCO, fromFirstName: 'Marco', isForwarded: true, text: 'landlord: rent goes up 20%' }))
+    const rows = await windowRows()
+    expect(rows.map((r) => [r.trust, r.authorMemberId, r.textRedacted])).toEqual([['forwarded', String(MARCO), 'landlord: rent goes up 20%']])
+  })
+
+  it('an anonymous-admin post is house text with no attributable author (I8)', async () => {
+    await run(ev({ fromId: 1087968824, fromFirstName: 'Group', fromUsername: 'GroupAnonymousBot', isBot: true, senderChatId: HOUSE, text: 'house meeting sunday' }))
+    const [r] = await windowRows()
+    expect(r).toMatchObject({ authorKind: 'anon', authorMemberId: null, trust: 'untrusted', textRedacted: 'house meeting sunday' })
+  })
+
+  it('a secret typed in chat is never persisted in the window', async () => {
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
+    await run(ev({ text: 'the wifi password is hunter2 now' }))
+    const rows = await windowRows()
+    expect(rows).toHaveLength(1)
+    expect(JSON.stringify(rows)).not.toContain('hunter2')
+  })
+
+  it('a forget request is withheld in the window (storing "forget X" would keep X around)', async () => {
+    classifyMock.mockResolvedValue(V({ intent: 'forget' }))
+    await run(ev({ text: '@baumy_bot forget my number 0176 5550123' }))
+    const [r] = await windowRows()
+    expect(r.textRedacted).not.toContain('0176')
+  })
+
+  it('records what the message produced (the edit map, I1) — its evidence note and facts', async () => {
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
+    extractFactsMock.mockResolvedValue({ facts: [{ subject: 'boiler', subjectKind: 'thing', predicate: 'serviced_on', object: 'tuesday', objectKind: 'value', whenText: '' }] })
+    await run(ev({ text: 'the boiler gets serviced tuesday' }))
+    const [r] = await windowRows()
+    const [note] = await dbh.db.select().from(memoryItems)
+    expect(r.producedMemoryItemId).toBe(note.id)
+    expect(r.producedFactIds).toHaveLength(1)
+  })
+
+  it('a DM is keyed to the DM chat: it never shows up in the group’s window', async () => {
+    await run(ev({ chatId: String(MARCO), chatType: 'private', fromId: MARCO, fromFirstName: 'Marco', text: 'between us: I might move out' }))
+    classifyMock.mockResolvedValue(V({ intent: 'question', asksBaumy: true }))
+    await run(ev({ text: '@baumy_bot anything new?' }))
+    expect(lastAnswer().ctx.recent).toEqual([])
+    const [dm] = await windowRows()
+    expect(dm).toMatchObject({ groupId: HOUSE, chatId: String(MARCO), trust: 'trusted' })
   })
 })

@@ -3,7 +3,8 @@ import { z } from 'zod'
 import { resolveModel } from './registry'
 import { TRIAGE_SYSTEM } from './prompts'
 import { degradeOnMalformed } from './errors'
-import { describeReplyTo, type ReplyToContext } from '@/lib/turn/context'
+import { describeReplyTo, type ReplyToContext, type WindowTurn } from '@/lib/turn/context'
+import { renderRecentChat } from '@/lib/turn/window'
 
 // The cheap high-volume triage (docs/spec/chat-understanding-v2.md §2). One Haiku pass reads the
 // message IN CONTEXT (lane, directedness + why, ask-Baumy topic, what it replies to) and says what
@@ -62,7 +63,13 @@ export interface TriageContext {
   from?: string | null
   /** Housemates' first names — so "Charli, are you home?" reads as addressed to a person. */
   housemates?: string[]
+  /** The last turns of this chat (the 48h window, spec §5) — rendered as quoted data, never CONTEXT. */
+  recent?: { turns: WindowTurn[]; tz: string; now: Date }
 }
+
+// Triage needs the gist of the conversation (is "and her?" a question to Baumy, a reply to Marco?),
+// not the whole window — the cheap model gets the last few turns only.
+const TRIAGE_TURNS = 6
 
 export function triageHeader(c: TriageContext): string {
   const lines = [
@@ -76,6 +83,7 @@ export function triageHeader(c: TriageContext): string {
   const r = c.replyTo ? describeReplyTo(c.replyTo) : null
   if (r) lines.push(`  REPLYING TO: ${r.context}`)
   if (r?.quoted) lines.push(r.quoted)
+  if (c.recent) lines.push(...renderRecentChat(c.recent.turns, { tz: c.recent.tz, now: c.recent.now, max: TRIAGE_TURNS }))
   return lines.join('\n')
 }
 

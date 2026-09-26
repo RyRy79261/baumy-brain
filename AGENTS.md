@@ -61,7 +61,9 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   `chat.type`/`chat.id`/`from.id`, never from message text (`lib/core/*`). House-group text is
   `privileged: false`, always.
 - **Trust tiers:** forwarded / bot-origin content → `quarantined`; it is never attributed to a
-  housemate and never grounds a reply or writes a fact. Native group text is `untrusted`
+  housemate and never grounds a reply or writes a fact (the conversation window may show a
+  member-forwarded line as quoted context, labelled "X forwarded — not X's own words"; bot posts are
+  never windowed — spec §5). Native group text is `untrusted`
   (grounds replies, never privileged). Member DM text is `trusted`. One exception: an
   **anonymous-admin post** (`from` = @GroupAnonymousBot, `sender_chat.id` = the house itself) is
   native `untrusted` house text, never attributed and never registered as a member (I8).
@@ -123,6 +125,22 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   (`lib/turn/grounding.ts` `disclose`: MODE answer + `asksForSecret` on that value — never for an
   ack/confirm, never because a message merely mentions the door), never in digests, never into the
   tool-enabled web-search generation.
+- **Message text at rest = the 48h conversation window only** (`lib/turn/window.ts`,
+  `baumy_messages`, spec `chat-understanding-v2.md` §5/D1 — this replaced the old "never persist the
+  message body" rule). **A secret is never persisted**: text is redacted with `scanSensitivity`
+  BEFORE insert (a secure message is kept only as its descriptor, whole — never span-edited), a
+  reply that disclosed a decrypted secret is windowed as a placeholder (`grounding.disclosed`), a
+  forget request / forget card is withheld, and a confirmed purge scrubs the value from the window
+  too. **Nothing outlives 48h** (hourly `windowPurge` cron; every read also filters by 48h, clock
+  seam `now()`). The ledger (`baumy_telegram_updates.raw`) still never holds the body. Appended:
+  every in-scope inbound message after lane resolution (never the `ignore` lane, never another bot's
+  post; a member-forwarded message is labelled `forwarded`, attributed to the forwarder only as
+  forwarder) and every Baumy send — at the **send seam** (`lib/telegram/client.ts`, scope resolved
+  from the destination, best-effort after the send so a window hiccup never re-posts). Reads are one
+  chat (+ the same forum topic): a DM never shows up in the group's window or vice versa. The window
+  is **context only** — the models see it as a quoted `RECENT CHAT` data block (never inside the
+  verified CONTEXT block); it never writes a fact, never drives an action, and is never shown to
+  anyone (console policy marks `text_redacted` secret).
 - **Dashboard authz is live:** re-checked against the DB on every request
   (`lib/auth/require-admin.ts`) — never cached in the cookie.
 - **Trust-gated facts:** a fact may supersede an incumbent only if its trust ≥ the incumbent's

@@ -8,6 +8,7 @@ import { reembedSweep } from './reembed'
 import { reflectSweep } from './reflect'
 import { eventSurfacingScan } from './surfacing'
 import { consolidationSweep } from './consolidation'
+import { windowPurge } from './window'
 
 // All registered Inngest functions.
 export const functions: InngestFunction.Any[] = [
@@ -23,4 +24,5 @@ export const functions: InngestFunction.Any[] = [
   reflectSweep,
   eventSurfacingScan,
   consolidationSweep,
+  windowPurge,
 ]

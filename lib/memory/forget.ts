@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, or, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { entities, facts, memoryItems, memoryEmbeddings } from '@/db/schema'
 import { normalizeEntityName } from '@/lib/memory/facts'
+import { scrubWindow } from '@/lib/turn/window'
 
 // Deletion on request (owner feature). The UNIT of forgetting is a concrete VALUE STRING
 // (a name, number, etc.) — resolved by the LLM, then matched EXACTLY (case-insensitive
@@ -224,6 +225,11 @@ export async function forgetMemory(
     if (scrubbedIds.length) await db.delete(memoryEmbeddings).where(inArray(memoryEmbeddings.memoryItemId, scrubbedIds))
     messagesScrubbed = scrubbedIds.length
   }
+
+  // The 48h conversation window (lib/turn/window.ts) holds recent chat text too: a purge scrubs the
+  // value out of it as well, rather than leaving it quotable until the window expires. Not counted in
+  // messagesScrubbed (that receipt is about stored memory).
+  if (input.mode === 'purge' && input.scrubValues.length) await scrubWindow(db, groupId, input.scrubValues, redactValues)
 
   // Drop the value as an entity alias (purge only) — keeps the entity + its other aliases.
   // Independent of message scrubbing (a value can be an alias with no message holding it).

@@ -6,7 +6,8 @@ import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
 import { resolveSeedEntities, connectedEdges, gatherGraphContext } from '@/lib/memory/graph'
-import { findMemoryToForget, forgetMemory } from '@/lib/memory/forget'
+import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/forget'
+import { appendInbound, recentTurns, scrubWindow, purgeWindow } from '@/lib/turn/window'
 import { createReminder, claimReminder, markSent, releaseReminder } from '@/lib/reminders/store'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
@@ -295,5 +296,30 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect((await loadRoster(h.db)).canAccessDashboard(900)).toBe(true)
     await setDashboardAccess(h.db, '900', false)
     expect((await loadRoster(h.db)).canAccessDashboard(900)).toBe(false)
+  })
+  it('conversation window: migrations 0017/0018, redacted append, topic-scoped 48h read, scrub + purge (real SQL)', async () => {
+    const cols = await h.pool.query("SELECT column_name FROM information_schema.columns WHERE table_name = 'baumy_messages' AND column_name IN ('text', 'text_redacted', 'seq')")
+    expect(cols.rows.map((r: { column_name: string }) => r.column_name).sort()).toEqual(['seq', 'text_redacted'])
+    const t0 = new Date('2026-09-26T19:00:00Z')
+    const base = { groupId: GROUP, chatId: GROUP, authorKind: 'member' as const, authorMemberId: null, authorName: 'Marco', trust: 'untrusted', replyToMessageId: null }
+    await appendInbound(h.db, { ...base, messageId: 1, text: 'the wifi password is hunter2', threadId: null, sentAt: t0 })
+    await appendInbound(h.db, { ...base, messageId: 2, text: 'call Robert on 0176 5550123', threadId: null, sentAt: new Date(t0.getTime() + 60_000) })
+    await appendInbound(h.db, { ...base, messageId: 3, text: 'in the topic', threadId: 44, sentAt: new Date(t0.getTime() + 120_000) })
+    await appendInbound(h.db, { ...base, messageId: 4, text: 'long ago', threadId: null, sentAt: new Date(t0.getTime() - 49 * 3_600_000) })
+    // an edit (same chat + message_id) upserts
+    await appendInbound(h.db, { ...base, messageId: 2, text: 'call Robert on 0176 5550123 tonight', threadId: null, sentAt: new Date(t0.getTime() + 60_000) })
+    const general = await recentTurns(h.db, { groupId: GROUP, chatId: GROUP, threadId: null, at: new Date(t0.getTime() + 600_000) })
+    expect(general.map((t) => t.text)).toEqual(['[a message containing the wifi password — withheld]', 'call Robert on 0176 5550123 tonight'])
+    expect((await recentTurns(h.db, { groupId: GROUP, chatId: GROUP, threadId: 44, at: new Date(t0.getTime() + 600_000) })).map((t) => t.text)).toEqual(['in the topic'])
+    const secret = await h.pool.query("SELECT count(*)::int n FROM baumy_messages WHERE text_redacted LIKE '%hunter2%'")
+    expect(secret.rows[0].n).toBe(0)
+    expect(await scrubWindow(h.db, GROUP, ['0176 5550123'], redactValues)).toBe(1)
+    expect(await purgeWindow(h.db, t0)).toBe(1)
+    const left = await h.pool.query('SELECT text_redacted FROM baumy_messages WHERE group_id = $1 ORDER BY seq', [GROUP])
+    expect(left.rows.map((r: { text_redacted: string }) => r.text_redacted)).toEqual([
+      '[a message containing the wifi password — withheld]',
+      'call Robert on [redacted] tonight',
+      'in the topic',
+    ])
   })
 })

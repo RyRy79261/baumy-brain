@@ -6,6 +6,7 @@ import { REPLY_SYSTEM, REPLY_SYSTEM_TEXT } from './prompts'
 import { isMalformedObjectError } from './errors'
 import { scanSensitivity } from '@/lib/core/sensitivity'
 import { describeOutcome, describeReplyTo, describeWhere, type TurnContext } from '@/lib/turn/context'
+import { renderRecentChat } from '@/lib/turn/window'
 import type { ReplyMode } from '@/lib/turn/plan'
 
 // Grounded reply (docs/spec/chat-understanding-v2.md §4). Memory-only, ZERO tools (exfil-safe).
@@ -35,8 +36,6 @@ export interface GroundingItem {
   /** AES-GCM blob for a secure value; decrypted upstream ONLY for a direct ask (C15). */
   contentEncrypted: string | null
 }
-
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s)
 
 function day(d: Date, tz: string, now: DateTime, weekday = false): string {
   const dt = DateTime.fromJSDate(d).setZone(tz)
@@ -78,10 +77,9 @@ export function renderReplyPrompt(ctx: TurnContext, mode: ReplyMode, grounding: 
   const withholdObjects = mode !== 'answer' && scanSensitivity(ctx.text).isSecure
   lines.push(`  THIS TURN: ${describeOutcome(ctx.outcome, ctx.tz, { withholdObjects })}`)
   if (replyTo?.quoted) lines.push(replyTo.quoted)
-  if (ctx.recent.length) {
-    lines.push('RECENT CHAT (oldest first):')
-    for (const t of ctx.recent) lines.push(`  [${DateTime.fromJSDate(t.at).setZone(ctx.tz).toFormat('HH:mm')}] ${t.author}: ${clip(t.text.replace(/\s+/g, ' '), 300)}`)
-  }
+  // The last turns of this chat (spec §5) — Baumy's own previous replies included, so a follow-up
+  // ("which room is she in?") has something to resolve against. Quoted data, after CONTEXT.
+  lines.push(...renderRecentChat(ctx.recent, { tz: ctx.tz, now: ctx.sentAt, self: true }))
   lines.push('MEMORY (each line: kind · who said it · when):')
   if (grounding.length) for (const m of grounding) lines.push(memoryLine(m, ctx.tz, ctx.sentAt))
   else lines.push('  (nothing relevant in memory)')

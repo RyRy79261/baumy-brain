@@ -4,10 +4,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // not silently swallowed (K1: an off-list 🧠 was 400'd on every call and nobody could see it).
 const setMessageReaction = vi.fn(async (..._a: unknown[]): Promise<true> => true)
 const getMe = vi.fn(async () => ({ id: 4242, username: 'Baumy_Bot', is_bot: true, first_name: 'Baumy' }))
+const sendMessage = vi.fn(async (..._a: unknown[]) => ({ message_id: 321 }))
 vi.mock('grammy', () => ({
   Api: class {
     setMessageReaction = (...a: unknown[]) => setMessageReaction(...a)
     getMe = () => getMe()
+    sendMessage = (...a: unknown[]) => sendMessage(...a)
   },
 }))
 
@@ -52,5 +54,26 @@ describe('getBotId (C8 — reply-to-Baumy is decided by id)', () => {
     getMe.mockRejectedValue(new Error('fetch failed'))
     const { getBotId } = await import('@/lib/telegram/client')
     expect(await getBotId()).toBe(123456)
+  })
+})
+
+describe('the send seam feeds the conversation window (chat-understanding-v2 §5)', () => {
+  it('a window failure AFTER a successful send is logged, never thrown (a retry would double-post)', async () => {
+    const { __setDbOverride } = await import('@/db/client')
+    __setDbOverride({
+      select: () => {
+        throw new Error('db down')
+      },
+    } as never)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { sendToHouse } = await import('@/lib/telegram/client')
+      await expect(sendToHouse('-100h', 'hello house')).resolves.toBeUndefined()
+      expect(sendMessage).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0]?.[0])).toContain('conversation-window')
+    } finally {
+      warn.mockRestore()
+      __setDbOverride(null)
+    }
   })
 })

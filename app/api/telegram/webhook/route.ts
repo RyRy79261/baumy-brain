@@ -118,5 +118,6 @@ function replyToMessageOf(msg: TelegramMessage) {
     isForwarded: r.forward_origin != null,
     text: r.text ?? r.caption ?? null,
     isTopicRoot,
+    messageId: r.message_id,
   }
 }

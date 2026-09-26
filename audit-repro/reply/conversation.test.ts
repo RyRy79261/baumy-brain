@@ -110,7 +110,8 @@ describe('webhook: what reaches ingest', () => {
 })
 
 // (Phase 1 fixed and removed the "directed-ness and follow-ups" repros: third-person mentions no
-// longer count as directed (C10), the replied-to text reaches the reply prompt as REPLYING TO (C5,
-// the recent-chat window is phase 2), housemate-to-housemate questions get no Baumy reply (C6), and
-// the reply model is told the reminder outcome (A3). Correct behaviour: lib/pipeline/__tests__/
-// directed.test.ts, lib/turn/__tests__/plan.test.ts, scenarios/routing + reminders.)
+// longer count as directed (C10), the replied-to text reaches the reply prompt as REPLYING TO (C5),
+// housemate-to-housemate questions get no Baumy reply (C6), and the reply model is told the reminder
+// outcome (A3). Correct behaviour: lib/pipeline/__tests__/directed.test.ts, lib/turn/__tests__/
+// plan.test.ts, scenarios/routing + reminders. Phase 2 fixed the rest of C5 — the recent-chat window
+// with Baumy's own replies: lib/turn/__tests__/window.test.ts, scenarios/window.)

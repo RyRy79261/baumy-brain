@@ -70,17 +70,28 @@ export const POLICY: Record<string, TablePolicy> = {
     receivedAt: prov('insert stamp'),
   },
 
-  // Declared but never written (no reader or writer outside db/schema.ts). Kept in the policy so
-  // the drift test stays green and so a future implementer inherits the verdicts.
+  // The 48h conversation window (docs/spec/chat-understanding-v2.md §5). Written by ingest and the
+  // Telegram send seam only; secret-redacted before insert and purged after 48h.
   messages: {
     id: prov('surrogate key'),
     ...scoped,
     chatId: prov('where it was said'),
     messageId: prov('Telegram message id'),
+    authorKind: prov('member | baumy | anon — from the authenticated transport, never text'),
     authorMemberId: prov('authenticated sender'),
-    text: open('message body'),
-    sentAt: prov('when Telegram says it was sent'),
+    authorName: open('display name at write time'),
+    // Never rendered: the window is context for the models only (spec §5), and the redaction is
+    // pattern-based (advisory), so a row may still hold something private the scan did not know.
+    textRedacted: secret('recent chat text, secret-redacted — model context only, never shown to anyone'),
+    trust: prov('trust tier from the authenticated lane — the injection wall depends on this'),
+    replyToMessageId: prov('the Telegram message it replies to'),
+    threadId: prov('forum topic it sits in'),
+    sentAt: prov('when it was said — the 48h purge keys on it'),
+    producedMemoryItemId: prov('the evidence note this message produced (edit supersession, I1)'),
+    producedFactIds: prov('facts this message produced (edit supersession, I1)'),
+    producedReminderIds: prov('reminders this message produced (edit supersession, I1)'),
     receivedAt: prov('when we got it'),
+    seq: prov('insert order — the "newest last" tie-break'),
   },
 
   replies: {

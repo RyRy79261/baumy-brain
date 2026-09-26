@@ -280,7 +280,7 @@ export function tap(who: string, verb: 'confirm' | 'cancel' = 'confirm'): Step {
       const card = r.turns.flatMap((t) => t.entries).filter((e) => e.kind === 'confirm-card').at(-1)
       if (!card?.meta) fail('no confirm card has been sent to tap')
       const before = r.models.calls.length
-      const entries = await tapAs(r.sb, person.id, card!.meta!, { verb, chatId: card!.chatId })
+      const entries = await tapAs(r.sb, person.id, card!.meta!, { verb, chatId: card!.chatId, messageId: card!.messageId })
       r.turns.push({ kind: 'tap', who: person.name, text: verb, messageId: -1, dm: card!.chatId !== r.sb.houseChatId, entries, calls: r.models.calls.slice(before) })
     },
   }

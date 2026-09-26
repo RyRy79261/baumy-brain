@@ -29,6 +29,10 @@ export interface Grounding {
   items: GroundingItem[]
   /** Non-secret memory for the one tool-enabled generation (web search) — never decrypted. */
   forWeb: { content: string; authoredBy: string | null }[]
+  /** Descriptors of the secure values decrypted into `items` for this answer ([] almost always). The
+   *  reply may then contain a secret the pattern scan cannot see, so the conversation window stores
+   *  a placeholder instead of the words (spec §5: a secret is never persisted). */
+  disclosed: string[]
 }
 
 export async function gatherGrounding(db: Database, ctx: TurnContext, opts: { deep: boolean; mode: ReplyMode }): Promise<Grounding> {
@@ -103,7 +107,9 @@ export async function gatherGrounding(db: Database, ctx: TurnContext, opts: { de
   ]
 
   const forWeb = items.filter((m) => !m.isSecure).map((m) => ({ content: m.content, authoredBy: m.who }))
-  return { items: disclose(items, opts.mode, query), forWeb }
+  const shown = disclose(items, opts.mode, query)
+  const disclosed = items.flatMap((m, i) => (shown[i].content !== m.content ? [m.content] : []))
+  return { items: shown, forWeb, disclosed }
 }
 
 // Disclosure discretion (memory-core #15, C15): a secure value is decrypted ONLY to answer a direct

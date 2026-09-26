@@ -37,7 +37,7 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
   // In a forum supergroup a worded reply must echo the topic it was asked in (else Telegram drops it
   // into General); a DM has no topic. Words are sent as a Telegram REPLY to the message (C11).
   const threadId = ctx.lane === 'house' ? (ctx.topic.threadId ?? undefined) : undefined
-  const say = (text: string) => sendToHouse(ctx.chatId, text, { threadId, replyToMessageId: ctx.messageId })
+  const say = (text: string, windowText?: string) => sendToHouse(ctx.chatId, text, { threadId, replyToMessageId: ctx.messageId, windowText })
 
   const once = async (id: string, body: (db: ReturnType<typeof createHttpDb>) => Promise<void>, onError?: () => Promise<void>) =>
     step.run(id, async () => {
@@ -65,7 +65,8 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
     const f = ctx.outcome.forget
     if (!f) return
     await once('forget-send', async () => {
-      if (f.proposed) await sendConfirmCard(ctx.chatId, f.card, f.pendingId, threadId, ctx.messageId)
+      // The card names what would be forgotten — the conversation window keeps only that one was asked.
+      if (f.proposed) await sendConfirmCard(ctx.chatId, f.card, f.pendingId, threadId, ctx.messageId, FORGET_CARD_WINDOW_TEXT)
       else if (f.reason !== 'not_forget') await say(forgetExplanation(f.reason))
     })
     return
@@ -101,9 +102,14 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
         await reactToMessage(ctx.chatId, ctx.messageId, '👎')
         return
       }
-      await say(text)
+      // An answer that disclosed a secure value may carry it in words no pattern recognises ("it's
+      // hunter2") — the conversation window stores a placeholder, never the value (spec §5).
+      await say(text, grounding.disclosed.length ? `[Baumy's answer — it gave ${grounding.disclosed.join(', ')}; withheld]` : undefined)
       await (plan.alsoReact ? reactToMessage(ctx.chatId, ctx.messageId, plan.alsoReact) : clear())
     },
     clear,
   )
 }
+
+/** What the conversation window keeps of a forget confirm card (the card itself names the target). */
+export const FORGET_CARD_WINDOW_TEXT = '[a confirm card for forgetting something — details withheld]'

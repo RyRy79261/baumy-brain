@@ -2,6 +2,8 @@ import { Api } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import { record, isCapturing } from '@/lib/telegram/outbox'
 import { now } from '@/lib/core/clock'
+import { createHttpDb } from '@/db/client'
+import { appendBaumySend, type BaumySend } from '@/lib/turn/window'
 import type { PlannerEmoji } from '@/lib/turn/emoji'
 
 // grammY typed Bot API client (transport layer). grammY owns the Bot API surface
@@ -19,18 +21,36 @@ function api(): Api {
 
 const NO_PREVIEW = { link_preview_options: { is_disabled: true } }
 
+// Every Baumy send into the house group or a housemate's DM is appended to the 48h conversation
+// window (docs/spec/chat-understanding-v2.md §5) HERE, at the exit — so no worded path (a reply, a
+// list ack, a confirm card, a command's answer, a reminder, a heads-up) can forget to. The scope is
+// resolved from the destination (house alias ids / an active member's DM); an unknown chat is not
+// windowed. Best-effort AFTER the send: a window hiccup must never fail the send's step, whose retry
+// would post the message twice. `windowText` replaces what is stored (still secret-redacted) when the
+// sent text must not linger — a forget card naming the very thing to forget.
+async function toWindow(s: BaumySend): Promise<void> {
+  try {
+    await appendBaumySend(createHttpDb(), s)
+  } catch (err) {
+    console.warn('[baumy/telegram] conversation-window append failed:', err instanceof Error ? err.message : err)
+  }
+}
+
 // Fixed-destination send (architecture D9): the caller resolves the destination
 // (house config / stored deliver_chat_id / task group_id) — never the LLM.
 export async function sendToHouse(
   chatId: string,
   text: string,
-  opts?: { silent?: boolean; threadId?: number; replyToMessageId?: number },
+  opts?: { silent?: boolean; threadId?: number; replyToMessageId?: number; windowText?: string },
 ): Promise<void> {
   if (!chatId) throw new Error('[baumy/telegram] no house chat id resolved (bot not added to a group yet?)')
+  const windowed = (messageId: number) =>
+    toWindow({ chatId, messageId, text: opts?.windowText ?? text, threadId: opts?.threadId ?? null, replyToMessageId: opts?.replyToMessageId ?? null })
   // Sandbox capture (lib/telegram/outbox.ts): enforced HERE, at the exit, so a sandbox cannot
   // reach the real house even if it is holding production config.
-  if (record({ kind: 'message', chatId, text, ...(opts?.replyToMessageId != null ? { replyTo: opts.replyToMessageId } : {}) }, now())) return
-  await api().sendMessage(chatId, text, {
+  const captured = record({ kind: 'message', chatId, text, ...(opts?.replyToMessageId != null ? { replyTo: opts.replyToMessageId } : {}) }, now())
+  if (captured) return windowed(captured.messageId!)
+  const sent = await api().sendMessage(chatId, text, {
     ...NO_PREVIEW,
     disable_notification: opts?.silent ?? false,
     // Forum-topic routing: land in a specific topic when one is set (reminders' "notification
@@ -42,14 +62,24 @@ export async function sendToHouse(
     // was deleted meanwhile, still send rather than fail the step.
     ...(opts?.replyToMessageId != null ? { reply_parameters: { message_id: opts.replyToMessageId, allow_sending_without_reply: true } } : {}),
   })
+  await windowed(sent.message_id)
 }
 
 // Inline-keyboard confirm card (security B4). The tap — a callback_query from a
 // member's authenticated from.id — is the injection wall for a privileged action.
-export async function sendConfirmCard(chatId: string, text: string, actionId: string, threadId?: number, replyToMessageId?: number): Promise<void> {
+export async function sendConfirmCard(
+  chatId: string,
+  text: string,
+  actionId: string,
+  threadId?: number,
+  replyToMessageId?: number,
+  windowText?: string,
+): Promise<void> {
   if (!chatId) throw new Error('[baumy/telegram] no chat id for confirm card')
-  if (record({ kind: 'confirm-card', chatId, text, meta: actionId, ...(replyToMessageId != null ? { replyTo: replyToMessageId } : {}) }, now())) return
-  await api().sendMessage(chatId, text, {
+  const windowed = (messageId: number) => toWindow({ chatId, messageId, text: windowText ?? text, threadId: threadId ?? null, replyToMessageId: replyToMessageId ?? null })
+  const captured = record({ kind: 'confirm-card', chatId, text, meta: actionId, ...(replyToMessageId != null ? { replyTo: replyToMessageId } : {}) }, now())
+  if (captured) return windowed(captured.messageId!)
+  const sent = await api().sendMessage(chatId, text, {
     ...NO_PREVIEW,
     ...(replyToMessageId != null ? { reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } } : {}),
     // Land in the forum topic the request came from (else the card jumps to General); omitted elsewhere.
@@ -63,6 +93,7 @@ export async function sendConfirmCard(chatId: string, text: string, actionId: st
       ],
     },
   })
+  await windowed(sent.message_id)
 }
 
 // DM reply — permitted ONLY for the auth/login response path to the originating

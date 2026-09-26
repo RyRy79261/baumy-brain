@@ -13,10 +13,15 @@ import { scanSensitivity } from '@/lib/core/sensitivity'
 // message text. The reply model reads it as the CONTEXT block ("verified by the system, not by the
 // message"), the planner decides the voice from it, and nothing in it grants privilege.
 
-/** One recent chat line (phase 2 — the conversation window; always empty until then). */
+/** One recent chat line from the 48h conversation window (lib/turn/window.ts, spec §5). */
 export interface WindowTurn {
   at: Date
+  /** Display name at write time; 'Baumy' for its own sends. */
   author: string
+  baumy: boolean
+  /** A member-forwarded message: someone else's words, labelled as such, never the forwarder's. */
+  forwarded: boolean
+  /** Already secret-redacted (the window never holds a secret). Untrusted data. */
   text: string
 }
 
@@ -42,7 +47,7 @@ export interface ListOutcome {
 }
 
 export type ReminderOutcome =
-  | { status: 'set'; fireAt: Date; content: string; recurrence?: string; deliverTo: 'house' | 'dm' }
+  | { status: 'set'; fireAt: Date; content: string; recurrence?: string; deliverTo: 'house' | 'dm'; /** the reminder row */ id?: string }
   | { status: 'needs_time' | 'past' | 'unparsed'; content: string }
   /** A reminder was asked for while the house is /paused — reminders post to the group, so none is
    *  created (the ask is not even extracted); the reply says why instead of a bare "didn't set it". */
@@ -128,6 +133,8 @@ export interface TurnInput {
   directed: { value: boolean; why: DirectedWhy | null }
   replyTo: ReplyToContext | null
   text: string
+  /** The conversation window (lib/turn/window.ts recentTurns), oldest first. */
+  recent?: WindowTurn[]
 }
 
 // Pure: transport facts in, TurnContext out. No I/O, no LLM — so it is trivially testable and can
@@ -150,7 +157,7 @@ export function buildTurnContext(i: TurnInput): TurnContext {
     directed: i.directed,
     replyTo: i.replyTo,
     text: i.text,
-    recent: [],
+    recent: i.recent ?? [],
     outcome: {},
   }
 }

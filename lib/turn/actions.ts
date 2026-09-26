@@ -59,7 +59,7 @@ export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOut
 // read → unparsed, a time already gone → past. The time-resolution overhaul is phase 3 (§6); this
 // only makes the outcome honest. Undefined = the extractor says it isn't a reminder at all.
 type ReminderStepResult =
-  | { status: 'set'; fireAt: string; content: string }
+  | { status: 'set'; id: string; fireAt: string; content: string }
   | { status: 'needs_time' | 'past' | 'unparsed'; content: string }
   | { status: 'none' }
 
@@ -109,11 +109,11 @@ export async function runReminder(
     } catch {
       /* sweeper still delivers */
     }
-    return { status: 'set', fireAt: fireAt.toISOString(), content }
+    return { status: 'set', id, fireAt: fireAt.toISOString(), content }
   })) as ReminderStepResult
   if (r.status === 'none') return undefined
   // Step results are JSON-memoized — rehydrate the Date.
-  return r.status === 'set' ? { status: 'set', fireAt: new Date(r.fireAt), content: r.content, deliverTo: 'house' } : r
+  return r.status === 'set' ? { status: 'set', id: r.id, fireAt: new Date(r.fireAt), content: r.content, deliverTo: 'house' } : r
 }
 
 // ── Forget (deletion on request) ─────────────────────────────────────────────────────────────────
