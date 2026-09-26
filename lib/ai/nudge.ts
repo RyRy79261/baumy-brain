@@ -1,6 +1,7 @@
 import { generateText, type LanguageModel } from 'ai'
 import { resolveModel } from './registry'
 import { WRITE_HEADSUP_SYSTEM } from './prompts'
+import { textFallbackAllowed } from './errors'
 
 // The proactive heads-up LINE (docs/spec/event-surfacing.md). Deliberately generateText, NOT
 // generateObject: this is prose the house reads, and the previous version assembled it from
@@ -15,8 +16,9 @@ export interface HeadsUpFact {
   authoredBy?: string | null
 }
 
-// How far off the event is — the model is told, so it can phrase it naturally.
-export type HeadsUpLead = 'next week' | 'tomorrow' | 'today'
+// How far off the event is FROM THE MOMENT THE LINE IS POSTED ('today', 'tomorrow', 'on Saturday (in 3
+// days)', 'next week' — lib/surfacing/nudge.ts leadAt). The model is told, so it can phrase it naturally.
+export type HeadsUpLead = string
 
 // Longest line we will post. A model that runs on is a bug, not something to truncate mid-word:
 // over this we drop the nudge entirely (the scan retries it on the next run).
@@ -34,8 +36,9 @@ export function sanitiseHeadsUp(raw: string): string | null {
 }
 
 // Writes the heads-up, or returns null when the model says SKIP (not a real event / not worth
-// pinging the house) or writes something unusable. Best-effort: any model/API error → null, so a
-// hiccup means one quiet day, never a garbage line and never a crash-looped cron.
+// pinging the house) or writes something unusable (sanitiseHeadsUp — the text analogue of a
+// malformed object). A transient API error RETHROWS (I2): the scan step retries, and its per-stage
+// fire-minute de-dupe makes a re-run safe; swallowing it meant a lost heads-up with a green run.
 export async function writeHeadsUp(
   facts: HeadsUpFact[],
   lead: HeadsUpLead,
@@ -51,7 +54,8 @@ export async function writeHeadsUp(
     const { text } = await generateText({ model, system: WRITE_HEADSUP_SYSTEM, prompt })
     return sanitiseHeadsUp(text)
   } catch (err) {
-    console.error('writeHeadsUp failed — skipping this heads-up:', err)
+    if (!textFallbackAllowed(err)) throw err
+    console.error('writeHeadsUp unusable or refused — skipping this heads-up:', err)
     return null
   }
 }

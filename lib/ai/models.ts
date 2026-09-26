@@ -5,8 +5,9 @@ export type Role = 'classify' | 'reply' | 'assess' | 'advisor'
 
 // All language models are Anthropic (embeddings are local — lib/ai/embed.ts).
 export const MODELS: Record<Role, { provider: 'anthropic'; id: string }> = {
-  // ROUTING ONLY — the cheap high-volume triage that decides respond/react/ignore +
-  // tier. This is the ONLY Haiku use; everything that reasons runs on Sonnet.
+  // ROUTING ONLY — the cheap high-volume triage (intent, asksBaumy, tier, list …); whether Baumy
+  // speaks is the deterministic planner's call. This is the ONLY Haiku use; everything that
+  // reasons runs on Sonnet.
   classify: { provider: 'anthropic', id: process.env.BAUMY_CLASSIFY_MODEL ?? 'claude-haiku-4-5-20251001' },
   // PRIMARY reasoning — grounded replies + memory ops (fact extraction, query
   // expansion, re-rank, reminder parsing). Sonnet by default; the reply self-escalates.

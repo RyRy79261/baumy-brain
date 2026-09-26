@@ -7,6 +7,7 @@ import { upsertMember } from '@/lib/identity/roster'
 import { embedSync } from '@/lib/ai/embed'
 import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
 import { pickPeopleToReflect, gatherPersonMaterial, PROFILE_PREDICATE } from '@/lib/memory/reflect'
+import { withSimulatedTime } from '@/lib/core/clock'
 
 const GROUP = '-100reflect'
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
@@ -127,5 +128,48 @@ describe('sleep-time reflection (memory v2 §4)', () => {
       .from(facts)
       .where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'note'), eq(facts.isCurrent, true)))
     expect(secret.isSecure).toBe(true)
+  })
+
+  it('T2: a stay that is over is not material for who someone IS (never baked into a profile)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await withSimulatedTime(new Date('2026-03-12T18:00:00Z'), async () => {
+      await reconcileFact(db, { groupId: GROUP, fact: person('zuzana', 'is', 'a nurse'), authoredBy: null, trustLevel: 'untrusted' })
+      await reconcileFact(db, {
+        groupId: GROUP,
+        fact: person('zuzana', 'staying_in', "charli's room"),
+        authoredBy: null,
+        trustLevel: 'untrusted',
+        eventAt: new Date('2026-03-13T23:00:00Z'),
+        validTo: new Date('2026-03-15T22:59:59.999Z'),
+      })
+    })
+    const [z] = await db.select().from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'zuzana')))
+    await withSimulatedTime(new Date('2026-09-26T10:00:00Z'), async () => {
+      const m = await gatherPersonMaterial(db, GROUP, z.id)
+      expect(m.facts.map((f) => f.predicate)).toEqual(['is'])
+      expect(await pickPeopleToReflect(db, GROUP, 8)).toHaveLength(0) // one live fact — nothing to consolidate
+    })
+  })
+
+  it('F11: the material is DATED and ATTRIBUTED (who said it, when, when it happens)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 100)
+    await upsertMember(db, GROUP, '100', 'Charli', 'member')
+    await withSimulatedTime(new Date('2026-09-12T10:00:00Z'), () =>
+      reconcileFact(db, {
+        groupId: GROUP,
+        fact: person('zuzana', 'stays_in', "charli's room"),
+        authoredBy: '100',
+        trustLevel: 'untrusted',
+        eventAt: new Date('2026-09-25T22:00:00Z'),
+        validTo: new Date('2026-09-27T21:59:59.999Z'),
+      }),
+    )
+    const [z] = await db.select().from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'zuzana')))
+    const m = await withSimulatedTime(new Date('2026-09-20T10:00:00Z'), () => gatherPersonMaterial(db, GROUP, z.id))
+    expect(m.facts[0]).toMatchObject({ predicate: 'stays_in', by: 'Charli' })
+    expect(m.facts[0].saidAt?.toISOString()).toBe('2026-09-12T10:00:00.000Z')
+    expect(m.facts[0].eventAt?.toISOString()).toBe('2026-09-25T22:00:00.000Z')
   })
 })

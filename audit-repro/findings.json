@@ -1,0 +1,1810 @@
+[
+ {
+  "id": "reply-self-echo-grounding",
+  "ref": "C1",
+  "group": "conv",
+  "severity": "critical",
+  "title": "The message is captured before the reply runs, so the reply is grounded on the very message it is replying to",
+  "mechanism": "The capture step (ingest.ts:243-281) stores the message as an evidence note and reconciles its facts. The reply step (409+) then runs retrieve(text) and currentFactsForQuery(text) with no exclusion of the current memoryItemId or fact ids. The message's own note ranks first (self-similarity about 1.0), and its fact matches by entity substring. Both appear in MEMORY as 'from <sender>'. Side effect: grounding.length is never 0 for a captured message, so the 'blank' honest miss ('we've never mentioned that', memory-v2 §6) can't happen. An ambient miss becomes 👎 instead.",
+  "scenario": "(1) Charli's statement comes back to her as a memory 'from Charli', and the model paraphrases it ('Charli said Zuzka's staying'). (2) Marco asks 'when is the plumber coming?'. The house has never discussed it, but MEMORY holds '(question, from Marco) when is the plumber coming?'. Marco gets 👀→👎 instead of 'nobody's mentioned a plumber'. His own question may also be read as evidence.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:241-282",
+   "lib/inngest/functions/ingest.ts:499-509",
+   "lib/inngest/functions/ingest.ts:572-577",
+   "lib/memory/retrieve.ts",
+   "lib/inngest/functions/ingest.ts:507-539",
+   "lib/inngest/functions/ingest.ts:566",
+   "lib/ai/reply.ts:19",
+   "lib/ai/reply.ts:29"
+  ],
+  "repro": "audit-repro/reply/speaker.test.ts assertCharliBug checks that MEMORY contains '(fact, from Charli) … Zuzka is staying in my room this weekend' and the derived fact row. 'A1 corollary' checks that '(question, from Marco) when is the plumber coming?' is in MEMORY, '(no relevant memory found)' is absent, and the reactions are ['👀','👎']. Passes.",
+  "fixDirection": "Return the new memoryItemId and fact ids from the capture step and exclude them from reply retrieval (or run retrieval before capture), and base the blank-miss decision on grounding without self-hits.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "A1",
+  "foundBy": [
+   "reply",
+   "intake",
+   "spec"
+  ]
+ },
+ {
+  "id": "reply-no-speaker",
+  "ref": "C2",
+  "group": "conv",
+  "severity": "critical",
+  "title": "The reply prompt never says who is speaking, so the model can't tell 'Charli said X' from 'Charli is saying X to me'",
+  "mechanism": "groundedReply builds its prompt from exactly TODAY + MEMORY + 'QUESTION (data): <text>'. answer(text, grounding) at ingest.ts:566 has no speaker argument. The name only appears as 'from Charli' on MEMORY rows. REPLY_GROUNDING (prompts.ts:19) also tells the model to resolve first person in MEMORY using the Charl/'my room' example, but gives it nothing to resolve first person in the QUESTION. extractFacts receives the speaker (ingest.ts:263-264) but the reply path doesn't. The spec (prompt-mgmt.md:14) requires a <house_context> block with the verified sender, the roster and due reminders; none of that is implemented.",
+  "scenario": "Charli: '@baumy_bot Zuzka is staying in my room this weekend'. The captured prompt is: MEMORY '- (fact, from Charli) zuzka staying in: charli's room / - (fact, from Charli) @baumy_bot Zuzka is staying in my room this weekend', QUESTION '@baumy_bot Zuzka is staying in my room this weekend'. The model sees an anonymous asker and a memory row from Charli, so it replies 'Charli said Zuzka will be staying' to Charli. A second case: Charli asks '@baumy_bot who is staying in my room this weekend?'. The prompt never says the asker is Charli, so 'my room' can't be matched to the stored 'Charli's room'.",
+  "files": [
+   "lib/ai/reply.ts:29",
+   "lib/ai/reply.ts:17-21",
+   "lib/inngest/functions/ingest.ts:566",
+   "lib/ai/prompts.ts:19",
+   "docs/spec/prompt-mgmt.md:14",
+   "lib/ai/reply.ts:27-29",
+   "lib/ai/prompts.ts:18-19",
+   "docs/spec/prompt-mgmt.md:149-151"
+  ],
+  "repro": "audit-repro/reply/speaker.test.ts. Tests (a)/(b)/(c)/(d) assert the reply prompt has no SPEAKER/SENDER line and log the exact prompt. The 'first-person questions' test shows the prompt for 'who is staying in my room' has no asker identity. All pass.",
+  "fixDirection": "Pass the verified sender's display name (and the lane) into answer()/groundedReply and render it as 'FROM: Charli (house group | DM)' in a context block, so first person in the message resolves to the sender.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "A2",
+  "foundBy": [
+   "reply",
+   "spec"
+  ]
+ },
+ {
+  "id": "reply-question-framing-no-ack-mode",
+  "ref": "C3",
+  "group": "conv",
+  "severity": "critical",
+  "title": "Every message reaching the reply model is framed as a QUESTION to be answered from memory; there is no 'acknowledge a statement' mode",
+  "mechanism": "The prompt always labels the text 'QUESTION (data)'. REPLY_GROUNDING says 'Answer the QUESTION using ONLY the MEMORY block … If the memory does not have it, say so'. REPLY_SYSTEM defines answered=false as 'admitting you do not have the info'. Nothing says 'the sender may be telling you something; acknowledge it'. The model has no intent signal: verdict.intent='fact' is known in ingest but not passed. Its only choices are to answer from memory or admit a miss, which produces 'I don't know, Charli said…'.",
+  "scenario": "Charli, in the ask-Baumy topic: 'Zuzka is staying in my room this weekend'. The model is told to answer this 'QUESTION' from memory. It either states a miss ('I don't know…') or quotes the memory back ('Charli said Zuzka will be staying'), both nonsense replies to someone who just informed the house.",
+  "files": [
+   "lib/ai/reply.ts:29",
+   "lib/ai/prompts.ts:18-21",
+   "lib/ai/prompts.ts:28",
+   "lib/ai/reply.ts:28",
+   "lib/ai/prompts.ts:26-30",
+   "docs/spec/product.md:104-113",
+   "docs/spec/prompt-mgmt.md:132-135"
+  ],
+  "repro": "audit-repro/reply/speaker.test.ts asserts the prompt contains 'QUESTION (data): ' for a plain statement in all four paths (a-d). Passes. Whether the model then answers badly is inferred, since the model is mocked.",
+  "fixDirection": "Pass the classifier intent and what capture learned into the reply prompt, and add a statement/acknowledge mode (label it MESSAGE, not QUESTION) where the right answer is a short 'noted', or nothing plus 🧠.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "A3",
+  "foundBy": [
+   "reply",
+   "spec"
+  ]
+ },
+ {
+  "id": "statements-routed-to-reply",
+  "ref": "C4",
+  "group": "conv",
+  "severity": "high",
+  "title": "Informative statements routinely go to the reply path; the 🧠 ack is lost and an undirected miss puts 👎 on someone's news",
+  "mechanism": "wantAnswer is true whenever `directed` is set, regardless of intent (407). `directed` is forced on for every message in the /baumyhere topic (228), for any @mention, and for any reply to a bot. In a DM it is also true on respond==='answer' or replyToBot (405). TRIAGE_SYSTEM says 'When unsure whether it is a question/request, ANSWER', and classify sees only the raw text (classify.ts:118): no lane, no console topic, no reply-to. Once wantAnswer is set, the if/else chain (409 vs 580/584) means the 🧠 'learned it' reaction never fires. For an undirected message with answered=false and non-empty grounding (always non-empty, see A1), line 576 reacts 👎, which the spec reserves for 'asked, but I've got nothing'.",
+  "scenario": "(b) Anything posted in the ask-Baumy topic, e.g. 'the boiler guy fixed the leak', gets a worded 'answer' instead of 🧠. (d) Haiku gives respond=answer at 0.9 to 'Zuzka is staying in my room this weekend' in the general group, and Charli's news gets 👀→👎, which reads as Baumy disapproving. (c) In a DM, replying to any earlier Baumy message with a fact sends it to the reply path.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:228-229",
+   "lib/inngest/functions/ingest.ts:404-407",
+   "lib/inngest/functions/ingest.ts:572-577",
+   "lib/inngest/functions/ingest.ts:580-594",
+   "lib/ai/prompts.ts:62",
+   "lib/ai/classify.ts:118",
+   "lib/inngest/functions/ingest.ts:221",
+   "lib/ai/classify.ts:303"
+  ],
+  "repro": "audit-repro/reply/speaker.test.ts (a) @mention statement gives words and no 🧠. (b) console-topic statement is forced down the reply path. (c) DM: the triage prompt has no lane info, and the same statement with replyToBot goes to the reply path. (d) respond=answer statement gives reactions ['👀','👎'], no send. All pass.",
+  "fixDirection": "Gate the reply path on intent as well as directedness: directed or console-topic statements with intent fact/chatter should get 🧠 or a one-line ack, and 👎 should only fire for intent==='question'. Give the classifier the lane and directed flags as authenticated context.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "A4",
+  "foundBy": [
+   "reply",
+   "intake",
+   "spec"
+  ]
+ },
+ {
+  "id": "no-conversation-context",
+  "ref": "C5",
+  "group": "conv",
+  "severity": "high",
+  "title": "No conversational context: no recent messages, the replied-to text isn't forwarded, and Baumy's own replies are never stored",
+  "mechanism": "The webhook forwards only `replyToBot: boolean` (route.ts:93), never reply_to_message.text or quote. The event type has no field for it. Ingest never loads recent chat turns. captureMemory is called only on inbound text (ingest.ts:251), and bots don't receive their own messages, so Baumy's answers are never in memory. The reply and web-search prompts see only the single message. Spec transcript (a) (product.md:352) expects 'and did we sort bedding for her?' to resolve 'her' to Marta.",
+  "scenario": "Baumy: 'Zuzka lands Friday.' Charli replies to it: 'and how long is she staying?'. The model gets only 'QUESTION: and how long is she staying?' and can't tell who 'she' is. The same applies to 'google that' after a Baumy answer, and to Charli replying 'done' to a Baumy reminder. Two minutes later, 'what did you just say about Zuzka?' has nothing to find.",
+  "files": [
+   "app/api/telegram/webhook/route.ts:74-94",
+   "lib/inngest/client.ts:6-26",
+   "lib/ai/reply.ts:29",
+   "lib/inngest/functions/ingest.ts:566",
+   "lib/ai/websearch.ts:55-60",
+   "docs/spec/product.md:347-360",
+   "app/api/telegram/webhook/route.ts:93",
+   "lib/pipeline/directed.ts:6-7"
+  ],
+  "repro": "audit-repro/reply/conversation.test.ts. 'replyToBot … replied-to text is never forwarded' posts a real update through the webhook POST and asserts the reply_to text is absent from the Inngest payload. 'A5: a follow-up reply to Baumy' asserts the reply prompt is only the bare follow-up text. Passes.",
+  "fixDirection": "Forward reply_to_message text/author (plus quote) and the last few house turns, including Baumy's own sent replies recorded at send time, into a delimited context block for the classifier and reply model.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "A5",
+  "foundBy": [
+   "reply",
+   "intake",
+   "spec"
+  ]
+ },
+ {
+  "id": "answers-human-to-human-questions",
+  "ref": "C6",
+  "group": "conv",
+  "severity": "medium",
+  "title": "Baumy jumps into questions housemates ask each other (the triage prompt treats ANY question as aimed at Baumy)",
+  "mechanism": "TRIAGE_SYSTEM: 'Choose \"answer\" whenever the message ASKS something … ANY question … People do NOT @-tag every message — a natural-language question counts as directed at Baumy WITHOUT a tag.' The classifier input is only the text: it isn't told the message is a reply to another human or who it names. Only the 0.85 'quiet' floor on an undefined 'confidence' (E20) stands in the way. In the console topic every message is directed, so all human-to-human talk there is answered.",
+  "scenario": "Marco in the group: 'Charli are you coming to dinner tonight?'. Haiku gives respond=answer, confidence 0.9. Baumy reacts 👀 then 👎, or posts 'No idea, nobody's mentioned it'. In the ask-Baumy topic, Marco asking Charli anything always gets a Baumy reply.",
+  "files": [
+   "lib/ai/prompts.ts:62",
+   "lib/ai/classify.ts:118",
+   "lib/inngest/functions/ingest.ts:228",
+   "lib/inngest/functions/ingest.ts:405-407",
+   "lib/inngest/functions/ingest.ts:576"
+  ],
+  "repro": "audit-repro/reply/conversation.test.ts 'human-to-human question' asserts the triage prompt is exactly the bare text and that the reply model is called. speaker.test.ts '(b2)' shows a Marco→Charli question in the console topic is answered. Both pass (the verdict is mocked, but the prompt wording drives it).",
+  "fixDirection": "Tell triage who the message addresses (reply-to-human/bot, named housemate at the start) and change the rule to answer only questions plausibly for the house's memory. Don't treat console-topic messages that address or reply to another human as directed.",
+  "confidence": "medium",
+  "verdict": "downgraded",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "reply"
+  ]
+ },
+ {
+  "id": "prefilter-drops-answers-to-baumy",
+  "ref": "C7",
+  "group": "conv",
+  "severity": "low",
+  "title": "The prefilter drops 'yes'/'no'/'ok' before directed-ness is computed, even as a reply to Baumy",
+  "mechanism": "prefilter(text) runs at ingest.ts:78 before origin and directed-ness. PURE_NOISE matches yes/no/yep/nope/ok, so a reply to a Baumy message is dropped regardless of replyToBot. Impact is limited today because Baumy keeps no conversational state (A5) and forget uses buttons. But Baumy does ask things (the spec's 'Want me to remind the house…?'), and those can never be answered.",
+  "scenario": "Baumy: 'Nothing on file about bedding for Marta — want me to remind the house before Thursday?' Rui replies 'yes'. Nothing happens, silently.",
+  "files": [
+   "lib/pipeline/prefilter.ts:5-6",
+   "lib/pipeline/prefilter.ts:17",
+   "lib/inngest/functions/ingest.ts:78-79",
+   "lib/inngest/functions/ingest.ts:229",
+   "docs/spec/llm-pipeline.md:158-159",
+   "lib/pipeline/prefilter.ts:5-19"
+  ],
+  "repro": "audit-repro/reply/conversation.test.ts 'A6' asserts runIngest('yes', replyToBot:true) returns decision 'drop' with zero LLM calls. Passes.",
+  "fixDirection": "Skip the noise prefilter when replyToBot is true (or the message is in the console topic or a DM), and pair this with conversational context so the answer can be interpreted.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "A6",
+  "foundBy": [
+   "reply",
+   "intake",
+   "spec"
+  ]
+ },
+ {
+  "id": "reply-to-any-bot-is-directed",
+  "ref": "C8",
+  "group": "conv",
+  "severity": "low",
+  "title": "replyToBot is true for a reply to ANY bot, so replies to other bots count as directed at Baumy",
+  "mechanism": "route.ts:93 sets replyToBot = reply_to_message.from.is_bot === true, not from.id === Baumy's id. isDirectedAtBaumy returns true immediately on that flag. The spec (llm-pipeline.md:158) requires reply_to_message.from.id === BOT_ID. Any other bot in the house group (poll bot, splitwise bot, a forwarded-channel bot) turns every human reply to it into an always-answered directed message.",
+  "scenario": "A poll bot posts 'Poll closes at 9'. Marco replies 'lol same'. Baumy treats it as directed: 👀, retrieval, then posts a reply to 'lol same' in the group.",
+  "files": [
+   "app/api/telegram/webhook/route.ts:93",
+   "lib/pipeline/directed.ts:134",
+   "docs/spec/llm-pipeline.md:158"
+  ],
+  "repro": "audit-repro/reply/conversation.test.ts 'replyToBot is true for a reply to ANY bot' posts through the real webhook with reply_to_message.from = {id:5555,is_bot:true} and asserts replyToBot=true. Passes.",
+  "fixDirection": "Compare reply_to_message.from.id (or username) against Baumy's own getMe id in the webhook or pipeline instead of is_bot.",
+  "confidence": "high",
+  "verdict": "downgraded",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "reply"
+  ]
+ },
+ {
+  "id": "forum-topic-root-counts-as-reply",
+  "ref": "C9",
+  "group": "conv",
+  "severity": "low",
+  "title": "In forum topics, every message's reply_to_message is the topic-creation message, so a topic created by a bot identity (e.g. an anonymous admin) makes every message in it 'directed'",
+  "mechanism": "Telegram sets reply_to_message on ordinary topic messages to the forum_topic_created service message, whose sender is the topic creator. The webhook computes replyToBot = reply_to_message.from.is_bot (route.ts:93) without excluding that root (is_topic_message && reply_to_message.message_id === message_thread_id). If the topic was created by an anonymous admin (from = @GroupAnonymousBot, is_bot true) or by another bot, every message in the topic becomes directed, so every statement there is forced through the answer path. This also means any fix for A5 that forwards reply_to_message text would forward the topic header as 'the message being replied to'.",
+  "scenario": "The owner posts anonymously and created a 'Guests' topic. Every note there, such as 'Zuzka arriving Sat', is treated as addressed to Baumy and gets a worded 'answer', with the self-echo quoting.",
+  "files": [
+   "app/api/telegram/webhook/route.ts:87",
+   "app/api/telegram/webhook/route.ts:93",
+   "lib/pipeline/directed.ts:7",
+   "lib/inngest/functions/ingest.ts:229"
+  ],
+  "repro": "Not reproduced: it depends on live Telegram update shape (the topic-root reply_to_message), which the mocked harness does not model.",
+  "fixDirection": "Ignore reply_to_message when it is the topic root (its message_id equals message_thread_id, or it carries forum_topic_created), and compare the sender to Baumy's own bot id rather than is_bot.",
+  "confidence": "medium",
+  "verdict": "unverified",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "critic"
+  ]
+ },
+ {
+  "id": "third-person-mention-directed",
+  "ref": "C10",
+  "group": "conv",
+  "severity": "low",
+  "title": "Just mentioning Baumy by name ('Baumy's reminders are annoying') counts as directed and forces a reply",
+  "mechanism": "The short-name rule matches 'baumy' as a whole word anywhere, including possessives and third-person talk ('Baumy's', 'ask baumy'), since an apostrophe isn't in the excluded set. A directed message always gets words (ingest.ts:572), even when the model misses.",
+  "scenario": "Charli to Marco: 'Baumy's reminders are annoying lol'. Baumy posts a worded, possibly defensive, reply to a message not addressed to it. 'Marco, ask baumy, it knows' also makes Baumy answer the literal text 'Marco, ask baumy, it knows'.",
+  "files": [
+   "lib/pipeline/directed.ts:141-144",
+   "lib/inngest/functions/ingest.ts:229",
+   "lib/inngest/functions/ingest.ts:572"
+  ],
+  "repro": "audit-repro/reply/conversation.test.ts 'third-person mentions' asserts isDirectedAtBaumy returns true for both strings. Passes.",
+  "fixDirection": "Only treat the short name as address when it is vocative (at the start or end of the message, e.g. 'baumy, …' / '… baumy?'), and let the classifier's addressee judgement decide the rest.",
+  "confidence": "high",
+  "verdict": "downgraded",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "reply"
+  ]
+ },
+ {
+  "id": "replies-not-threaded",
+  "ref": "C11",
+  "group": "conv",
+  "severity": "low",
+  "title": "Worded replies aren't sent as Telegram replies to the triggering message, so in busy threads it's unclear who or what Baumy is answering",
+  "mechanism": "sendToHouse only sets message_thread_id (forum topic), never reply_parameters.message_id. Every Baumy answer shows up as a free-floating group message. With async Inngest latency (Sonnet, maybe Opus) it can land after several other messages.",
+  "scenario": "Marco asks about the plumber, Charli asks about Zuzka, and then two Baumy answers arrive 10s later unlinked. 'Friday' is attached to the wrong question.",
+  "files": [
+   "lib/telegram/client.ts:23-35",
+   "lib/inngest/functions/ingest.ts:100"
+  ],
+  "repro": "None needed: sendToHouse's options object has no reply parameter (client.ts:28-35), and no caller passes one (grep for reply_parameters returns nothing).",
+  "fixDirection": "Send conversational replies with reply_parameters: {message_id: messageId, allow_sending_without_reply: true}.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "reply"
+  ]
+ },
+ {
+  "id": "mention-token-in-query-and-memory",
+  "ref": "C12",
+  "group": "conv",
+  "severity": "low",
+  "title": "The '@baumy_bot' token stays in the query, the classifier input and the stored memory content",
+  "mechanism": "The raw text, including the mention, is used for classify, captureMemory content, retrieval and currentFactsForQuery. Stored notes read '@baumy_bot Zuzka is staying…', which adds noise to lexical/semantic recall and to what later replies quote back.",
+  "scenario": "Later grounding shows '(fact, from Charli) @baumy_bot Zuzka is staying in my room this weekend', and an entity named 'baumy' would substring-match every directed query.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:221",
+   "lib/inngest/functions/ingest.ts:255",
+   "lib/inngest/functions/ingest.ts:499-509"
+  ],
+  "repro": "audit-repro/reply/speaker.test.ts (a) logs MEMORY containing '@baumy_bot Zuzka is staying in my room this weekend'. Passes.",
+  "fixDirection": "Strip the bot mention (and a leading 'baumy,') from the text before classify, capture and retrieval, keeping directed-ness as a separate flag.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "reply"
+  ]
+ },
+ {
+  "id": "tier-think-equals-quick",
+  "ref": "C13",
+  "group": "conv",
+  "severity": "low",
+  "title": "The triage 'think' tier changes nothing: think and quick retrieve and answer identically",
+  "mechanism": "Only startTier==='deep' changes behaviour (expansion, k=30, rerank, graph). 'think' and 'quick' both use k=8 with floor 0.2 and the same Sonnet start. Directed non-questions that triage marks 'deep' are clamped to 'think', so the model's 'needs reasoning' signal has no effect.",
+  "scenario": "'@baumy_bot who's around this weekend and does anyone need the cave?' is tagged think, gets shallow k=8 recall, and misses guests mentioned weeks ago.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:486-508",
+   "lib/ai/reply.ts:56-67"
+  ],
+  "repro": "None; the branch structure at ingest.ts:486-508 is explicit.",
+  "fixDirection": "Either map 'think' to a mid retrieval depth or larger fact limit, or remove it from the triage schema so the router's signal isn't silently discarded.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "reply"
+  ]
+ },
+ {
+  "id": "spec-persona-drift",
+  "ref": "C14",
+  "group": "conv",
+  "severity": "low",
+  "title": "The shipped persona diverges from the spec's secretary persona in ways that push terse 'don't know' replies (no 'offer to remember', 'a reaction beats saying anything')",
+  "mechanism": "The spec persona says to answer a miss with 'I don't have anything on that yet' plus an offer to remember it, attribute 'who and when', and flag out-of-date info. The code persona (gremlin, 'MINIMAL BY DEFAULT', 'if you do not have it, just say so') drops the offer-to-remember and the staleness flag. Combined with A1-A3, a statement gets a curt 'dunno, Charli said...' instead of a recognisable secretary acknowledgement.",
+  "scenario": "A housemate tells Baumy a plan and gets a flippant 'no clue 😼, Charli said Zuzka's staying'. There's no 'noted', and no sign it recognised it was being told something.",
+  "files": [
+   "lib/ai/prompts.ts:6-12",
+   "docs/spec/prompt-mgmt.md:113-189"
+  ],
+  "repro": "Not applicable (prompt text comparison).",
+  "fixDirection": "Restore the spec's miss behaviour (offer to remember, flag stale info) and an explicit 'when told something, confirm you noted it' line.",
+  "confidence": "medium",
+  "verdict": "upheld",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "spec"
+  ]
+ },
+ {
+  "id": "secrets-in-every-grounding",
+  "ref": "C15",
+  "group": "conv",
+  "severity": "low",
+  "title": "Secure values are decrypted into the grounding of every reply whose text substring-matches the entity, including statements and group auto-answers",
+  "mechanism": "The spec's discretion rule is to decrypt only to answer a direct request, never volunteer. The code decrypts every isSecure row in the grounding set regardless of what was asked, and currentFactsForQuery pulls the 'front door' code fact for any message containing 'door'. Whether the plaintext stays out of the group reply is left to the model.",
+  "scenario": "Theo (directed, in the group): 'baumy the front door is sticking again'. The grounding contains 'front door code: 4821', and the reply may say 'noted — code's still 4821 btw' in the group.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:509",
+   "lib/inngest/functions/ingest.ts:542-549",
+   "lib/memory/facts.ts:396-409",
+   "docs/spec/prompt-mgmt.md:142-146",
+   "docs/spec/data.md:175"
+  ],
+  "repro": "Not written (the leak depends on the model). The unconditional decrypt is at ingest.ts:542-549.",
+  "fixDirection": "Decrypt a secure row only when the classifier or extractor identifies a direct request for that secret. Otherwise pass the descriptor only.",
+  "confidence": "low",
+  "verdict": "upheld",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "spec"
+  ]
+ },
+ {
+  "id": "brain-reaction-never-renders",
+  "ref": "K1",
+  "group": "ack",
+  "severity": "high",
+  "title": "The 🧠 'learned it' reaction is not a Telegram reaction emoji, so Baumy never visibly acknowledges anything it remembers",
+  "mechanism": "The voice branch acks every captured statement with reactToMessage(..., '🧠') (ingest.ts:593), and a group shopping-list add does the same (ingest.ts:331). The Bot API's ReactionTypeEmoji allow-list (grammy/@grammyjs/types message.d.ts:1463-1464) does not include 🧠. setMessageReaction returns 400 REACTION_INVALID, and reactToMessage swallows every error (client.ts:92-95), so no reaction appears. The sandbox outbox records the reaction before the API call (client.ts:85), so every existing test 'sees' the 🧠 and none can catch this. The spec relies on 🧠 specifically to end the 'did Baumy actually remember that?' anxiety from the Zuzana incident (memory-v2 §7, line 129).",
+  "scenario": "Charli posts 'Zuzka is staying in my room this weekend'. Baumy stores the note and the fact correctly, but the message gets no reaction. In a DM, where statements are not a wantAnswer, Charli sees nothing at all. 'buy oat milk' in the group is added to the list with no ack. Housemates conclude Baumy ignored them.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:593",
+   "lib/inngest/functions/ingest.ts:331",
+   "lib/telegram/client.ts:84-96",
+   "lib/telegram/outbox.ts",
+   "docs/spec/memory-v2-people-and-voice.md:124-131",
+   "docs/spec/shopping-list.md:51"
+  ],
+  "repro": "audit-repro/critic/brain-reaction-invalid.test.ts parses the installed Bot API type union and asserts that '🧠' is absent while 👀/👍/👎/🔥/🎉/🤯 are present, and that ingest.ts emits 🧠 on both ack paths. PASSES. Checked against the Bot API reaction list in grammY types: 🧠 is not an allowed reaction.",
+  "fixDirection": "Use a reaction from the Bot API allow-list for 'learned it' (e.g. ✍ or 🤓 or 👌), and have the sandbox outbox validate emoji against that list so tests catch invalid ones.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "critic"
+  ]
+ },
+ {
+  "id": "compound-invisible-ack-to-self-echo",
+  "ref": "K2",
+  "group": "ack",
+  "severity": "high",
+  "title": "Compound: the missing ack pushes people to re-address Baumy, which runs the self-echo path and produces the motivating symptom",
+  "mechanism": "Four findings chain into one routine failure. (1) The statement's 🧠 never renders (brain-reaction-never-renders), so there is no sign it was stored. (2) The natural next move is to address Baumy: '@Baumy Zuzka is staying in my room this weekend, got it?', a reply to one of Baumy's messages, or saying it in the /baumyhere topic. Any of these makes directed=true (ingest.ts:229), and directed forces wantAnswer (ingest.ts:405-407). (3) Capture runs first (A1). The near-verbatim restatement consolidates onto the original note (write.ts:74-90) and the fact NOOPs (facts.ts:247-248), so the grounding holds the original note and fact, attributed 'from Charli'. (4) The reply prompt has no speaker (A2), frames the text as a QUESTION (A3) and has no dates (B7). The model answers a 'question' with grounding that says Charli said it, and Baumy's reply is not stored (A5). Each problem alone is survivable. Together they turn every 'did you get that?' into a quote back at the speaker.",
+  "scenario": "Charli: 'Zuzka is staying in my room this weekend' (no visible reaction). A minute later: '@Baumy did you catch that? Zuzka's staying in my room this weekend'. Baumy: 'No idea beyond that, Charli said Zuzka will be staying in their room.' Charli is quoted to Charli, and there is still no ack.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:593",
+   "lib/inngest/functions/ingest.ts:229",
+   "lib/inngest/functions/ingest.ts:241-282",
+   "lib/inngest/functions/ingest.ts:404-407",
+   "lib/inngest/functions/ingest.ts:566",
+   "lib/ai/reply.ts:29",
+   "lib/memory/write.ts:74-90",
+   "lib/memory/facts.ts:247-248"
+  ],
+  "repro": "No single end-to-end repro. The links are backed by audit-repro/critic/brain-reaction-invalid.test.ts (the ack is invisible) plus the intake/reply areas' A1/A2 repros (self-grounding, no speaker in the prompt).",
+  "fixDirection": "Fix the ack emoji first, then give the reply path a statement/acknowledge mode that knows the speaker and excludes the current message's own note and fact from grounding.",
+  "confidence": "medium",
+  "verdict": "unverified",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "critic"
+  ]
+ },
+ {
+  "id": "compound-dm-statement-total-silence",
+  "ref": "K3",
+  "group": "ack",
+  "severity": "medium",
+  "title": "Compound: a member who DMs Baumy a fact gets zero feedback (not a wantAnswer, and the only ack is the invalid 🧠)",
+  "mechanism": "The DM lane routes a plain statement away from the reply path on purpose ('a DM that is a plain statement … captures + gets a 🧠 ack', ingest.ts:402-403), and /start promises 'Tell me something and I'll remember it for the house' (prompts.ts:43). The only feedback is then the 🧠 reaction, which Telegram rejects. In a 1:1 chat there is no group context to show that anything happened. The alternative is the classifier guessing 'answer', since it doesn't know it's a DM (A4), which leads to the question-framed self-echo reply. So a DM statement gets either nothing or a wrong reply.",
+  "scenario": "Ana DMs 'the boiler guy is coming Tuesday at 9'. Nothing comes back, no reaction and no text. She DMs again 'did you get that?' and gets 'Ana said the boiler guy is coming Tuesday at 9', or an 'I don't know' if retrieval misses.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:402-407",
+   "lib/inngest/functions/ingest.ts:584-593",
+   "lib/ai/prompts.ts:43",
+   "lib/ai/prompts.ts:62"
+  ],
+  "repro": "Follows from audit-repro/critic/brain-reaction-invalid.test.ts plus the lane logic at ingest.ts:402-407.",
+  "fixDirection": "In the DM lane, acknowledge captured statements with a valid reaction or a short worded confirmation that names what was stored.",
+  "confidence": "high",
+  "verdict": "unverified",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "critic"
+  ]
+ },
+ {
+  "id": "list-group-ack-ignores-outcome",
+  "ref": "K4",
+  "group": "ack",
+  "severity": "medium",
+  "title": "Group list reactions ignore the store result: 👍 on a check-off that matched nothing, 🧠 on an add that was already there",
+  "mechanism": "For group add/check-off, the reaction depends only on the op, never on checkedOff/notFound/added. checkOffItems uses an exact-normalized match, so 'the milk', 'milks' or 'oat milk' against the listed 'milk' is notFound. The 'Couldn't find…' ack exists only in the DM path.",
+  "scenario": "Marco: 'got the bin bags' (they were never on the list), or the extractor returns 'the milk'. Baumy reacts 👍 and milk stays on the list, so someone buys milk twice.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:330-331",
+   "lib/lists/store.ts:92-120",
+   "lib/lists/store.ts:18-20"
+  ],
+  "repro": "audit-repro/actions/list.test.ts, suite 'group list reactions ignore the outcome': both cases react 👍, no message, and milk.checkedAt stays null. PASS.",
+  "fixDirection": "In the group, react 👍 only when checkedOff is non-empty (and 🧠 only when something was added). Otherwise send the deterministic notFound ack or a 🤷 reaction, and consider light fuzzy matching (articles/plurals) at check-off.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "actions"
+  ]
+ },
+ {
+  "id": "safe-verdict-dm-silence",
+  "ref": "K5",
+  "group": "ack",
+  "severity": "low",
+  "title": "DMs are not treated as directed, so a DM question during a triage failure (SAFE_VERDICT) gets silence. The spec puts known-housemate DMs in the reply lane",
+  "mechanism": "directed comes only from console topic, replyToBot or @mention/short name, so it is false for a plain DM. The DM wantAnswer relies on verdict.respond or intent, and SAFE_VERDICT (respond=ignore, intent=chatter) yields no answer. The SAFE_VERDICT comment assumes 'directly-addressed messages are answered via directed', which does not hold for DMs. Spec step 6 lists 'a private chat from a known housemate' in the REPLY-LANE.",
+  "scenario": "During an Anthropic hiccup Marco DMs 'when is bin day?'. The question is stored as memory and there is no reply at all.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:229",
+   "lib/inngest/functions/ingest.ts:404-405",
+   "lib/ai/classify.ts:28-40",
+   "docs/spec/llm-pipeline.md:158"
+  ],
+  "repro": "ingest-intake.test.ts 'SAFE_VERDICT: a member DM question gets silence when triage fails' asserts directed=false, answer not called, nothing sent, and 1 memory row. Passes.",
+  "fixDirection": "Treat member_dm as directed (answer unless the verdict positively says statement or ack), or make the classify-failure path for DMs answer.",
+  "confidence": "high",
+  "verdict": "downgraded",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "intake"
+  ]
+ },
+ {
+  "id": "new-housemate-dm-silent",
+  "ref": "K6",
+  "group": "ack",
+  "severity": "low",
+  "title": "A housemate the bot hasn't seen speak in the group cannot DM Baumy, and is dropped silently",
+  "mechanism": "Membership exists only after ensureRegistered (a group message) or a chat_member join, and Telegram delivers chat_member only when the bot is a group admin. Until then a DM resolves to lane 'ignore' and returns 'out-of-scope' with no reply, not even '/start'. A departed-then-rejoined member speaking in the group is not reactivated either (ensureRegistered never touches is_active).",
+  "scenario": "A new housemate joins the group, never posts, and DMs Baumy 'what's the wifi password?'. They get no response at all.",
+  "files": [
+   "lib/core/origin.ts:81-87",
+   "lib/identity/roster.ts:12-40",
+   "lib/inngest/functions/ingest.ts:75",
+   "lib/inngest/functions/ingest.ts:218",
+   "lib/inngest/functions/chat-member.ts:47-75"
+  ],
+  "repro": "ingest-intake.test.ts 'unknown DM sender … is silently dropped' asserts decision drop, reason out-of-scope, and no send. Passes.",
+  "fixDirection": "Verify unknown DM senders via getChatMember against the house group (and reactivate on group activity), or at least reply with a 'say hi in the house group first' hint.",
+  "confidence": "medium",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "intake"
+  ]
+ },
+ {
+  "id": "reply-grounding-no-dates",
+  "ref": "T1",
+  "group": "time",
+  "severity": "critical",
+  "title": "Reply grounding carries no dates at all: note createdAt is dropped, fact event_at/recorded_at never shown, and the prompt tells the model to read relative words against TODAY",
+  "mechanism": "RetrievedMemory has createdAt (retrieve.ts:121) but memoryBlock prints only memoryType, author and content. currentFactsForQuery builds content as `subject predicate: object` and never selects event_at or recorded_at. The prompt's only time anchor is `TODAY is ...`, plus an instruction to resolve \"this weekend\"/\"tomorrow\" against it. Nothing marks a stored note as old, so a relative phrase inside memory gets read as if it were said today. The spec (prompt-mgmt.md:14, 'attributes facts to who said them and when') requires the when.",
+  "scenario": "In March Charli says \"Zuzka is staying in my room this weekend\". On Saturday 26 Sep someone asks \"is anyone staying this weekend?\". The model sees `(fact, from Charli) Zuzka is staying in my room this weekend` with TODAY = 26 Sep and answers \"Yes, Charli said Zuzka is staying this weekend\".",
+  "files": [
+   "lib/ai/reply.ts:17-21",
+   "lib/ai/reply.ts:29",
+   "lib/memory/facts.ts:416",
+   "lib/memory/retrieve.ts:28",
+   "lib/memory/retrieve.ts:121",
+   "lib/inngest/functions/ingest.ts:526-534",
+   "docs/spec/prompt-mgmt.md:14",
+   "lib/ai/reply.ts:28"
+  ],
+  "repro": "audit-repro/time/grounding.test.ts: 'a note's createdAt is available ... memoryBlock drops it' checks that the captured groundedReply prompt contains the note and TODAY but no March date. 'fact content has neither event_at nor recorded_at' checks that currentFactsForQuery returns \"zuzka staying in: charli's room\" with no date for a fact whose event_at was 14 Mar. Both PASS (the bug is present).",
+  "fixDirection": "Render each grounding row with its said-on date (house tz) and, for facts, the resolved event_at (\"event: Sat 14 Mar, past\"). Tell the model that relative words inside MEMORY are relative to their said-on date, not TODAY.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "B7",
+  "foundBy": [
+   "time",
+   "spec"
+  ]
+ },
+ {
+  "id": "facts-never-expire",
+  "ref": "T2",
+  "group": "time",
+  "severity": "high",
+  "title": "Dated facts stay is_current forever after their event passes, so past guests and events keep grounding replies, /guests and profiles",
+  "mechanism": "Nothing closes valid_to or is_current when event_at passes. Only upcomingDatedFacts filters by event_at. currentFactsForQuery, the guestReport stayFacts query (which also has no ORDER BY, so LIMIT 30 is arbitrary) and gatherPersonMaterial all read every current fact with no time filter and show no date. The decay/expire sweep that memory-core #8/#10 specifies was never built. Reflect then bakes past stays into a system-trust profile (rank 4), which no later housemate message can supersede.",
+  "scenario": "Zuzka stayed in Charli's room in March. In September /guests prints \"• Zuzka — Charli's room\" as an upcoming guest, \"who is Zuzka\" returns a profile saying she is staying in Charli's room, and \"is Charli's room free?\" gets \"no, Zuzka's in it\".",
+  "files": [
+   "lib/memory/facts.ts:379-412",
+   "lib/reports/reports.ts:75-85",
+   "lib/memory/reflect.ts:60-67",
+   "lib/memory/facts.ts:283-293",
+   "docs/spec/memory-core.md:37",
+   "docs/spec/memory-core.md:107",
+   "lib/memory/facts.ts:259",
+   "lib/memory/forget.ts:200"
+  ],
+  "repro": "audit-repro/time/grounding.test.ts checks that a fact with event_at 14 Mar is still is_current and returned in September. audit-repro/time/reports-capture.test.ts '/guests: a guest whose stay ended months ago...' checks that guestReport's prompt contains \"zuzka staying in: charli's room\" with no date. Both PASS.",
+  "fixDirection": "Add a sweep that closes (valid_to) or marks past-dated event facts once event_at is well past. Exclude or label them '(past, <date>)' in reply, /guests and reflect material.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "B8",
+  "foundBy": [
+   "time",
+   "spec"
+  ]
+ },
+ {
+  "id": "relative-object-verbatim",
+  "ref": "T3",
+  "group": "time",
+  "severity": "high",
+  "title": "Fact objects keep relative phrases verbatim (\"tomorrow night\", \"friday\") because the extractor is never told the message time",
+  "mechanism": "extractFacts sends only `SPEAKER` and `MESSAGE` with no date. EXTRACT_FACTS_SYSTEM gives an absolute example ({marta, arrives_on, 2026-08-01}) but also says 'Do NOT resolve it to a calendar date yourself — copy the phrase'. The model cannot absolutise without TODAY, so object_value becomes \"tomorrow night\". The resolved date lives only in event_at, which no reader shows (see reply-grounding-no-dates).",
+  "scenario": "On 1 Sep: \"Iman arrives tomorrow night\" is stored as {iman, arrives, \"tomorrow night\"}. On 26 Sep, \"when does Iman arrive?\" is grounded by \"iman arrives: tomorrow night\", and Baumy answers \"tomorrow night\" (27 Sep).",
+  "files": [
+   "lib/ai/extract.ts:52",
+   "lib/ai/extract.ts:75",
+   "lib/ai/prompts.ts:90",
+   "lib/ai/prompts.ts:94",
+   "lib/memory/facts.ts:181",
+   "lib/memory/facts.ts:416",
+   "lib/ai/prompts.ts:109",
+   "lib/inngest/functions/ingest.ts:269"
+  ],
+  "repro": "audit-repro/time/grounding.test.ts 'B9' checks that the stored and retrieved content is \"iman arrives: tomorrow night\". 'EXTRACT prompt has SPEAKER + MESSAGE but no date' checks that the captured extract prompt has no date or TODAY. Both PASS.",
+  "fixDirection": "Pass the message's house-local date to extraction and store absolute dates in object_value, or rewrite the object from event_at at read time. Never persist a bare relative phrase as a value.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "B9",
+  "foundBy": [
+   "time",
+   "spec"
+  ]
+ },
+ {
+  "id": "reminder-time-mis-resolved",
+  "ref": "T4",
+  "group": "time",
+  "severity": "high",
+  "title": "Reminder time phrases the extractor is told to produce resolve wrongly: 'Friday around 10pm' fires at 09:00, and lead-times ('a week before friday') land in the past and fire immediately",
+  "mechanism": "parseCore takes only chrono results[0]. For 'Friday around 10pm', 'friday ~10pm' and 'friday at around 10pm', chrono's first hit covers only 'Friday', so the hour is uncertain and defaults to 09:00. EXTRACT_REMINDER_SYSTEM uses 'friday around 10pm' as its own example. Relative lead-times ('a week before friday', which is the schema comment's example, '3 days before friday', '2 hours before the party at 9pm') come back as dates already in the past. Nothing rejects a past fireAt: ingest creates and arms the reminder, and reminderDeliver sleepUntil(past) returns at once, so it sends straight away with no staleness check on that path. Separately, '9/10' is read US-style (10 Sep 2027) in a Europe/Berlin house. 00-decisions.md:50 requires the engine to handle 'relative lead-times AND event-offsets'.",
+  "scenario": "On Wednesday Marco says 'remind us friday around 10pm to let Zuzka in'. The ⏰ goes off Friday 09:00, and nobody is up at 22:00 to open the door. Charli says 'remind us a week before friday to book the van' and '⏰ book the van' posts a second later. 'Remind us 9/10 rent is due' is scheduled for next September.",
+  "files": [
+   "lib/reminders/parse.ts:169-183",
+   "lib/ai/prompts.ts:102-108",
+   "lib/ai/reminder-extract.ts:10",
+   "lib/inngest/functions/ingest.ts:368-377",
+   "lib/inngest/functions/reminders.ts:229-247"
+  ],
+  "repro": "audit-repro/actions/reminders.test.ts, suite 'time phrases the extractor is TOLD to produce are mis-resolved': 'Friday around 10pm' gives Fri 25 Sep 09:00. 'a week before friday' gives Fri 18 Sep (in the past). A full runIngest with '3 days before friday' creates a past-dated row, arms it, and reminderDeliver sends immediately. '9/10' gives 10 Sep 2027. All PASS.",
+  "fixDirection": "Parse the whole phrase (merge all chrono results / require coverage), use a DMY locale for a European tz, support explicit offset phrases, and reject or clarify any resolved time that is in the past instead of arming it.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "actions"
+  ]
+ },
+ {
+  "id": "weekly-undated-chatter",
+  "ref": "T5",
+  "group": "time",
+  "severity": "medium",
+  "title": "/weekly grounds on the 20 newest notes of any type (questions, chatter) with no timestamps and no time window",
+  "mechanism": "The `recent` query orders by createdAt DESC with LIMIT 20 and no lower date bound and no memoryType filter. Each row is rendered `- noted: <content>` with no date. In a quiet house, months-old notes fill the 'weekly' digest, relative phrases are read against TODAY, and questions appear as noted facts. The 'Coming up' rows use the heads-up fire date, not the event date, next to text that already says \"tomorrow\".",
+  "scenario": "After a quiet month, /weekly says \"Lately: the party is tomorrow night; is the party still on?\" about a June party.",
+  "files": [
+   "lib/reports/reports.ts:44-56",
+   "lib/reports/digest.ts:27-49",
+   "lib/reports/reports.ts:75-98"
+  ],
+  "repro": "audit-repro/time/reports-capture.test.ts '/weekly ...' checks that the prompt contains '- noted: the party is tomorrow night' and '- noted: is the party still on?' from June, with no June date. PASS.",
+  "fixDirection": "Window /weekly to the last 7 days, filter out question and chatter types, and prefix each note with its date.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "B10",
+  "foundBy": [
+   "time",
+   "spec"
+  ]
+ },
+ {
+  "id": "repeat-visit-noop-drops-date",
+  "ref": "T6",
+  "group": "time",
+  "severity": "medium",
+  "title": "A repeat event with the same (subject, predicate, object) is NOOPed and its new event_at is thrown away, so no heads-up and no 🧠",
+  "mechanism": "reconcileFact returns 'noop' when the normalised object_value is unchanged, before looking at eventAt. The extractor puts the date in whenText, not the object (e.g. {zuzana, staying_in, \"charl's room\"}), so a second visit has an identical triple. The new eventAt is dropped and the fact keeps the OLD past event_at. upcomingDatedFacts never sees the new visit, and backfill can't help because event_at IS NOT NULL. learned=false, so no 🧠 either.",
+  "scenario": "Zuzka stayed in Charli's room in March. In late September Charli says \"Zuzka is staying in my room this weekend\" again. Baumy gives no 🧠, sends no Friday or Saturday-morning heads-up, and event_at still says 14 March.",
+  "files": [
+   "lib/memory/facts.ts:247-248",
+   "lib/memory/facts.ts:213",
+   "lib/inngest/functions/ingest.ts:269-275",
+   "lib/inngest/functions/consolidation.ts:143-144"
+  ],
+  "repro": "audit-repro/time/grounding.test.ts 'NEW — a repeat visit is NOOPed' checks that the second reconcileFact returns 'noop', event_at stays 2026-03-14 and runEventSurfacingScan scans 0 facts. PASS.",
+  "fixDirection": "Treat a differing eventAt as an update: supersede, or at least write the new event_at. Better, model each dated occurrence as its own event fact.",
+  "confidence": "high",
+  "verdict": "downgraded",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "time"
+  ]
+ },
+ {
+  "id": "this-weekend-on-weekend",
+  "ref": "T7",
+  "group": "time",
+  "severity": "medium",
+  "title": "parseWhen with forwardDate pushes \"this weekend\" said on Sat/Sun to NEXT weekend, and turns \"last Sunday\" into the coming Sunday",
+  "mechanism": "parseCore calls chrono.parse with forwardDate:true on the live path. chrono resolves \"this weekend\"/\"the weekend\" to Saturday and forward-dates it past today, so on Saturday afternoon or Sunday it gives next Saturday. forwardDate also overrides an explicit past qualifier (\"last Sunday\" becomes the future Sunday), so a past-tense whenText the extractor emits makes a fake future event. \"saturday\" said on a Saturday also jumps a week.",
+  "scenario": "Saturday 14:00, Charli: \"Zuzka is staying in my room this weekend\". event_at becomes Sat 3 Oct. On Fri 2 Oct the house gets \"🗓️ Zuzka's staying in Charli's room tomorrow\" and on Sat 3 Oct \"...today\", a week after she actually stayed.",
+  "files": [
+   "lib/reminders/parse.ts:89-91",
+   "lib/reminders/parse.ts:51",
+   "lib/inngest/functions/ingest.ts:269",
+   "lib/inngest/functions/ingest.ts:368"
+  ],
+  "repro": "audit-repro/time/parse.test.ts checks that 'this weekend' at Sat 26 Sep 14:00 and at Sun 27 Sep both give Sat 2026-10-03 09:00, and that 'last Sunday' on a Thursday gives the coming Sunday. PASS.",
+  "fixDirection": "Special-case weekend and this-<weekday> phrases so the current weekend or day counts, and don't forward-date phrases that carry past markers (\"last\", \"yesterday\", \"ago\").",
+  "confidence": "high",
+  "verdict": "downgraded",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "time"
+  ]
+ },
+ {
+  "id": "bare-ordinal-unparseable",
+  "ref": "T8",
+  "group": "time",
+  "severity": "medium",
+  "title": "\"the 9th\" / \"on the 9th\" (the extractor prompt's own whenText example) parses to null, so no event_at, no heads-up, and the reminder is silently dropped",
+  "mechanism": "chrono-node doesn't parse a bare day-of-month ordinal without a month. parseWhen returns null, eventAt stays null, and the reminder step returns false (E19). The nightly backfill can't recover it: it re-parses object_value, and the date was only ever in whenText, and even the object form fails.",
+  "scenario": "\"Marco's parents arrive on the 9th\" never gets a heads-up. \"remind me to pay rent on the 9th\" gets no reminder and no error message.",
+  "files": [
+   "lib/ai/prompts.ts:94",
+   "lib/reminders/parse.ts:51-52",
+   "lib/inngest/functions/ingest.ts:269",
+   "lib/inngest/functions/ingest.ts:368-369",
+   "lib/inngest/functions/consolidation.ts:143"
+  ],
+  "repro": "audit-repro/time/parse.test.ts checks that parseWhen('the 9th') and parseWhen('on the 9th') are null. PASS.",
+  "fixDirection": "Pre-normalise bare ordinals to the next occurrence of that day of month before calling chrono, and reply with an 'I couldn't work out when' message when parsing fails.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "time"
+  ]
+ },
+ {
+  "id": "bare-hour-am-bias",
+  "ref": "T9",
+  "group": "time",
+  "severity": "medium",
+  "title": "Bare clock hours resolve to AM: \"remind me at 5\" said at 14:00 fires at 06:00 the next day",
+  "mechanism": "chrono reads \"at 5\" as 05:00, and forwardDate moves it to tomorrow because 05:00 has passed. clampToWakingHours then nudges it to 06:00. Nothing prefers the next PM occurrence of an hour when the AM one is in the past or in the dead zone.",
+  "scenario": "At 14:00: \"remind me at 5 to take the bins out\". Instead of 17:00 today, \"⏰ take the bins out\" posts at 06:00 tomorrow.",
+  "files": [
+   "lib/reminders/parse.ts:51",
+   "lib/reminders/parse.ts:65",
+   "lib/inngest/functions/ingest.ts:368-374",
+   "lib/reminders/parse.ts:16-22"
+  ],
+  "repro": "audit-repro/time/parse.test.ts checks that 'at 5' at Thu 14:00 gives Fri 05:00, clamped to Fri 06:00. PASS.",
+  "fixDirection": "For a bare hour with no meridiem, pick the next future occurrence across AM and PM, preferring the PM time today.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "time"
+  ]
+ },
+ {
+  "id": "late-night-and-past-times",
+  "ref": "T10",
+  "group": "time",
+  "severity": "medium",
+  "title": "Late-night chat and duration phrases misresolve: \"tomorrow\" after midnight skips a day, \"today\"/\"tonight\" give past times that fire instantly, and \"for a week\" or \"end of the month\" become bogus dates",
+  "mechanism": "parseCore uses the literal calendar day. \"tomorrow\" at 00:30 means the day after the one the speaker thinks of as tomorrow. \"today\" with no time defaults to 09:00 and \"tonight\" to 22:00 even when that has already passed, and createReminder accepts a past fire_at, so it posts immediately. chrono reads a duration (\"for a week\") as now+7d, which becomes a fake event date and heads-up. \"end of the month\" resolves to the same day next month (24 Oct on 24 Sep). \"tomorrow morning\" fires at 06:00.",
+  "scenario": "At 00:30 Friday: \"remind me tomorrow to call the plumber\" fires Saturday. At 14:00: \"remind me today to buy a present\" posts \"⏰ buy a present\" instantly. \"Zuzka's staying for a week\" produces a \"Zuzka's staying tomorrow\" nudge six days in.",
+  "files": [
+   "lib/reminders/parse.ts:45-85",
+   "lib/inngest/functions/ingest.ts:368-374",
+   "lib/inngest/functions/ingest.ts:269"
+  ],
+  "repro": "audit-repro/time/parse.test.ts: 'tomorrow' at 00:30 gives Sat, 'tonight' at 23:30 and 'today' at 14:00 give a past fireAt, 'for a week' gives +7d, 'end of the month' gives 24 Oct, 'tomorrow morning' gives 06:00. All PASS.",
+  "fixDirection": "Treat 00:00–04:00 as the previous day for 'tomorrow'/'tonight', roll a past same-day default forward to a sensible hour (or ask), reject duration-only whenText, and handle 'end of month' explicitly.",
+  "confidence": "medium",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "time"
+  ]
+ },
+ {
+  "id": "headsup-lead-stale-at-delivery",
+  "ref": "T11",
+  "group": "time",
+  "severity": "medium",
+  "title": "The heads-up lead (\"tomorrow\") is baked in at scan time but delivered only at the 08:00/20:00 digest, so evening events get \"tomorrow\" and \"today\" together on the event day",
+  "mechanism": "computeNudgeStages sets the 'day' stage at event_at − 24h, and writeHeadsUp writes the text with lead 'tomorrow' at scan time. event_offset rows are never armed and go out only at the digest slots. For any event after 20:00 (or after 08:00 with reminder_frequency='once'), the day-before stage misses the evening slot and lands at 08:00 on the event day, next to the morning-of stage. The 24h staleness window allows this. The same happens to morning-of stages for events captured after the 22:30 consolidation: the 08:00 scan runs after 08:00 and filters them out, so those events get no heads-up at all.",
+  "scenario": "Party Saturday 22:00. At Sat 08:00 the house gets one message: \"🗓️ Marco's party is tomorrow (Sat 3 Oct)\" and \"🗓️ Marco's party is today (Sat 3 Oct)\".",
+  "files": [
+   "lib/surfacing/nudge.ts:188-199",
+   "lib/surfacing/nudge.ts:204-205",
+   "lib/inngest/functions/surfacing.ts:51",
+   "lib/inngest/functions/reminders.ts:38-43",
+   "lib/inngest/functions/reminders.ts:149-161"
+  ],
+  "repro": "audit-repro/time/headsup-delivery.test.ts: scan on Thu, digest on Fri 20:00 sends 0, digest on Sat 08:00 sends both 'tomorrow' and 'today' lines in one body. PASS.",
+  "fixDirection": "Snap each stage's fire time to the digest slot that comes before it (for example the day-before evening slot), or write the lead at delivery time. Drop a stage that no longer fits its lead.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "time"
+  ]
+ },
+ {
+  "id": "backfill-past-weekday",
+  "ref": "T12",
+  "group": "time",
+  "severity": "low",
+  "title": "The nightly backfill (parseEventDate, no forwardDate) reads \"monday morning\" said on a Thursday as the PAST Monday and skips a real future event",
+  "mechanism": "Without forwardDate, chrono sometimes picks the most recent past weekday (\"monday morning\" goes to the previous Monday), while a bare \"Sunday\" goes forward. So the precision-first backfill quietly drops some legitimately future weekday values instead of dating them.",
+  "scenario": "A fact whose object is \"monday morning\" (recorded Thursday) that capture missed never gets a heads-up from the nightly catch-up.",
+  "files": [
+   "lib/reminders/parse.ts:106-111",
+   "lib/inngest/functions/consolidation.ts:143-144"
+  ],
+  "repro": "audit-repro/time/parse.test.ts 'parseEventDate ... monday morning' checks it resolves to Mon 21 Sep (past relative to recording). PASS.",
+  "fixDirection": "For values with no past-tense marker, resolve weekdays to the next occurrence after recorded_at. Keep literal reading only when the text is explicitly past.",
+  "confidence": "medium",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "time"
+  ]
+ },
+ {
+  "id": "sim-clock-bypass",
+  "ref": "T13",
+  "group": "time",
+  "severity": "low",
+  "title": "Several time readers bypass the clock seam (new Date()/Date.now()), so sandbox runs with simulated time are inconsistent",
+  "mechanism": "recencyDecay uses Date.now(). The /weekly, /guests, /reminders and /recent calls in ingest rely on `now = new Date()` defaults. memory_items.created_at comes from the DB default. lastAccessedAt is set with new Date(). In a sandbox advanced by months, reports use real time while memory uses simulated time. Production isn't affected, but time bugs like the ones above can't be reproduced faithfully in the sandbox.",
+  "scenario": "A sandbox test that advances to 'next Saturday' and asks /guests gets TODAY = real date, and recency ranks by real age.",
+  "files": [
+   "lib/memory/retrieve.ts:130",
+   "lib/inngest/functions/ingest.ts:145-150",
+   "lib/reports/reports.ts:36",
+   "lib/reports/reports.ts:73",
+   "lib/reports/digest.ts:10",
+   "lib/memory/write.ts:86",
+   "lib/memory/write.ts:94-105",
+   "lib/inngest/functions/reminders.ts:37-42"
+  ],
+  "repro": "None separate. The consolidation repro shows created_at ignores withSimulatedTime.",
+  "fixDirection": "Route these through lib/core/clock now() and set created_at explicitly like reconcileFact does.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "time"
+  ]
+ },
+ {
+  "id": "possessive-merge-into-owner",
+  "ref": "F1",
+  "group": "facts",
+  "severity": "high",
+  "title": "Write-side trigram merge folds \"charli's bike\"-style subjects into the person entity \"charli\" (and a generic \"room\" swallows every \"X's room\")",
+  "mechanism": "pickMergeCandidate merges when greatest(strict_word_similarity(a,b), strict_word_similarity(b,a)) >= 0.7. strict_word_similarity('charli', \"charli's bike\") = 1.0 because 'charli' is a whole word in the longer name. The kind guard lets anything merge when either side is 'thing' (line 63), and 'thing' is the extractor's default kind for objects like bikes, parcels, cars (prompts.ts:91). So a possessive thing folds into its owner and is stored as an alias. The two facts then share one subject entity, and a shared predicate (location, status, color) supersedes the person's own fact. The same applies to any one-word entity (\"room\", \"house\", \"bins\"): it absorbs every multi-word name that contains it, so \"marco's room\" and \"charli's room\" end up as one node.",
+  "scenario": "Charli: \"I'm in Barcelona till Sunday\" stores {charli, location, barcelona}. Later Marco: \"Charli's bike is in the shed\" stores {charli's bike, location, the shed}, which resolves to the Charli entity and supersedes. Q: \"where's Charli?\" Baumy: \"Charli's in the shed.\" Separately, once \"the room\" exists, \"Marco's room is free\" and then \"Charli's room is occupied\" leave only one room status, and Baumy says Marco's room is occupied.",
+  "files": [
+   "lib/memory/facts.ts:52-69",
+   "lib/memory/facts.ts:63",
+   "lib/memory/facts.ts:132-141",
+   "lib/ai/prompts.ts:91"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'NEW — write-side trigram merge…'. (1) After charli(person) location=barcelona, the fact \"charli's bike\" location=the shed returns 'update'; only 1 entity exists, with alias \"charli's bike\"; currentFactsForQuery('where is charli?') returns ['charli location: the shed']. (2) With 'the room' present, \"marco's room\" status then \"charli's room\" status returns 'update' and there is 1 entity. PASS.",
+  "fixDirection": "Require near-equality both ways, not the max of the two directions (for example min(strict_word_similarity both ways) or equal token count), refuse to merge a possessive/compound into a bare head noun or a person, and stop treating 'thing' as a wildcard kind.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "facts"
+  ]
+ },
+ {
+  "id": "C11-single-value-overwrite",
+  "ref": "F2",
+  "group": "facts",
+  "severity": "high",
+  "title": "Only one current value per (subject, predicate): lists and multi-valued relations silently overwrite",
+  "mechanism": "reconcileFact looks up an incumbent strictly by (group, subject_entity, predicate, is_current) and supersedes on any different value. Nothing models cardinality. The spec (memory-core.md:77) calls for an embed plus top-k plus LLM ADD/UPDATE/DELETE/NOOP reconcile; the code uses the exact key alone. This is amplified because the extractor maps every 'we/us/our' to the single entity 'house' (prompts.ts:93), so all house-level multi-valued facts (guests, needs, rules) collide.",
+  "scenario": "Mon, Charli: \"Marta is staying with us Fri–Sun.\" Tue, Marco: \"Zuzka's staying with us this weekend too.\" {house, has_guest, zuzka} supersedes marta. Q: \"who's staying this weekend?\" Baumy: \"Zuzka.\" Marta is gone from current facts and /guests. The same happens with 'Marco is allergic to peanuts' then 'and shellfish': only shellfish remains.",
+  "files": [
+   "lib/memory/facts.ts:216-227",
+   "lib/memory/facts.ts:250-264",
+   "lib/ai/prompts.ts:93",
+   "docs/spec/memory-core.md:77",
+   "lib/memory/facts.ts:251-261"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'C11'. house has_guest marta then zuzka returns 'update' and hits lack marta; marco allergic_to peanuts then shellfish leaves only 'marco allergic to: shellfish'. PASS.",
+  "fixDirection": "Have extraction (or a predicate registry) mark predicates as multi-valued/additive vs functional, and for multi-valued ones ADD alongside the existing value instead of superseding, or run the spec'd LLM reconcile against neighbours.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "C11",
+  "foundBy": [
+   "facts",
+   "spec"
+  ]
+ },
+ {
+  "id": "C12-predicate-drift",
+  "ref": "F3",
+  "group": "facts",
+  "severity": "high",
+  "title": "Free-text predicates are never normalised, so corrections under a synonym predicate don't supersede and both values stay current",
+  "mechanism": "The predicate is only trimmed and lowercased (facts.ts:173). The model names predicates freely per message (arrives_on / arrival_date / arriving / eta). Supersession needs an exact predicate match, so a correction phrased differently becomes a second current fact. currentFactsForQuery then returns both, ordered by recency, with no marker of which is newer or authoritative, and the reply model sees a contradiction.",
+  "scenario": "Charli: \"Zuzka arrives Friday\" stores arrives_on=friday. Charli: \"Actually Zuzka's getting in Saturday\" stores arrival_date=saturday. Q: \"when does Zuzka arrive?\" Baumy either hedges (\"Friday or Saturday?\") or picks the old value. The Friday value also keeps feeding event-surfacing heads-ups and reflect profiles.",
+  "files": [
+   "lib/memory/facts.ts:173",
+   "lib/memory/facts.ts:216-229",
+   "lib/ai/prompts.ts:90"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'C12'. The arrival_date write returns 'add'; hits contain both 'zuzka arrives on: friday' and 'zuzka arrival date: saturday'. PASS.",
+  "fixDirection": "Canonicalise predicates at write time: show the extractor the subject's existing predicates and ask it to reuse one, or add a semantic predicate-match step before deciding ADD vs UPDATE.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "C12",
+  "foundBy": [
+   "facts"
+  ]
+ },
+ {
+  "id": "C14-substring-hub-crowding",
+  "ref": "F4",
+  "group": "facts",
+  "severity": "high",
+  "title": "currentFactsForQuery substring matching: short names match inside other words, the 'house' hub crowds out the named subject, and first-person queries find nothing",
+  "mechanism": "(1) The match is position(canonical_name IN query) with no word boundary, so entity 'al' matches 'all', and 'ann'/'ed'/'bin' match inside other words. (2) All substring hits share pri=0 and are ordered only by recorded_at DESC with LIMIT 5 on the non-deep path. Every 'we/our' fact lives on the single 'house' entity, so any question containing 'house' ('our house', 'housemate') fills the 5 slots with recent house facts and pushes out the entity actually asked about. No relevance ordering exists among matches. (3) The query is matched with no speaker substitution, so 'my room' or 'am I…' never resolves. resolveSeedEntities (graph.ts) uses the same logic and picks seeds[0] arbitrarily.",
+  "scenario": "Q: \"is Zuzka staying at our house this weekend?\" The grounding is house bin day, wifi provider, milk, cleaner, landlord, and the Zuzka fact is absent, so Baumy replies \"I don't know.\" Q: \"is the bathroom tap fixed at all?\" The grounding includes 'al owes rent: £200', which the reply may volunteer.",
+  "files": [
+   "lib/memory/facts.ts:396-412",
+   "lib/memory/graph.ts:38-53",
+   "lib/inngest/functions/ingest.ts:509",
+   "lib/ai/prompts.ts:93",
+   "lib/memory/facts.ts:396-411"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'C14'. (a) The 'al' fact is returned for 'is the bathroom tap fixed at all?'. (b) With 1 zuzka fact and 6 newer house facts, the query 'is zuzka staying at our house this weekend?' returns 5 hits with none about zuzka. PASS.",
+  "fixDirection": "Match on word boundaries, rank by match specificity (exact name > alias > trigram, longer or rarer names first) and cap per-entity rows, and substitute the speaker for first-person tokens before lookup.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "C14",
+  "foundBy": [
+   "facts",
+   "spec"
+  ]
+ },
+ {
+  "id": "C13-trust-gate-blocks-correction",
+  "ref": "F5",
+  "group": "facts",
+  "severity": "medium",
+  "title": "Trust gate rejects legitimate group corrections of any DM-sourced (trusted) fact, even by the same person, silently (and may still react 🧠)",
+  "mechanism": "A member DM writes at 'trusted' (rank 3) and native group text at 'untrusted' (rank 2). Any later contradiction from the group gets rank 2 < 3 and returns 'rejected'. The gate ignores who authored the incumbent, so the same member cannot correct themselves in the group, and no housemate can update a DM'd fact from the group. ingest treats 'rejected' like a no-learn: no feedback. Because worthCapturing is true, a 'react' verdict still gets 🧠 ('noted'), telling the user the correction was learned. The evidence note is stored, so retrieval now surfaces two contradicting sources.",
+  "scenario": "Charli DMs Baumy: \"Zuzka's staying in my room.\" Saturday in the group, Charli says: \"Change of plan, Zuzka's in the cave.\" Rejected, possibly with a 🧠. Marco asks \"where's Zuzka sleeping?\" and Baumy says \"Charli's room.\" Same with bin day: DM'd once, never correctable from the group.",
+  "files": [
+   "lib/memory/facts.ts:250-251",
+   "lib/inngest/functions/ingest.ts:274-275",
+   "lib/inngest/functions/ingest.ts:584-593",
+   "lib/memory/facts.ts:249-250",
+   "lib/inngest/functions/ingest.ts:592-593"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'C13'. A trusted add by user 111, then an untrusted write by the same 111 returns 'rejected'; currentFactsForQuery still returns [\"zuzka staying in: charli's room\"]. PASS.",
+  "fixDirection": "Allow a same-author contradiction regardless of lane (identity is authenticated), and when a correction is rejected, surface it (for example a 'that conflicts with X, confirm?' path) instead of acknowledging it as learned.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "C13",
+  "foundBy": [
+   "facts",
+   "spec"
+  ]
+ },
+ {
+  "id": "fullname-subject-miss",
+  "ref": "F6",
+  "group": "facts",
+  "severity": "medium",
+  "title": "Facts about the speaker are filed under their full Telegram display name and aren't found by first-name questions",
+  "mechanism": "The speaker passed to extraction is members.displayName = first + last (ingest.ts:56), so 'I'm away this weekend' becomes subject 'charli smith'. On read, position('charli smith' IN q) fails, and word_similarity('charli smith', 'is charli around…') is about 0.5, below READ_THRESHOLD 0.6, so it misses. It only works if someone else earlier created or aliased a first-name 'charli' entity; recall depends on write order.",
+  "scenario": "Charli Smith: \"I'm away this weekend.\" Marco: \"@baumy is Charli around Saturday?\" The direct fact lookup returns nothing, and the reply relies on fuzzy note recall or says it doesn't know.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:56-57",
+   "lib/inngest/functions/ingest.ts:263-264",
+   "lib/identity/roster.ts:88-91",
+   "lib/memory/facts.ts:407-409"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'a fact filed under the speaker FULL display name…'. With subject 'Charli Smith', currentFactsForQuery('is charli around this weekend?') returns []. PASS.",
+  "fixDirection": "Pass the first name (or a roster-canonical short name) as SPEAKER and record the other name forms (full name, first name, @username) as aliases on the linked person entity.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "facts"
+  ]
+ },
+ {
+  "id": "object-side-lookup-miss",
+  "ref": "F7",
+  "group": "facts",
+  "severity": "medium",
+  "title": "Direct fact lookup only matches the SUBJECT, so object-side questions ('who's in the cave?') get no fact grounding outside the deep tier",
+  "mechanism": "currentFactsForQuery joins only e = subject entity. object_entity_id and object_value are never matched. Graph context, which does reach objects via resolveSeedEntities, runs only on the deep tier, so think/fast questions phrased from the object side lose the structured fact.",
+  "scenario": "Fact: {zuzka, staying_in, the cave}. Q (non-deep): \"who's staying in the cave this weekend?\" The fact lookup returns nothing, and Baumy answers from noisy notes or says nobody.",
+  "files": [
+   "lib/memory/facts.ts:401-410",
+   "lib/inngest/functions/ingest.ts:507-519"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'object-side questions…'. For \"who's staying in the cave?\", hits contain no zuzka fact. PASS.",
+  "fixDirection": "Also match the query against the object entity name and alias and the object_value in currentFactsForQuery (with the same word-boundary/specificity ranking).",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "facts"
+  ]
+ },
+ {
+  "id": "lineage-false-parent-and-forget-leak",
+  "ref": "F8",
+  "group": "facts",
+  "severity": "medium",
+  "title": "Lineage parent = 'last fact about the subject' fabricates '(follows from …)' narratives and resurrects soft-forgotten facts",
+  "mechanism": "On ADD, derived_from_fact_id is set to the most recent fact about the subject, with no filter on predicate, is_current, or deleted_at (facts.ts:234-239). The reply renders this as '<fact> (follows from — <parent>, per X)', which presents an unrelated prior fact as its cause. currentFactsForQuery LEFT JOINs the parent with no deleted_at/is_current filter, so a fact the house forgot via the confirm-tap (soft mode keeps object_value) comes back verbatim as the priorContent of the next fact about that subject. This bypasses the forget wall. For the 'house' hub the parent is effectively random.",
+  "scenario": "\"Forget that Zuzka's staying in Marco's room\" is tapped and soft-hidden. Later: \"Zuzka's in the cave now.\" Q: \"where's Zuzka?\" The grounding is \"zuzka staying in: the cave (follows from — zuzka staying in: marco's room, per Charli)\", and Baumy repeats the forgotten fact. Separately: \"house wifi provider: virgin (follows from — house bin day: friday, per Marco)\".",
+  "files": [
+   "lib/memory/facts.ts:229-241",
+   "lib/memory/facts.ts:385-404",
+   "lib/inngest/functions/ingest.ts:529-535",
+   "lib/memory/forget.ts:199-205"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'NEW — lineage…'. (1) sibling_of then staying_in gives priorContent 'zuzka sibling of: charl'. (2) Soft-forget staying_in=marco's room, then add staying_in=the cave, gives priorContent \"zuzka staying in: marco's room\". PASS.",
+  "fixDirection": "Exclude deleted_at IS NOT NULL parents both when assigning and when joining lineage, and restrict the no-incumbent parent to a genuinely related fact (same predicate family or same source message), or present it as 'earlier:' rather than 'follows from'.",
+  "confidence": "high",
+  "verdict": "downgraded",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "facts"
+  ]
+ },
+ {
+  "id": "dedup-cross-author-collapse",
+  "ref": "F9",
+  "group": "facts",
+  "severity": "medium",
+  "title": "0.97 consolidation ignores author and time: identical first-person statements from different housemates collapse onto the first speaker's note (and get re-tagged)",
+  "mechanism": "findDuplicate matches any active non-secure note in the group by cosine alone. Short first-person lines ('I'm away this weekend', 'I'll be late tonight', 'bins are out') are identical across people and weeks. The second capture returns the FIRST note's id: no evidence row for the new speaker, authoredBy stays the original author, and created_at stays old (recency is not actually refreshed despite the comment). Extraction then reuses that id: facts get sourceMemoryItemId pointing at the other person's note, and tagMemoryAboutPerson rewrites that note's about_entity_id to the new speaker. Retrieval then attributes the statement to the wrong person, dated at its first occurrence. Distinct-number sentences (£650 vs £700) may also cross 0.97 on Voyage; this is unverified offline.",
+  "scenario": "Marco (Sep 1): \"I'm away this weekend.\" Charli (Sep 20): \"I'm away this weekend.\" Only Marco's Sep 1 note exists, now tagged 'about Charli'. Q: \"who's away this weekend?\" Note recall says \"Marco said he's away\" (weeks stale), and Charli's statement exists only as a fact.",
+  "files": [
+   "lib/memory/write.ts:279-296",
+   "lib/memory/write.ts:319-334",
+   "lib/inngest/functions/ingest.ts:251-278",
+   "lib/memory/facts.ts:345-360",
+   "lib/memory/write.ts:75-90",
+   "lib/memory/write.ts:94-105",
+   "lib/inngest/functions/ingest.ts:250-274",
+   "lib/memory/write.ts:74-90"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'NEW — 0.97 consolidation ignores author…'. The second capture returns the same id; only one memory row, authored by '1'; after tagMemoryAboutPerson that row has about=charli and by='1'. PASS.",
+  "fixDirection": "Scope consolidation to the same author (and a recent time window), and never re-tag or re-source onto a consolidated note written by someone else.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "facts",
+   "time",
+   "intake"
+  ]
+ },
+ {
+  "id": "timeline-oldest-first-limit",
+  "ref": "F10",
+  "group": "facts",
+  "severity": "medium",
+  "title": "entityTimeline returns the OLDEST 8 facts (ORDER BY recorded_at ASC LIMIT 8), dropping the latest progression for any busy subject",
+  "mechanism": "The query sorts ascending and then limits, so once a subject has more than 8 facts (superseded rows included), the newest events never appear in the deep-tier timeline. The '(past)' rows it does show are the stalest ones. seeds[0] is also arbitrary among pri=0 matches, so this is often the 'house' hub.",
+  "scenario": "Zuzka has 10 facts over a month. Deep Q: \"what's the latest with Zuzka?\" The timeline grounding shows her first 8 facts (arrival plans from weeks ago) but not 'left on Sunday', so Baumy narrates an outdated story.",
+  "files": [
+   "lib/memory/graph.ts:123-131",
+   "lib/memory/graph.ts:155-171"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'NEW — entityTimeline…'. With 10 facts, the timeline has length 8, lacks v10, and its first entry is v1. PASS.",
+  "fixDirection": "Select the most recent N (ORDER BY recorded_at DESC LIMIT N) and then reverse for chronological display.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "facts"
+  ]
+ },
+ {
+  "id": "reflect-profile-stale-unattributed",
+  "ref": "F11",
+  "group": "facts",
+  "severity": "medium",
+  "title": "Reflect profiles bake stale, unattributed, undated facts into a system-trust 'profile' that tops fact grounding",
+  "mechanism": "gatherPersonMaterial feeds {predicate, value} only: no author, no recorded_at, and every current fact regardless of age. Current facts never expire (B8) and synonym predicates keep contradicting values (C12), so the profile states old or contradictory items as present-tense truth. It is stored with authoredBy=null at 'system' trust and, being the newest row, sorts first in currentFactsForQuery (ORDER BY pri, recorded_at DESC). It therefore takes a top slot of 5, reads as authoritative and unattributed, and can contradict a newer fact until the next 6h sweep.",
+  "scenario": "From a month ago: 'zuzka staying_in charli's room'. The profile says \"Zuzka is Charli's sister and stays in Charli's room.\" After Zuzka leaves (and no fact supersedes staying_in), Q: \"who's in Charli's room?\" The profile grounds \"Zuzka is.\"",
+  "files": [
+   "lib/memory/reflect.ts:52-66",
+   "lib/inngest/functions/reflect.ts:36-48",
+   "lib/ai/prompts.ts:190-195",
+   "lib/memory/facts.ts:411"
+  ],
+  "repro": "None written: the stale-content effect depends on the LLM synthesis. The deterministic parts (no author/date in material at reflect.ts:52-60; the profile inserted with the newest recorded_at and so ordered first at facts.ts:411) are plain from the code.",
+  "fixDirection": "Feed dated, attributed facts to reflection with a recency bound, and rank or label the profile as background (not a current fact) in reply grounding, for example by excluding it unless the question is 'who is X'.",
+  "confidence": "medium",
+  "verdict": "upheld",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "facts"
+  ]
+ },
+ {
+  "id": "no-contradiction-sweep-vs-spec",
+  "ref": "F12",
+  "group": "facts",
+  "severity": "medium",
+  "title": "Spec'd reconcile and offline hygiene (LLM ADD/UPDATE/DELETE, entity dedupe/merge, contradiction sweep, decay) are not implemented",
+  "mechanism": "The spec requires an embedding-neighbour plus LLM reconcile at write time and offline dedupe/merge/contradiction/decay sweeps. The code reconciles on an exact (subject, predicate) key, and consolidation.ts only backfills event dates and cancels heads-ups ('a richer LLM contradiction judgment … is a documented follow-up'). Nothing ever repairs C11/C12 splits, fragmented entities, or bad merges once written.",
+  "scenario": "Contradicting facts from synonym predicates, or entities fragmented by nickname ('Charl' vs 'Charli', trigram 0.625 < 0.7), persist indefinitely and keep grounding answers.",
+  "files": [
+   "docs/spec/memory-core.md:77-78",
+   "lib/memory/facts.ts:216-264",
+   "lib/inngest/functions/consolidation.ts:1-20"
+  ],
+  "repro": "Structural absence; see consolidation.ts header comment and facts.ts reconcile logic.",
+  "fixDirection": "Add an offline graph-hygiene job (predicate canonicalisation, contradiction resolution per subject, entity merge review) or implement the spec'd neighbour-aware reconcile.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "facts"
+  ]
+ },
+ {
+  "id": "no-author-filter",
+  "ref": "F13",
+  "group": "facts",
+  "severity": "medium",
+  "title": "'What did X say about Y' has no author filter or boost in retrieval, despite the spec",
+  "mechanism": "Both hybrid arms filter by group, active, trust and model only. authored_by never takes part in ranking, and author names aren't in content, so the named person contributes nothing lexically or semantically. The spec requires filtering or boosting by the named author.",
+  "scenario": "Jules: 'what did Theo say about the gear budget?' The top 8 are budget notes from Rui and Nadia, Theo's actual message ranks 11th, and Baumy says Theo never mentioned it or attributes the wrong person's number.",
+  "files": [
+   "lib/memory/retrieve.ts:58-106",
+   "docs/spec/memory-core.md:40",
+   "docs/spec/memory-core.md:69",
+   "docs/spec/00-master-spec.md:60",
+   "docs/spec/product.md:386-397"
+  ],
+  "repro": "Not written; the SQL has no authored_by predicate or boost (retrieve.ts:58-106).",
+  "fixDirection": "When the query names a roster member, boost or filter candidates by authored_by, as the spec's w_author term describes.",
+  "confidence": "medium",
+  "verdict": "upheld",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "spec"
+  ]
+ },
+ {
+  "id": "lexical-arm-and-semantics",
+  "ref": "F14",
+  "group": "facts",
+  "severity": "low",
+  "title": "Hybrid retrieval's lexical arm ANDs every query term (websearch_to_tsquery), so natural questions almost never lexically match and recall is effectively semantic-only",
+  "mechanism": "websearch_to_tsquery('english', question) makes a conjunction of all non-stopword terms. A note matches only if it contains every one: 'when does zuzka arrive?' requires both 'zuzka' and 'arriv'. The lexical arm is meant to rescue exact names and rare tokens that embeddings handle poorly, but it returns nothing for normal phrasing. With floor 0.2 (non-deep), recall of name-centric notes depends solely on the cosine.",
+  "scenario": "Note: \"Zuzka is staying in my room this weekend.\" Q: \"when does Zuzka arrive?\" There is no lexical hit; if the Voyage cosine for the short name-heavy query falls below the floor or other notes outrank it, Baumy says it doesn't know about Zuzka.",
+  "files": [
+   "lib/memory/retrieve.ts:60",
+   "lib/memory/retrieve.ts:81",
+   "lib/memory/retrieve.ts:104"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'NEW — lexical arm…'. The semantic arm is isolated with floor 0.99 and an unrelated query vector. retrieve('zuzka') returns 1 row; retrieve('when does zuzka arrive?') returns 0. PASS.",
+  "fixDirection": "Build an OR tsquery (plainto terms joined with |) for the lexical arm and let ts_rank_cd order the results.",
+  "confidence": "high",
+  "verdict": "downgraded",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "facts"
+  ]
+ },
+ {
+  "id": "tag-about-alias-miss",
+  "ref": "F15",
+  "group": "facts",
+  "severity": "low",
+  "title": "tagMemoryAboutPerson exact-matches the raw subject's canonical name, so notes about alias-merged people are never filed under them",
+  "mechanism": "reconcileFact resolves 'charli' to the existing 'charli smith' entity via trigram merge or alias, but tagMemoryAboutPerson looks up canonical_name = 'charli' exactly and finds nothing. The note is left untagged and never reaches that person's reflect material. It also tags only the first person fact.",
+  "scenario": "\"Charli is away this weekend\" is never linked to Charli Smith's entity, so her profile misses it.",
+  "files": [
+   "lib/memory/facts.ts:345-360",
+   "lib/memory/reflect.ts:67-74"
+  ],
+  "repro": "audit-repro/memory/graph.test.ts 'NEW — tagMemoryAboutPerson…'. After 'Charli Smith' and then a 'charli' fact (merged), the tag leaves about_entity_id null. PASS.",
+  "fixDirection": "Reuse the entity id reconcileFact resolved (return it) instead of re-looking up by exact canonical name.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "facts"
+  ]
+ },
+ {
+  "id": "out-of-order-supersede",
+  "ref": "F16",
+  "group": "facts",
+  "severity": "low",
+  "title": "No per-chat concurrency/ordering on ingest, so a correction processed before the original can be superseded by the older message",
+  "mechanism": "handleTelegramMessage has no concurrency key. reconcileFact stamps recorded_at/valid_from from processing time, not message time, so whichever run finishes last wins. The risk register flags out-of-order delivery.",
+  "scenario": "'Zuzka arrives Friday' then, seconds later, 'sorry, Saturday'. The second run finishes first and the first run then supersedes it, so the current fact is Friday.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:599-603",
+   "lib/memory/facts.ts:204-208",
+   "docs/spec/00-risk-register.md:24"
+  ],
+  "repro": "Not written; it needs concurrent runs. The absence of concurrency config is shown by grep.",
+  "fixDirection": "Add an Inngest concurrency key on chat_id (limit 1), or order supersession by Telegram message date / update_id.",
+  "confidence": "low",
+  "verdict": "upheld",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "spec"
+  ]
+ },
+ {
+  "id": "edits-rerun-pipeline",
+  "ref": "I1",
+  "group": "intake",
+  "severity": "high",
+  "title": "Edited messages re-run the full pipeline as new messages: duplicate reminders and replies, and the uncorrected original stays active (the spec requires supersede)",
+  "mechanism": "The webhook forwards edited_message under the same event name with no edited marker. Dedup (the telegram_updates insert, claimReply) is keyed on update_id, which is new for each edit. Nothing keys on (chat_id, message_id), so the edit is classified, captured, reminder-created and replied to again. The original memory row is never superseded. Spec D18 says re-run the gate AND supersede the prior row.",
+  "scenario": "Charli sends 'remind us friday 9am bins out, cleaner comes monday' and edits it to 'tuesday'. Two '⏰ bins out' reminders fire Friday, and both 'cleaner comes monday' and '…tuesday' notes stay recallable. Editing a typo in '@baumy whats the bin day' makes Baumy answer twice.",
+  "files": [
+   "app/api/telegram/webhook/route.ts:70-94",
+   "lib/inngest/functions/ingest.ts:66-72",
+   "lib/inngest/functions/ingest.ts:363-387",
+   "lib/inngest/functions/ingest.ts:419",
+   "docs/spec/00-decisions.md:113",
+   "docs/spec/architecture.md:459",
+   "app/api/telegram/webhook/route.ts:69-71",
+   "app/api/telegram/webhook/route.ts:74-94"
+  ],
+  "repro": "ingest-intake.test.ts 'D16: editing a message duplicates the reminder…' asserts 2 reminder rows and both versions active. 'D16: editing a directed question produces a SECOND worded reply' asserts 2 sends. webhook-and-units.test.ts shows edited_message forwarded with no edited flag. All pass.",
+  "fixDirection": "Forward an edited flag plus message_id, then on edit supersede the memory item linked to (chat_id, message_id) and skip already-performed side effects (reminder, reply) for that message_id.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "D16",
+  "foundBy": [
+   "intake",
+   "reply",
+   "spec"
+  ]
+ },
+ {
+  "id": "transient-llm-errors-memoized-as-degraded",
+  "ref": "I2",
+  "group": "intake",
+  "severity": "high",
+  "title": "Transient provider errors (429/529/timeout) are swallowed like malformed output and memoized, so outages permanently lose reminders, list ops, facts and replies with no retry",
+  "mechanism": "reply.ts deliberately rethrows non-schema errors so that Inngest (retries: 3) can retry. classify, extractReminder, extractListOp and extractFacts instead catch every error, including APICallError with isRetryable=true once the AI SDK's own 2 retries are used up, and return their safe default. The enclosing step.run then completes successfully, so Inngest memoizes the degraded value and never re-runs it. Results: classify returns SAFE_VERDICT (intent chatter, respond ignore, list none), so no reminder decision, no list op and no volunteered answer, and the message is captured as low-salience 'chatter'. extractFacts returns [], so the note is stored with no facts, and nothing ever re-extracts (consolidation only backfills event_at). getBotUsername also returns '' on a transient getMe failure, which makes an @mention undirected for that message.",
+  "scenario": "During a 2-minute Anthropic overload, Marco posts 'remind us to put the bins out friday 8pm', Ana DMs 'buy oat milk', and Charli posts 'Zuzka arrives Saturday'. All three silently vanish: no reminder is ever created, the list is unchanged, and no Zuzka fact exists. Every function run reports success, and nothing is retried.",
+  "files": [
+   "lib/ai/classify.ts:51-63",
+   "lib/ai/reminder-extract.ts:33-36",
+   "lib/ai/list-extract.ts:33-36",
+   "lib/ai/extract.ts:78-81",
+   "lib/inngest/functions/ingest.ts:221",
+   "lib/inngest/functions/ingest.ts:264",
+   "lib/inngest/functions/ingest.ts:366",
+   "lib/inngest/functions/ingest.ts:599-603"
+  ],
+  "repro": "audit-repro/critic/transient-llm-swallowed.test.ts mocks generateObject to throw APICallError(statusCode 529, isRetryable true). It asserts that classify returns intent chatter / respond ignore / list none, extractReminder returns isReminder false, extractFacts returns [], and extractListOp returns none, with none of them throwing. PASSES.",
+  "fixDirection": "Degrade to the safe default only on schema/NoObjectGenerated errors (as reply.ts does) and rethrow retryable API errors so the Inngest step retries.",
+  "confidence": "high",
+  "verdict": "unverified",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "critic"
+  ]
+ },
+ {
+  "id": "safe-verdict-captures-everything",
+  "ref": "I3",
+  "group": "intake",
+  "severity": "medium",
+  "title": "Questions and chatter are captured as memory and retrieved later as if they were house info. SAFE_VERDICT captures every message, including forget requests",
+  "mechanism": "shouldCapture depends only on worthRemembering and confidence, never on intent, so questions are stored with memoryType='question'. SAFE_VERDICT (any classify failure) sets worthRemembering=true, intent=chatter, conf=0.5, which exactly meets the 0.5 capture threshold, so every message is captured, including 'forget my number 0176…'. The forget exclusion keys on intent==='forget', which SAFE_VERDICT never sets, so the phone number is re-stored and no forget flow runs. Retrieval never filters by memory_type, and Baumy's own answers are never stored, so old questions become the grounding for new questions.",
+  "scenario": "Marco asks 'is the plumber coming on thursday?' and nobody answers in chat. A week later Ryan asks 'when is the plumber coming?' and Baumy grounds on Marco's question, replying 'Marco mentioned the plumber coming Thursday'. During a Haiku outage, 'baumy forget my number 0176…' stores the number again.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:241",
+   "lib/inngest/functions/ingest.ts:249-255",
+   "lib/ai/classify.ts:31-40",
+   "lib/core/decide.ts:46-49",
+   "lib/memory/retrieve.ts:94",
+   "lib/ai/prompts.ts:59",
+   "lib/ai/classify.ts:30-40",
+   "lib/inngest/functions/ingest.ts:241-257"
+  ],
+  "repro": "ingest-intake.test.ts 'D15: an earlier QUESTION is returned by retrieval…' uses real retrieve() and finds the question row. 'SAFE_VERDICT: classifier failure captures a forget request verbatim…' calls real classify with a failing model to get SAFE_VERDICT and asserts the forget text is stored and decision is not 'forget'. Both pass.",
+  "fixDirection": "Don't capture intent=question/chatter as evidence (or exclude them from grounding), and make SAFE_VERDICT not capture or at least never store forget-looking text.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "D15",
+  "foundBy": [
+   "intake",
+   "spec"
+  ]
+ },
+ {
+  "id": "captions-media-dropped",
+  "ref": "I4",
+  "group": "intake",
+  "severity": "medium",
+  "title": "Photo and document captions, voice notes, contacts and locations are discarded (text=null leads to a prefilter 'empty' drop), contrary to the spec",
+  "mechanism": "The webhook forwards only msg.text and never reads msg.caption or contact/location/venue fields. The spec says to classify caption text. At ingest, prefilter drops null text as 'empty' before classify.",
+  "scenario": "Marco posts a photo of the council letter captioned 'bins now go out on tuesdays'. Baumy ignores it, and a later 'when do bins go out?' gets no answer. A shared contact card for 'Plumber Klaus' is also lost.",
+  "files": [
+   "app/api/telegram/webhook/route.ts:85",
+   "lib/pipeline/prefilter.ts:12",
+   "docs/spec/llm-pipeline.md:157",
+   "docs/spec/llm-pipeline.md:782",
+   "app/api/telegram/webhook/route.ts:84",
+   "lib/pipeline/prefilter.ts:15",
+   "app/api/telegram/webhook/route.ts:86",
+   "docs/spec/security.md:879"
+  ],
+  "repro": "webhook-and-units.test.ts 'D17: a photo caption is forwarded as text=null' and 'voice notes / locations / contacts arrive with text=null'. ingest-intake.test.ts 'D17 …' shows text=null is dropped with reason 'empty' before classify. All pass.",
+  "fixDirection": "Forward text ?? caption (and a rendered contact/location/venue string) from the webhook so they go through the normal pipeline.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "D17",
+  "foundBy": [
+   "intake",
+   "reply",
+   "spec"
+  ]
+ },
+ {
+  "id": "forwarded-content-never-usable",
+  "ref": "I5",
+  "group": "intake",
+  "severity": "medium",
+  "title": "A housemate forwarding external info (landlord or council message) is quarantined and never extractable or recallable, yet gets a 🧠 'learned it' reaction",
+  "mechanism": "Any forward_origin makes the message quarantined. Capture stores it, but extractFacts is skipped and every retrieval arm excludes quarantined rows, so it can never ground a reply. The voice section still sets remembered = worthCapturing and reacts 🧠. Spec B10 says forwarded content is 'still untrusted' (it grounds replies but is not privileged), and security.md quarantines only untrusted assertions naming a member or secret, so blanket quarantine diverges from the spec. Forwarding is the normal way external notices enter a house chat.",
+  "scenario": "Marco forwards the landlord's 'boiler inspection Tuesday 10am, please be home' and Baumy reacts 🧠. On Monday someone asks 'when's the inspection?' and Baumy has nothing.",
+  "files": [
+   "lib/core/origin.ts:69",
+   "app/api/telegram/webhook/route.ts:90",
+   "lib/inngest/functions/ingest.ts:246",
+   "lib/inngest/functions/ingest.ts:262",
+   "lib/inngest/functions/ingest.ts:584-593",
+   "docs/spec/00-decisions.md:62",
+   "docs/spec/security.md:231"
+  ],
+  "repro": "ingest-intake.test.ts 'forwarded landlord notice: 🧠 acknowledged but never extractable or recallable' asserts extractFacts is not called, a 🧠 reaction, trust_level='quarantined', and real retrieve() does not return it. Passes.",
+  "fixDirection": "Treat housemate-forwarded human content as untrusted but groundable (attributed as 'forwarded by X'), keeping quarantine for bot-origin content, and never send 🧠 for quarantined captures.",
+  "confidence": "high",
+  "verdict": "downgraded",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "intake"
+  ]
+ },
+ {
+  "id": "triage-confidence-needsreply-undefined",
+  "ref": "I6",
+  "group": "intake",
+  "severity": "low",
+  "title": "needsReply is undefined in the prompt and has no effect on routing. confidence is an undefined 0..1 that silently gates reminders and the reply floor",
+  "mechanism": "TRIAGE_SYSTEM never mentions needsReply. Its only consumer, decide()'s 'reply' branch, is dead because no caller acts on decision==='reply'. confidence is just '0..1.', but decide() requires ≥0.7 for a reminder, ≥0.6 for forget and ≥0.5 for capture, and replyAllowed compares the same number to 0.85 in the default 'quiet' mode. A reminder the model is '0.65 confident' about is never extracted, yet it is captured and gets 🧠, so the house believes it was handled. The volunteered-reply floor measures classification certainty rather than how useful a reply would be.",
+  "scenario": "Ryan: 'remind us tomorrow 8am to put the bins out'. Haiku returns intent=reminder, confidence 0.65. No reminder is created and the message gets 🧠. Nobody is reminded.",
+  "files": [
+   "lib/ai/prompts.ts:57-68",
+   "lib/ai/prompts.ts:61",
+   "lib/core/decide.ts:22",
+   "lib/core/decide.ts:33",
+   "lib/core/decide.ts:37",
+   "lib/policy.ts:194-200",
+   "lib/inngest/functions/ingest.ts:405-407",
+   "lib/inngest/functions/ingest.ts:584-593"
+  ],
+  "repro": "ingest-intake.test.ts 'E20: reminder with classifier confidence 0.65 is silently not created but gets 🧠' and 'E20: needsReply is ignored by routing'. webhook-and-units.test.ts asserts TRIAGE_SYSTEM lacks needsReply and has a bare '- confidence: 0..1.'. All pass.",
+  "fixDirection": "Define confidence (and drop needsReply) in the prompt. Don't gate an explicit reminder request on it (let the extractor's isReminder decide), and never show 🧠 on a message whose requested action was dropped.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "E20",
+  "foundBy": [
+   "intake",
+   "reply",
+   "spec"
+  ]
+ },
+ {
+  "id": "group-slash-commands-leak",
+  "ref": "I7",
+  "group": "intake",
+  "severity": "low",
+  "title": "Slash commands typed in the house group other than /weekly, /guests, /reminders, /recent, /notify* and /baumy* (e.g. /pause, /help, /dashboard, /start) fall through to classify, capture and possibly an LLM answer",
+  "mechanism": "Prefilter keeps any '/' text and the DM command handler only runs in member_dm. In the house lane an unrecognised command becomes an ordinary message: it is classified, possibly captured as memory, and possibly answered by the LLM, which may claim to have paused.",
+  "scenario": "The owner types '/pause' in the group expecting silence. Baumy captures '/pause' as memory and may reply conversationally without pausing.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:214-218",
+   "lib/pipeline/prefilter.ts:14"
+  ],
+  "repro": "ingest-intake.test.ts 'group \"/pause\" is not handled as a command…' asserts classify is called with '/pause', the memory row is stored and answer is called. Passes.",
+  "fixDirection": "In the house lane, deterministically handle or reply-with-hint for unknown slash commands and never capture or classify them.",
+  "confidence": "medium",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "intake"
+  ]
+ },
+ {
+  "id": "anonymous-admin-quarantined",
+  "ref": "I8",
+  "group": "intake",
+  "severity": "low",
+  "title": "Anonymous-admin posts (from = @GroupAnonymousBot, is_bot=true) are quarantined, and the bot sender is registered as a 'member'",
+  "mechanism": "When a group admin has 'Remain anonymous' on, Telegram sends from=GroupAnonymousBot with is_bot=true plus sender_chat=the group. isBot makes every such message quarantined: never a fact, never attributed, never recalled. record-inbound also calls ensureRegistered for bot senders, adding bots as active roster members named e.g. 'Group'.",
+  "scenario": "The owner is an anonymous admin and posts 'rent goes up to 650 from October'. Baumy never learns it.",
+  "files": [
+   "app/api/telegram/webhook/route.ts:89",
+   "lib/core/origin.ts:69",
+   "lib/inngest/functions/ingest.ts:75",
+   "lib/memory/write.ts:19-36"
+  ],
+  "repro": "webhook-and-units.test.ts shows is_bot=true is forwarded for GroupAnonymousBot. ingest-intake.test.ts 'anonymous-admin message … is quarantined and unattributed' checks trust=quarantined, authoredBy null and no extractFacts. Passes.",
+  "fixDirection": "Treat sender_chat === house group as native untrusted text (attributed to 'an admin'), and skip ensureRegistered for is_bot senders.",
+  "confidence": "medium",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "intake"
+  ]
+ },
+ {
+  "id": "secret-question-stored-as-secret",
+  "ref": "I9",
+  "group": "intake",
+  "severity": "low",
+  "title": "A captured QUESTION containing secret keywords is stored as a secure memory whose 'secret' is the question text, and it then grounds replies as the password",
+  "mechanism": "scanSensitivity is pattern-based ('wifi … password'), so 'what's the wifi password again?' gets flagged. If captured (worthRemembering, or SAFE_VERDICT), it is stored with descriptor 'the wifi password' and the question encrypted. Secure items skip consolidation, so every repeat adds a row. At reply time the grounding decrypts to 'the wifi password: what's the wifi password again?', which crowds out or contradicts the real value.",
+  "scenario": "After three people ask for the wifi password, a fourth ask grounds on three 'secrets' that are questions, and Baumy may answer 'I don't have it' or quote a question.",
+  "files": [
+   "lib/core/sensitivity.ts:6",
+   "lib/memory/write.ts:64-66",
+   "lib/inngest/functions/ingest.ts:542-549"
+  ],
+  "repro": "ingest-intake.test.ts 'a captured wifi-password QUESTION becomes a secure memory…' asserts is_secure=true and content 'the wifi password'. Passes.",
+  "fixDirection": "Don't capture question-intent messages (see D15), or run the secret scan only on fact-intent captures.",
+  "confidence": "medium",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "intake"
+  ]
+ },
+ {
+  "id": "muted-topic-substring",
+  "ref": "I10",
+  "group": "intake",
+  "severity": "low",
+  "title": "Muted topics use raw substring matching, so 'bin' also mutes 'cabinet' and 'robin'",
+  "mechanism": "t.includes(m) with no word boundary.",
+  "scenario": "The owner mutes 'bin' and 'is Robin moving in?' is no longer auto-answered.",
+  "files": [
+   "lib/policy.ts:197-198"
+  ],
+  "repro": "webhook-and-units.test.ts 'muted topics are raw substring matches'. Passes.",
+  "fixDirection": "Match muted topics on word boundaries.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "intake"
+  ]
+ },
+ {
+  "id": "forget-tap-wrong-scope",
+  "ref": "A1",
+  "group": "actions",
+  "severity": "high",
+  "title": "Forget confirm-tap deletes against the chat where the button was tapped, not the house scope: DM forgets (and forgets after a supergroup migration) remove nothing but report success",
+  "mechanism": "ingest stores the pending action with groupId = houseScope and sends the confirm card to chatId (the member's DM, or the live supergroup id). On the tap, callback.ts calls forgetMemory(db, chatId, …) with chatId = cq.message.chat.id. resolvePendingAction never returns the stored groupId. Because every WHERE in forgetMemory is scoped by group_id, it matches 0 rows. The card is still edited to '🧽 Forgotten — 0 facts.' and the audit log records it. This goes against dm-queries spec §seam, which says forget resolution uses the scope.",
+  "scenario": "Charli DMs Baumy 'forget that Zuzka is staying in my room'. Baumy DMs back 'I'll forget (hidden, reversible): • zuzka staying in: charli's room'. Charli taps ✅ and sees 'Forgotten — 0 facts'. The next day in the group, Baumy still says Zuzka is staying in Charli's room. The same thing happens for a tap in the house group once it has migrated to a -100… supergroup (live id differs from scope id).",
+  "files": [
+   "lib/inngest/functions/callback.ts:66-73",
+   "lib/inngest/functions/ingest.ts:459-471",
+   "lib/inngest/functions/ingest.ts:480",
+   "app/api/telegram/webhook/route.ts:47",
+   "lib/memory/forget.ts:205"
+  ],
+  "repro": "audit-repro/actions/forget.test.ts, suite 'forget confirm-tap executes against the TAPPED chat': (1) a pending action with groupId=HOUSE tapped from the DM chat gives res.forgot===0, fact.isCurrent still true, and the edited text contains 'Forgotten — 0 facts'. (2) The same with chatId = a live supergroup id. PASS (bug confirmed).",
+  "fixDirection": "Have resolvePendingAction return the stored group_id and run forgetMemory against it (optionally check it against resolveHouseIds().scopeId), never against the callback's chat id.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "actions"
+  ]
+ },
+ {
+  "id": "reminder-silent-fail",
+  "ref": "A2",
+  "group": "actions",
+  "severity": "high",
+  "title": "A reminder with an unparseable or missing time is silently dropped, and the user sees a 🧠 'noted' reaction",
+  "mechanism": "The reminder step returns false when isReminder/content is empty or parseWhen returns null. That covers event-anchored times ('when Zuzka lands'), 'the 9th', 'half past 7', 'by 6', and no time at all. Nothing asks for a time and nothing says the reminder failed. With reminderSet false, the voice branch falls through to 🧠 (worthCapturing) or 👀, which reads as success. If the classifier also said respond=answer, the reply model is never told the reminder failed (see the intake/reply repros), so it can confirm a reminder that doesn't exist.",
+  "scenario": "Marco: 'remind us to pick up Zuzka when she lands'. Baumy reacts 🧠, no reminder exists, and nobody goes to the airport.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:366-369",
+   "lib/inngest/functions/ingest.ts:580-594",
+   "lib/reminders/parse.ts:169-170"
+  ],
+  "repro": "audit-repro/actions/reminders.test.ts, suite 'E19': whenText 'when Zuzka lands' gives reminderSet=false, 0 reminder rows, no send, last reaction 🧠. whenText '' behaves the same. PASS.",
+  "fixDirection": "When isReminder is true but no time resolves, reply with a short deterministic 'when should I remind you?' (or say event-triggered reminders aren't supported) instead of acknowledging.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "E19",
+  "foundBy": [
+   "actions"
+  ]
+ },
+ {
+  "id": "reply-blind-to-action-outcomes",
+  "ref": "A3",
+  "group": "actions",
+  "severity": "medium",
+  "title": "Reminder requests get words instead of 👍, and the reply model is never told whether the reminder was actually set, so it can falsely confirm",
+  "mechanism": "TRIAGE_SYSTEM lists 'remind us…' among requests that must be respond='answer'. With confidence ≥0.85 (or directed, or console topic) wantAnswer is true and the reply branch preempts the 👍 branch at 580. The reply prompt gets no reminderSet, learnedFact or list result. REPLY_GROUNDING says 'If they ALSO asked you to remember/remind something, acknowledge that part', so the model confirms even when the reminder step returned false (parse failure, 'isReminder' false, or confidence <0.7 dropped decide() to capture). The PERSONA also says a 👍, not words, should acknowledge scheduling.",
+  "scenario": "Charli: '@baumy_bot remind me to pick up Zuzka when she lands'. parseWhen can't resolve 'when she lands', so no reminder is created, yet Baumy replies 'Got it, I'll remind you 👍'. Nothing ever fires and Zuzka waits at the airport.",
+  "files": [
+   "lib/ai/prompts.ts:62",
+   "lib/ai/prompts.ts:21",
+   "lib/ai/prompts.ts:10",
+   "lib/inngest/functions/ingest.ts:362-387",
+   "lib/inngest/functions/ingest.ts:404-409",
+   "lib/inngest/functions/ingest.ts:580-583",
+   "lib/inngest/functions/ingest.ts:363-387",
+   "lib/inngest/functions/ingest.ts:409"
+  ],
+  "repro": "audit-repro/reply/conversation.test.ts 'reminder request classified respond=answer' asserts reminderSet=false, the reply prompt has no action-outcome signal, and the (mocked) confirming line is sent. Passes.",
+  "fixDirection": "Pass an ACTIONS block (reminder set/failed + when, facts learned, list result) into the reply prompt, and when a reminder failed to parse, have code send the follow-up ('when exactly?') instead of letting the model improvise a confirmation.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "E19",
+  "foundBy": [
+   "reply",
+   "intake",
+   "spec"
+  ]
+ },
+ {
+  "id": "reminder-no-speaker",
+  "ref": "A4",
+  "group": "actions",
+  "severity": "medium",
+  "title": "Reminder extraction and delivery carry no speaker: 'remind me to X' posts a nameless '⏰ X' to the whole house",
+  "mechanism": "extractReminder(text) gets only the message. extractForget and extractFacts both get a SPEAKER line, but this one does not, and the prompt says 'what to remind the house about', so first-person asks lose their owner. created_by is stored but never rendered: reminderBody is `⏰ ${content}` and /reminders prints content only. 'my'/'me' inside content also end up addressed to everyone.",
+  "scenario": "Charli: 'remind me to call the plumber at 6pm'. At 18:00 the group gets '⏰ call the plumber', and three housemates each assume someone else's job was meant. /reminders lists '⏰ call the plumber — Wed 18:00' with no owner either.",
+  "files": [
+   "lib/ai/reminder-extract.ts:26-31",
+   "lib/ai/prompts.ts:102-108",
+   "lib/inngest/functions/ingest.ts:366-377",
+   "lib/inngest/functions/reminders.ts:186-187",
+   "lib/reports/reports.ts:199",
+   "lib/inngest/functions/ingest.ts:366",
+   "lib/inngest/functions/reminders.ts:23-27",
+   "lib/ai/prompts.ts:122-127"
+  ],
+  "repro": "audit-repro/actions/reminders.test.ts, 'E18 … nameless': the EXTRACT_REMINDER prompt does not mention Charli, the stored content is 'call the plumber', and reminderDeliver sends exactly '⏰ call the plumber'. PASS.",
+  "fixDirection": "Pass the speaker name to the extractor (resolve first person) and/or render the creator from created_by in the delivered line and in /reminders.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "E18",
+  "foundBy": [
+   "actions",
+   "spec"
+  ]
+ },
+ {
+  "id": "dm-reminder-broadcast",
+  "ref": "A5",
+  "group": "actions",
+  "severity": "medium",
+  "title": "A personal reminder set privately in a DM is delivered to the house group",
+  "mechanism": "The reminder step hard-codes deliverChatId = houseChatId for every lane, and delivery always goes through sendToHouseResilient. A member_dm 'remind me…' therefore turns into a public group post with the first person unresolved. The fixed-destination allow-list already permits the sender's own DM as a target for replies, but reminders never use it.",
+  "scenario": "Charli DMs 'remind me to take my antibiotics at 9pm'. At 21:00 the house group sees '⏰ take my antibiotics', which is a private health detail posted to everyone and addressed to no one.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:370-373",
+   "lib/inngest/functions/reminders.ts:239"
+  ],
+  "repro": "audit-repro/actions/reminders.test.ts, 'a PERSONAL reminder set privately in a DM is broadcast…': row.deliverChatId===HOUSE and the delivered body is '⏰ take my antibiotics'. PASS.",
+  "fixDirection": "For member_dm-origin reminders (or first-person ones), deliver to the authenticated sender's DM (origin.chatId), a code-resolved allow-listed target, or at least confirm the destination.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "actions"
+  ]
+ },
+ {
+  "id": "reminder-no-recurrence-or-multi",
+  "ref": "A6",
+  "group": "actions",
+  "severity": "medium",
+  "title": "Recurring reminders ('every friday') silently become one-offs, and only one reminder per message is possible",
+  "mechanism": "The extraction schema is a single {isReminder, whenText, content}, with no recurrence field and no array. parseWhen('every friday at 8pm') resolves to the next Friday. After delivery the row is marked 'sent' and nothing reschedules it. A message holding two reminders keeps only one. The spec requires recurrence for dated events.",
+  "scenario": "Charli: 'remind us every friday at 8pm to put the bins out'. Baumy reacts 👍, fires once this Friday, and never again, while the house believes it's a standing reminder. 'Remind me at 5 to defrost the chicken and at 7 to put it in the oven' produces only one ⏰.",
+  "files": [
+   "lib/ai/reminder-extract.ts:8-12",
+   "lib/reminders/store.ts:17-32",
+   "lib/inngest/functions/reminders.ts:246",
+   "docs/spec/00-decisions.md:50"
+  ],
+  "repro": "audit-repro/actions/reminders.test.ts, 'every friday at 8pm silently becomes ONE Friday': one row, status 'sent' after delivery, no new row, and the schema keys are exactly [isReminder, whenText, content]. PASS. The multi-reminder case is proven by the schema shape (code-read).",
+  "fixDirection": "Extend the extraction to a list of reminders with an optional recurrence rule, reschedule on markSent, and at minimum tell the user when recurrence was requested but not supported.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "actions"
+  ]
+ },
+ {
+  "id": "soft-forget-leaves-notes",
+  "ref": "A7",
+  "group": "actions",
+  "severity": "medium",
+  "title": "A soft forget hides the fact but the source message stays active, so Baumy keeps answering with the 'forgotten' info",
+  "mechanism": "Soft mode only sets is_current=false on facts. Notes are scrubbed only on purge. The soft card says \"I'll forget (hidden, reversible)\", but the verbatim evidence note (e.g. 'Zuzka is staying in my room this weekend') stays is_active and embedded. The hybrid retrieval in the reply path returns it, so the next question is answered from it. The memory repro shows the soft-forgotten fact also resurfaces as a lineage parent.",
+  "scenario": "Charli: 'forget that Zuzka is staying in my room', then taps ✅ and sees 'Forgotten — 1 fact'. Later Marco asks 'where's Zuzka sleeping?' and Baumy answers 'in Charli's room, per Charli'.",
+  "files": [
+   "lib/memory/forget.ts:199-226",
+   "lib/inngest/functions/ingest.ts:443-451",
+   "lib/memory/retrieve.ts:150-158"
+  ],
+  "repro": "audit-repro/actions/forget.test.ts, 'SOFT forget hides the fact but the source note stays active…': forgetMemory soft gives facts=1, then retrieve('where is Zuzka staying this weekend') still returns the note. PASS.",
+  "fixDirection": "Make soft forget also deactivate the matched notes (reversibly, e.g. is_active=false) or exclude them from retrieval, so 'hidden' means hidden from replies.",
+  "confidence": "high",
+  "verdict": "downgraded",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "actions"
+  ]
+ },
+ {
+  "id": "forget-subject-miss",
+  "ref": "A8",
+  "group": "actions",
+  "severity": "medium",
+  "title": "Forget resolution misses facts about a named subject: values match only object_value, and subject lookup needs every attribute word to appear literally",
+  "mechanism": "A named value ('Zuzka') is matched with facts.object_value ~* only, never the subject entity, so facts whose subject is Zuzka are not proposed. The subject path runs only when attribute is non-empty, and it requires every attribute word longer than 2 characters to appear in 'predicate value' as a substring, so natural phrasing ('where she is sleeping' against staying_in) finds nothing. Result: soft mode replies \"That's only in past messages…\" or \"Nothing like that in my memory\" even though a current fact exists.",
+  "scenario": "Charli: 'forget everything about Zuzka'. Baumy replies \"That's only in past messages, not a fact I can just hide\", but the fact zuzka→staying_in→charli's room is current and keeps grounding answers.",
+  "files": [
+   "lib/memory/forget.ts:102-122",
+   "lib/memory/forget.ts:128-135",
+   "lib/ai/prompts.ts:163-170",
+   "lib/inngest/functions/ingest.ts:449-456"
+  ],
+  "repro": "audit-repro/actions/forget.test.ts: findMemoryToForget({values:['Zuzka'],subject:'Zuzka',attribute:''}) returns facts=[] with noteIds=1. {subject:'Zuzka',attribute:'where she is sleeping'} returns facts=[]. Both PASS.",
+  "fixDirection": "When a subject resolves to an entity (or a value equals an entity name), propose that entity's current facts, and match attributes loosely (any word or predicate synonyms) since the human confirm-tap is the precision gate.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "actions"
+  ]
+ },
+ {
+  "id": "undirected-reminders",
+  "ref": "A9",
+  "group": "actions",
+  "severity": "medium",
+  "title": "Un-directed group text creates reminders, where spec transcript (b) and the master spec require a directed request",
+  "mechanism": "decide() returns 'reminder' for any house message classified intent=reminder with confidence >=0.7. There is no directedness check. Spec acceptance transcript (b) says the un-directed 'someone remind everyone to clear the front room Friday night' must produce no reminder row, and T8 says 'reminders only from explicit directed creation'. (AGENTS.md makes reminders auto-commit, but it does not remove the directed requirement.)",
+  "scenario": "Theo tells Jules 'remind me to text you about the van tomorrow' in the group. Baumy posts '⏰ text you about the van' to the whole house tomorrow.",
+  "files": [
+   "lib/core/decide.ts:37",
+   "lib/core/policy.ts:23",
+   "lib/inngest/functions/ingest.ts:363",
+   "docs/spec/product.md:365-384",
+   "docs/spec/00-master-spec.md:144",
+   "docs/spec/product.md:726"
+  ],
+  "repro": "audit-repro/spec-gap/chat-routing.test.ts 'spec product.md transcript (b)' asserts a baumy_reminders row is created from an un-directed Theo message. PASS.",
+  "fixDirection": "Require `directed` (or the DM lane) for reminder creation, as the spec's write-gate keyed on origin × directedness does.",
+  "confidence": "medium",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "spec"
+  ]
+ },
+ {
+  "id": "list-early-return-swallows",
+  "ref": "A10",
+  "group": "actions",
+  "severity": "low",
+  "title": "A shopping-list op returns early, so any question or request in the same message is never answered, even when directed",
+  "mechanism": "When the list step handles the message it returns { decision: 'list' } before the reminder and reply blocks. In the group an add/check-off only gets a reaction, even when directed (@mention / console topic) and even when the verdict is intent=question/respond=answer.",
+  "scenario": "Charli: '@baumy add milk to the list — and what's the wifi password?' Milk is added and Baumy reacts 🧠, but the question gets no answer.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:293-357",
+   "lib/core/decide.ts:291-303"
+  ],
+  "repro": "audit-repro/actions/list.test.ts, 'list early-return swallows…': decision 'list', REPLY_SYSTEM never called, no send, reaction 🧠. PASS.",
+  "fixDirection": "After a handled list op, still run the reply path when the message is directed or contains a question beyond the list op (or skip the list short-circuit when intent=question and op≠query).",
+  "confidence": "high",
+  "verdict": "downgraded",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "actions"
+  ]
+ },
+ {
+  "id": "list-notes-never-retired",
+  "ref": "A11",
+  "group": "actions",
+  "severity": "low",
+  "title": "List ops are also captured as memory notes and never retired, so later questions ground on stale 'we're out of milk'",
+  "mechanism": "Capture runs before, and independently of, the list step. 'we're out of milk' or 'buy milk' becomes an active evidence note (and possibly a fact), and nothing deactivates it when the item is checked off. A later question that doesn't go through the list extractor ('do we have milk?') is answered from memory, not the list.",
+  "scenario": "Monday: 'we're out of milk'. Tuesday: 'got the milk' (checked off). Wednesday: '@baumy do we have milk?' Baumy: 'Charli said we're out of milk'.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:241-282",
+   "lib/inngest/functions/ingest.ts:293"
+  ],
+  "repro": "audit-repro/actions/list.test.ts, 'list ops are ALSO captured…': after add plus check-off, memory_items still has an active \"we're out of milk\". PASS (the stale answer itself depends on the model, so it is inferred).",
+  "fixDirection": "Skip capture for messages fully handled as list ops (or capture at low salience and deactivate on check-off), and route list-state questions to the list table.",
+  "confidence": "medium",
+  "verdict": "upheld",
+  "evidence": "repro-test-passed",
+  "priorId": "",
+  "foundBy": [
+   "actions"
+  ]
+ },
+ {
+  "id": "reports-any-chat",
+  "ref": "A12",
+  "group": "actions",
+  "severity": "low",
+  "title": "/bug, /weekly, /guests, /reminders and /recent run in any chat a member types them in (before the lane check), posting house memory into foreign groups",
+  "mechanism": "The report and house-report branches check only roster.isMember(fromId). They run before `if (origin.lane === 'ignore') return`, and reply via sayHouse(chatId) to the inbound chat. A housemate typing /guests in another group the bot belongs to gets the house's guest/room report posted there.",
+  "scenario": "Marco adds Baumy to his football group and types /guests. Baumy posts who is sleeping in which room at the house to that group.",
+  "files": [
+   "lib/inngest/functions/ingest.ts:106-155",
+   "lib/inngest/functions/ingest.ts:218"
+  ],
+  "repro": "Not written: straightforward from the branch order at ingest.ts:106-155 vs 218.",
+  "fixDirection": "Require origin.lane ∈ {house, member_dm} for report commands, like every other reply path.",
+  "confidence": "high",
+  "verdict": "upheld",
+  "evidence": "code-read",
+  "priorId": "",
+  "foundBy": [
+   "actions"
+  ]
+ }
+]

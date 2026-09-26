@@ -4,7 +4,7 @@ import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { listItems } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
-import { addListItems, checkOffItems, currentList, normalizeItem } from '@/lib/lists/store'
+import { addListItems, checkOffItems, currentList, normalizeItem, looseItemKey } from '@/lib/lists/store'
 
 const A = '-100listA'
 const B = '-100listB'
@@ -45,6 +45,29 @@ describe('house shopping list — store (group-scoped, precision-first)', () => 
     expect(sorted(res.checkedOff)).toEqual(['eggs', 'milk'])
     expect(res.notFound).toEqual(['nutmeg']) // never was on the list
     expect((await currentList(db, A)).map((r) => r.item)).toEqual(['bin bags'])
+  })
+
+  // K4 (the "consider" half of the fix): a check-off tolerates an article and a plain plural — but only
+  // when exactly one open item fits, so a near-miss is still reported, never guessed at.
+  it('check-off tolerates articles and plain plurals, for an unambiguous single item only (K4)', async () => {
+    expect(looseItemKey('the eggs')).toBe('egg')
+    expect(looseItemKey('Bin Bag')).toBe(looseItemKey('bin bags'))
+    expect(looseItemKey('glass')).toBe('glass') // a word that ends in s is not a plural
+    expect(looseItemKey('almond milk')).not.toBe(looseItemKey('milk'))
+    const db = await makeTestDb()
+    await ensureRegistered(db, A, null)
+    await addListItems(db, { groupId: A, items: ['egg', 'bin bags', 'almond milk', 'sponge', 'sponges'], addedBy: null })
+    const res = await checkOffItems(db, { groupId: A, items: ['the eggs', 'bin bag', 'milk', 'a sponge'], checkedBy: null })
+    expect(sorted(res.checkedOff)).toEqual(['bin bags', 'egg'])
+    // "milk" never ticks "almond milk"; "a sponge" loosely fits TWO open rows ("sponge" exactly
+    // failed only because of the article) → ambiguous, left alone
+    expect(sorted(res.notFound)).toEqual(['a sponge', 'milk'])
+    expect(sorted((await currentList(db, A)).map((r) => r.item))).toEqual(['almond milk', 'sponge', 'sponges'])
+    // the loose pass stays inside the scope: another house's identical item is untouched
+    await ensureRegistered(db, B, null)
+    await addListItems(db, { groupId: B, items: ['cheese'], addedBy: null })
+    expect((await checkOffItems(db, { groupId: A, items: ['the cheeses'], checkedBy: null })).notFound).toEqual(['the cheeses'])
+    expect((await currentList(db, B)).map((r) => r.item)).toEqual(['cheese'])
   })
 
   it('a bought item can be re-added as a fresh open row (partial-unique allows it)', async () => {

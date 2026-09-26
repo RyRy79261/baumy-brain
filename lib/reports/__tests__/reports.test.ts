@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { APICallError } from 'ai'
 
 let captured: { prompt?: string; system?: string } = {}
 const genText = vi.fn(async (args: { prompt?: string; system?: string }) => {
@@ -16,10 +17,14 @@ process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 6).toString('base64')
 
 const { makeTestDb } = await import('@/lib/memory/__tests__/pglite')
 const { ensureRegistered, captureMemory } = await import('@/lib/memory/write')
+const { withSimulatedTime } = await import('@/lib/core/clock')
 const { reconcileFact } = await import('@/lib/memory/facts')
 const { createReminder } = await import('@/lib/reminders/store')
 const { embedSync } = await import('@/lib/ai/embed')
 const { parseHouseReport, weeklyReport, guestReport, upcomingRemindersReport, recentLearningsReport } = await import('@/lib/reports/reports')
+const { retrieve } = await import('@/lib/memory/retrieve')
+const { buildDigest } = await import('@/lib/reports/digest')
+const { upsertMember } = await import('@/lib/identity/roster')
 
 const GROUP = '-100reports'
 const embed = async (t: string) => embedSync(t)
@@ -41,7 +46,8 @@ describe('weeklyReport', () => {
   it('grounds the digest in recent notes + upcoming reminders + today', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
-    await captureMemory({ groupId: GROUP, content: 'we threw a big party on saturday', memoryType: 'chatter', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    // (A statement: since phase 3 /weekly is house NEWS only — never chatter or a question — T5.)
+    await captureMemory({ groupId: GROUP, content: 'we threw a big party on saturday', memoryType: 'statement', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
     await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'take the bins out', fireAt: new Date(Date.now() + 3 * 86_400_000), createdBy: null })
 
     const out = await weeklyReport(db, GROUP)
@@ -52,10 +58,61 @@ describe('weeklyReport', () => {
     expect(captured.system).toContain('WEEKLY HOUSE DIGEST')
   })
 
+  it('D2: a personal reminder set in a DM (delivered to its creator) never appears in the group digest', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await upsertMember(db, GROUP, '702', 'Marco', 'member')
+    const soon = new Date(Date.now() + 3 * 86_400_000)
+    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'take the bins out', fireAt: soon, createdBy: '702' })
+    await createReminder(db, { groupId: GROUP, deliverChatId: '702', content: 'Marco: call the doctor', fireAt: soon, createdBy: '702' })
+
+    await weeklyReport(db, GROUP)
+    expect(captured.prompt).toContain('take the bins out')
+    expect(captured.prompt).not.toContain('doctor')
+    const digest = await buildDigest(db, GROUP)
+    expect(digest).toContain('take the bins out')
+    expect(digest).not.toContain('doctor')
+  })
+
   it('says it is quiet (no model call) when there is nothing on file', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     expect(await weeklyReport(db, GROUP)).toMatch(/quiet/i)
+  })
+})
+
+describe('weeklyReport — the last 7 days, every line dated (T5)', () => {
+  it('keeps only statement/fact notes from the last week, dates each, and dates what is coming up', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const now = new Date('2026-09-26T10:00:00Z') // Sat 26 Sep, 12:00 Berlin
+    await withSimulatedTime(new Date('2026-06-01T10:00:00Z'), async () => {
+      await captureMemory({ groupId: GROUP, content: 'the party is tomorrow night', memoryType: 'statement', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    })
+    await withSimulatedTime(new Date('2026-09-24T09:00:00Z'), async () => {
+      await captureMemory({ groupId: GROUP, content: 'the boiler got serviced', memoryType: 'statement', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+      await captureMemory({ groupId: GROUP, content: 'is the party still on?', memoryType: 'question', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+      await captureMemory({ groupId: GROUP, content: 'lol same', memoryType: 'chatter', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+      await reconcileFact(db, {
+        groupId: GROUP,
+        fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'arrives_on', object: 'Fri 2 Oct evening' },
+        authoredBy: null,
+        trustLevel: 'untrusted',
+        eventAt: new Date('2026-10-02T17:00:00Z'),
+        validTo: new Date('2026-10-02T23:00:00Z'),
+      })
+    })
+    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'Charli: take the bins out', fireAt: new Date('2026-09-29T18:00:00Z'), createdBy: null, recurrence: 'FREQ=WEEKLY;BYDAY=TU' })
+
+    await weeklyReport(db, GROUP, now)
+    const p = captured.prompt ?? ''
+    expect(p).toContain('- noted Thu 24 Sep: the boiler got serviced') // dated when it was SAID
+    expect(p).not.toContain('the party is tomorrow night') // months old → not this week's news
+    expect(p).not.toContain('is the party still on?') // a question is not news
+    expect(p).not.toContain('lol same') // chatter is not news
+    expect(p).toContain('- event Fri 2 Oct 19:00: zuzka arrives on: Fri 2 Oct evening') // the EVENT's date
+    expect(p).toContain('- reminder Tue 29 Sep 20:00: Charli: take the bins out (repeats every Tuesday)')
+    expect(p).toContain('TODAY: Saturday, 26 September 2026')
   })
 })
 
@@ -70,6 +127,66 @@ describe('guestReport', () => {
     expect(captured.prompt).toContain('zuzana')
     expect(captured.prompt).toContain('the cave')
     expect(captured.system).toContain('UPCOMING GUESTS')
+  })
+
+  it('T2: an expired stay is left out; a current one carries its date range', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    // March: Zuzka stayed in Charli's room (Sat 14 – Sun 15 Mar) — long over by September.
+    await withSimulatedTime(new Date('2026-03-12T18:00:00Z'), () =>
+      reconcileFact(db, {
+        groupId: GROUP,
+        fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'staying_in', object: "charli's room", objectKind: 'place' },
+        authoredBy: null,
+        trustLevel: 'untrusted',
+        eventAt: new Date('2026-03-13T23:00:00Z'),
+        validTo: new Date('2026-03-15T22:59:59.999Z'),
+      }),
+    )
+    // September: Iman is staying in the cave this weekend (Sat 3 – Sun 4 Oct).
+    await withSimulatedTime(new Date('2026-09-28T18:00:00Z'), () =>
+      reconcileFact(db, {
+        groupId: GROUP,
+        fact: { subject: 'iman', subjectKind: 'person', predicate: 'staying_in', object: 'the cave', objectKind: 'place' },
+        authoredBy: null,
+        trustLevel: 'untrusted',
+        eventAt: new Date('2026-10-02T22:00:00Z'),
+        validTo: new Date('2026-10-04T21:59:59.999Z'),
+      }),
+    )
+    await guestReport(db, GROUP, new Date('2026-09-29T10:00:00Z'))
+    const p = captured.prompt ?? ''
+    expect(p).not.toMatch(/zuzka/) // a visit that is over is not a guest
+    expect(p).toContain('iman stays in: the cave (Sat 3 Oct – Sun 4 Oct)') // staying_in → the canonical stays_in (spec §7)
+  })
+
+  it('D4: a member-FORWARDED note is labelled as someone else\'s words — in the model prompt AND the raw fallback', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await upsertMember(db, GROUP, '701', 'Charli', 'owner')
+    const fwd = {
+      id: 'm-fwd',
+      content: 'guests staying in the cave room arriving this month: Zuzka',
+      memoryType: 'statement',
+      authoredBy: null,
+      trustLevel: 'forwarded',
+      forwardedBy: '701',
+      similarity: 0.9,
+      isSecure: false,
+      contentEncrypted: null,
+      createdAt: new Date().toISOString(),
+    }
+    vi.mocked(retrieve).mockResolvedValueOnce([fwd])
+    await guestReport(db, GROUP)
+    const p = captured.prompt ?? ''
+    expect(p).toMatch(/note said .*\(a message Charli forwarded — not their own words\): guests staying in the cave room/)
+    expect(p).not.toMatch(/note said [^(\n]*: guests staying/) // never an unlabelled house-memory line
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(retrieve).mockResolvedValueOnce([fwd])
+    genText.mockRejectedValueOnce(new APICallError({ message: 'prompt is too long', url: 'u', requestBodyValues: {}, statusCode: 400, isRetryable: false }))
+    expect(await guestReport(db, GROUP)).toContain('(a message Charli forwarded — not their own words): guests staying')
+    err.mockRestore()
   })
 
   it('says the house is guest-free (no model call) when nothing is on the books', async () => {
@@ -124,5 +241,41 @@ describe('recentLearningsReport (introspection — deterministic, secret-safe)',
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     expect(await recentLearningsReport(db, GROUP)).toMatch(/haven't picked up|nothing/i)
+  })
+})
+
+// I2: a transient provider error must propagate (the report step retries) — only unusable output
+// degrades to the deterministic fallback.
+describe('report model failures', () => {
+  // What generateText really throws: an APICallError. A transient one (529) rethrows so the step
+  // retries; a permanent one (400 prompt-too-long as memory grows, 401, model gone) can never succeed
+  // on retry, so the report falls back to the deterministic digest / raw list instead of nothing.
+  const apiError = (statusCode: number, isRetryable: boolean) =>
+    new APICallError({ message: statusCode === 400 ? 'prompt is too long' : 'Overloaded', url: 'u', requestBodyValues: {}, statusCode, isRetryable })
+
+  it('weekly: a transient error rethrows; a permanent refusal degrades to the deterministic digest', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await captureMemory({ groupId: GROUP, content: 'the boiler got serviced', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    genText.mockRejectedValueOnce(apiError(529, true))
+    await expect(weeklyReport(db, GROUP)).rejects.toThrow('Overloaded')
+    genText.mockRejectedValueOnce(apiError(400, false))
+    const out = await weeklyReport(db, GROUP)
+    expect(out).not.toBe('REPORT OK')
+    expect(out.length).toBeGreaterThan(0)
+    err.mockRestore()
+  })
+
+  it('guests: a permanent refusal degrades to the raw list', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', predicate: 'staying_in', object: "charli's room" }, authoredBy: null, trustLevel: 'untrusted' })
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    genText.mockRejectedValueOnce(apiError(400, false))
+    expect(await guestReport(db, GROUP)).toMatch(/^Here's what I've got on guests:[\s\S]*zuzka/)
+    genText.mockRejectedValueOnce(apiError(529, true))
+    await expect(guestReport(db, GROUP)).rejects.toThrow('Overloaded')
+    err.mockRestore()
   })
 })

@@ -48,7 +48,9 @@ separately, because capture runs orthogonally, before the list op).
    handling (never crash-loops, never blackholes — MEMORY.md best-effort rule).
 4. **Dispose (code):** `addListItems` / `checkOffItems` / `currentList` (`lib/lists/store.ts`) run
    against the group-scoped table. Deterministic acks (`lib/lists/format.ts`) — DM → words, group →
-   a quiet 🧠 (add) / 👍 (check off) reaction.
+   a quiet reaction chosen from the **store outcome** (K4, chat-understanding-v2 §3): add → ✍ when
+   something new went on, 👀 when it was all already listed; check-off → 👍 only when everything named
+   was ticked, otherwise the `checkoffAck` words (what wasn't on the list, what's left).
 
 A fully-compromised model can at most return an op enum + item strings; it can never name the scope,
 the attribution, or a row id.
@@ -92,6 +94,10 @@ the attribution, or a row id.
   item off drops it out of the predicate, so a later "buy milk again" legitimately creates a fresh
   open row. Dedupe is **exact-normalized only** (precision-first) — "milk" and "almond milk" stay
   distinct; the index is the race backstop, `onConflictDoNothing` + a pre-check give the friendly ack.
+- **Check-off matching** (`checkOffItems`): exact normalized first; then a read-side loose key
+  (`looseItemKey` — a leading article/quantifier and a plain plural dropped: "got the eggs" ticks
+  "egg"), counted only when exactly ONE open item has that key. "milk" never ticks "almond milk" and an
+  ambiguous pair is reported as a miss (audit K4, 2026-09-26). The add/dedupe key is unchanged.
 
 ## Deliberately deferred
 
@@ -99,9 +105,8 @@ the attribution, or a row id.
   migration.
 - **Remove-without-buying** (distinct from "bought"): `is_active` soft-remove exists in the schema;
   no op surfaces it in v1 (check-off covers "it's handled").
-- **Fuzzy check-off matching**: v1 resolves a check-off by exact normalized match and reports a miss
-  ("couldn't find X") rather than guessing — precision-first. A conservative fuzzy fallback is a
-  possible follow-up.
+- **Fuzzy check-off matching** beyond articles/plurals (typos, synonyms — "semi-skimmed" for "milk"):
+  still a miss ("couldn't find X") rather than a guess — precision-first.
 - **Quantities / provenance link**: folded into the item string for now; a structured `quantity`
   column or a `source_memory_item_id` lineage link (mirroring `docs/spec/fact-lineage.md`) is an
   additive future column.

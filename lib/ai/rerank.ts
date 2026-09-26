@@ -8,7 +8,7 @@ import type { RetrievedMemory } from '@/lib/memory/retrieve'
 // retrieved candidate's relevance to the question, then we reorder by that score —
 // a precision boost on top of RRF for the searches that warrant it. Best-effort:
 // callers fall back to the fusion order if this throws.
-const rerankSchema = z.object({
+export const rerankSchema = z.object({
   scores: z.array(z.object({ i: z.number().int().min(0), score: z.number().min(0).max(1) })),
 })
 

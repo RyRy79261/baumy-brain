@@ -26,11 +26,16 @@ describe('webSearchAnswer — Anthropic server-side web search, gated + best-eff
     expect(captured.system).toContain('search the web')
   })
 
-  it('is BEST-EFFORT: on tool/model error it returns searched:false so the caller falls back', async () => {
+  it('is BEST-EFFORT on unusable output: returns searched:false so the caller falls back', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
-    genText.mockRejectedValueOnce(new Error('web search unavailable'))
+    genText.mockRejectedValueOnce(new Error('No object generated: response did not match schema'))
     await expect(webSearchAnswer('search the web for X')).resolves.toEqual({ text: '', searched: false })
     err.mockRestore()
+  })
+
+  it('a transient error rethrows so the reply step retries (I2)', async () => {
+    genText.mockRejectedValueOnce(new Error('web search unavailable'))
+    await expect(webSearchAnswer('search the web for X')).rejects.toThrow('web search unavailable')
   })
 
   it('treats an empty result as not-searched (memory-only fallback)', async () => {

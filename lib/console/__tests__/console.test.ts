@@ -8,6 +8,7 @@ import { createReminder } from '@/lib/reminders/store'
 import { createPendingAction } from '@/lib/confirm/store'
 import { embedSync } from '@/lib/ai/embed'
 import { pendingWork } from '@/lib/console/pending'
+import { withSimulatedTime } from '@/lib/core/clock'
 import { houseTimeline, factChain } from '@/lib/console/timeline'
 
 const GROUP = '-100console'
@@ -62,12 +63,16 @@ describe('pending view — what Baumy is about to do, at a given now', () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     const now = new Date('2026-07-30T09:00:00Z')
-    await createPendingAction(db, {
-      groupId: GROUP,
-      actionType: 'memory.forget',
-      payload: { mode: 'purge', scrubValues: ['the door code is 4471'] },
-      requestedBy: '900',
-    })
+    // Proposed AT the simulated now: the card's TTL runs from the clock seam, not the wall clock
+    // (it used to read Date.now(), so this test broke once the real date passed the fixture's).
+    await withSimulatedTime(now, () =>
+      createPendingAction(db, {
+        groupId: GROUP,
+        actionType: 'memory.forget',
+        payload: { mode: 'purge', scrubValues: ['the door code is 4471'] },
+        requestedBy: '900',
+      }),
+    )
 
     const p = await pendingWork(db, GROUP, now)
     expect(p.confirms).toHaveLength(1)

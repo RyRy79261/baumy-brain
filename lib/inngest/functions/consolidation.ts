@@ -5,7 +5,8 @@ import { getHouseChatId } from '@/lib/identity/house'
 import { loadResponsePolicy } from '@/lib/policy'
 import { houseTz } from '@/lib/env'
 import { recentUndatedFacts, setFactEventAt } from '@/lib/memory/facts'
-import { parseEventDate } from '@/lib/reminders/parse'
+import { parseEventWindow } from '@/lib/reminders/parse'
+import { now as clockNow } from '@/lib/core/clock'
 import { orphanedEventReminders, cancelReminder } from '@/lib/reminders/store'
 import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
 
@@ -34,25 +35,26 @@ export async function runConsolidationSweep(
   const since = new Date(now.getTime() - LOOKBACK_DAYS * 86_400_000)
 
   // A — catch up missed / pre-feature dates.
-  const undated = await recentUndatedFacts(db, groupId, since)
+  const undated = await recentUndatedFacts(db, groupId, since, now)
   let backfilled = 0
   for (const f of undated) {
     // Resolve the fact's stored value against WHEN IT WAS RECORDED — "tomorrow night" said last
-    // Tuesday means the Wednesday after, not tomorrow. parseEventDate is the PRECISION-FIRST
-    // reader (docs/spec/event-surfacing.md): the date phrase must be most of the value and must
-    // name a day, and it is never rolled forward. A plain attribute ("the extra room"), a
-    // past-tense aside ("was supposed to leave on Sunday") and a prose blob with a month name in
-    // it all resolve to null instead of inventing a future event.
-    const parsed = parseEventDate(f.objectValue, tz, DateTime.fromJSDate(f.recordedAt))
-    if (!parsed || parsed.fireAt.getTime() <= now.getTime()) continue // not a date, or already past
-    await setFactEventAt(db, f.id, parsed.fireAt)
+    // Tuesday means the Wednesday after, not tomorrow. parseEventWindow is the SAME resolver capture
+    // uses (lib/core/when.ts — so "monday morning" recorded on a Thursday is the Monday after, T12),
+    // plus the PRECISION-FIRST guards (docs/spec/event-surfacing.md): the date phrase must be most of
+    // the value and must name a day. A plain attribute ("the extra room"), a past-tense aside ("was
+    // supposed to leave on Sunday") and a prose blob with a month name in it all resolve to null
+    // instead of inventing a future event.
+    const w = parseEventWindow(f.objectValue, tz, DateTime.fromJSDate(f.recordedAt))
+    if (!w || w.validTo.getTime() <= now.getTime()) continue // not a date, or already over
+    await setFactEventAt(db, f.id, w.eventAt, w.validTo)
     backfilled++
   }
   // Schedule heads-ups for everything now dated (idempotent — safe even with nothing backfilled).
   const { created } = await runEventSurfacingScan(db, groupId, now, tz)
 
   // B — integrity: a superseded/cancelled event must not still nudge.
-  const orphans = await orphanedEventReminders(db, groupId)
+  const orphans = await orphanedEventReminders(db, groupId, now)
   for (const o of orphans) await cancelReminder(db, o.id)
 
   return { backfilled, created, cancelled: orphans.length }
@@ -70,7 +72,7 @@ export const consolidationSweep = inngest.createFunction(
       // Proactive output (it creates/cancels heads-ups) → honor /pause, like the surfacing scan.
       const policy = await loadResponsePolicy(db)
       if (!policy.global_enabled) return { skipped: 'paused' as const }
-      return runConsolidationSweep(db, groupId, new Date(), houseTz())
+      return runConsolidationSweep(db, groupId, clockNow(), houseTz())
     })
   },
 )

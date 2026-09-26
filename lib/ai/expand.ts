@@ -8,7 +8,7 @@ import { EXPAND_QUERY_SYSTEM } from './prompts'
 // retrieval no longer hinges on the asker's exact wording. generateObject forces a
 // validated shape (the structured output is itself an injection firewall). Used on
 // the DEEP tier only (a real history search), where the ~$0.0006 buys real recall.
-const expansionSchema = z.object({
+export const expansionSchema = z.object({
   variants: z.array(z.string().min(1).max(120)).max(4),
   hypothetical: z.string().max(240),
 })

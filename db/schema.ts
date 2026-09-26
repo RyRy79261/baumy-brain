@@ -71,25 +71,53 @@ export const telegramUpdates = pgTable('baumy_telegram_updates', {
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
 })
 
-// Verbatim transcript — the evidence/quote layer + bot-queryable store (D17).
-// reserved / not yet written — table + FK exist (memoryItems.sourceMessageId), but no path inserts rows yet.
+// The 48h CONVERSATION WINDOW (docs/spec/chat-understanding-v2.md §5, D1; lib/turn/window.ts). Every
+// inbound house/DM message (after lane resolution) and every Baumy send, so a follow-up ("which room is
+// she in?") can be read against the last few turns. Privacy rule (replaces "never persist the body"):
+// a SECRET is never persisted — `text_redacted` is the text with any scanSensitivity hit withheld
+// behind its descriptor — and nothing outlives 48h (hourly purge; reads also filter by 48h). Context
+// only: it never writes a fact and is never shown to anyone.
 export const messages = pgTable(
   'baumy_messages',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    // The house SCOPE (houseScopeForOrigin) — a DM row carries the house scope too; reads also key
+    // on chat_id, so a DM never shows up in the group's window (or another member's DM).
     groupId: text('group_id')
       .notNull()
       .references(() => telegramChats.chatId),
-    chatId: text('chat_id').notNull(),
+    chatId: text('chat_id').notNull(), // transport chat (house group / the member's own DM)
     messageId: text('message_id').notNull(),
+    // 'member' (a housemate, author_member_id set) | 'baumy' (one of Baumy's own sends) | 'anon' (an
+    // anonymous-admin post — house text with no attributable author, I8).
+    authorKind: text('author_kind').notNull().default('member'),
     authorMemberId: text('author_member_id').references(() => members.telegramUserId, {
       onDelete: 'set null',
     }),
-    text: text('text'),
-    sentAt: timestamp('sent_at', { withTimezone: true }),
+    authorName: text('author_name'), // display name at write time ('Baumy' for its own sends)
+    textRedacted: text('text_redacted').notNull(),
+    // The lane's trust ('trusted' DM / 'untrusted' group), 'forwarded' for a member-forwarded message
+    // (labelled, never someone's own words), 'system' for Baumy. Bot-origin posts are never stored.
+    trust: text('trust').notNull().default('untrusted'),
+    replyToMessageId: text('reply_to_message_id'),
+    threadId: bigint('thread_id', { mode: 'number' }), // forum topic (null = General / not a forum / DM)
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull(),
+    // What this message PRODUCED (the evidence note, facts, reminders) — the map an edit (I1, phase 5)
+    // needs to supersede them. Plain ids, no FK: the window row is purged long before they are.
+    producedMemoryItemId: uuid('produced_memory_item_id'),
+    producedFactIds: jsonb('produced_fact_ids').$type<string[]>().notNull().default([]),
+    producedReminderIds: jsonb('produced_reminder_ids').$type<string[]>().notNull().default([]),
     receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    // Insert order — the tie-break when a reply shares its message's sent_at (a turn runs at one
+    // instant under the sandbox clock), so "newest last" is deterministic.
+    seq: bigint('seq', { mode: 'number' }).generatedAlwaysAsIdentity(),
   },
-  (t) => [index('baumy_messages_group_idx').on(t.groupId, t.sentAt)],
+  (t) => [
+    index('baumy_messages_group_idx').on(t.groupId, t.sentAt),
+    // An edit arrives as the same (chat, message_id): it updates the row instead of duplicating it.
+    uniqueIndex('baumy_messages_chat_msg_uq').on(t.chatId, t.messageId),
+    index('baumy_messages_chat_sent_idx').on(t.chatId, t.sentAt),
+  ],
 )
 
 // Send-claim guard (D12): insert-before-send for one-send-per-inbound.
@@ -176,7 +204,11 @@ export const memoryItems = pgTable('baumy_memory_items', {
   // under a person for their profile + reflection. NULL for general memory. Attributed
   // (authoredBy) + qualitative (content), NEVER a score.
   aboutEntityId: uuid('about_entity_id').references(() => entities.id, { onDelete: 'set null' }),
-  trustLevel: text('trust_level').notNull().default('untrusted'), // 'trusted'|'untrusted'|'quarantined'|'system'
+  trustLevel: text('trust_level').notNull().default('untrusted'), // 'trusted'|'untrusted'|'forwarded'|'quarantined'|'system'
+  // A member-FORWARDED message (trust 'forwarded', docs/spec/chat-understanding-v2.md D4): the housemate
+  // who forwarded it. Never `authored_by` — the words are someone else's (the landlord's, the council's);
+  // grounding labels the note "forwarded by X". NULL for everything else.
+  forwardedBy: text('forwarded_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
   isSecure: boolean('is_secure').notNull().default(false),
   contentEncrypted: text('content_encrypted'), // AES-256-GCM base64(iv||tag||ct) when is_secure; plaintext content holds only a descriptor
   salience: real('salience').notNull().default(0.5),
@@ -243,6 +275,10 @@ export const facts = pgTable(
     // people ("you said Zuzka's coming" → "Marco said she arrived"). Both nullable.
     sourceMemoryItemId: uuid('source_memory_item_id').references(() => memoryItems.id, { onDelete: 'set null' }),
     derivedFromFactId: uuid('derived_from_fact_id').references((): AnyPgColumn => facts.id, { onDelete: 'set null' }),
+    // A correction the trust gate refused (docs/spec/chat-understanding-v2.md §7, F5): kept NOT current,
+    // pointing at the live fact it contradicts, so the turn can ask which is right. NULL for every
+    // ordinary fact. The nightly hygiene sweep retires it once the incumbent is no longer live.
+    conflictsWithFactId: uuid('conflicts_with_fact_id').references((): AnyPgColumn => facts.id, { onDelete: 'set null' }),
   },
   (t) => [
     index('baumy_facts_group_current_idx').on(t.groupId, t.isCurrent),
@@ -266,12 +302,16 @@ export const reminders = pgTable(
     fireAt: timestamp('fire_at', { withTimezone: true }).notNull(),
     eventFactId: uuid('event_fact_id').references(() => facts.id, { onDelete: 'cascade' }),
     leadInterval: interval('lead_interval'), // 'a week before'
-    recurrence: text('recurrence'),
+    recurrence: text('recurrence'), // RRULE-lite (lib/reminders/recurrence.ts) or NULL for a one-off
+    // The occurrence this row follows in a recurring series. UNIQUE: scheduling the next occurrence is
+    // an INSERT … ON CONFLICT DO NOTHING on this column, so a retried / repeated "create next" can
+    // never schedule a series twice (exactly-once, docs/spec/chat-understanding-v2.md §6).
+    previousReminderId: uuid('previous_reminder_id').references((): AnyPgColumn => reminders.id, { onDelete: 'set null' }),
     status: text('status').notNull().default('scheduled'), // scheduled|firing|sent|cancelled|failed
     createdBy: text('created_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('baumy_reminders_due_idx').on(t.status, t.fireAt)],
+  (t) => [index('baumy_reminders_due_idx').on(t.status, t.fireAt), uniqueIndex('baumy_reminders_previous_uq').on(t.previousReminderId)],
 )
 
 // User-definable recurring queries; digests are a built-in (is_system) instance.

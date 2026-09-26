@@ -1,5 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
+import { liveFact } from '@/lib/memory/current'
+import { now as clockNow } from '@/lib/core/clock'
 import type { ReflectFact, ReflectNote } from '@/lib/ai/reflect'
 
 // The predicate under which a reflected profile is stored. A profile is just another
@@ -28,17 +30,20 @@ export async function pickPeopleToReflect(
   groupId: string,
   limit: number,
 ): Promise<Array<{ id: string; name: string }>> {
+  // "Current" = live: a stay that is over is not who someone IS (T2 — reflect used to bake a March
+  // visit into a system-trust profile no housemate message could supersede).
+  const at = clockNow()
   const res = await db.execute(sql`
     SELECT e.id, e.canonical_name AS name
     FROM baumy_entities e
     WHERE e.group_id = ${groupId} AND e.kind = 'person' AND e.is_active = true
       AND (
         SELECT count(*) FROM baumy_facts f
-        WHERE f.subject_entity_id = e.id AND f.is_current AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
+        WHERE f.subject_entity_id = e.id AND ${liveFact('f', at)} AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
       ) >= ${MIN_FACTS}
       AND (
         SELECT max(f.recorded_at) FROM baumy_facts f
-        WHERE f.subject_entity_id = e.id AND f.is_current AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
+        WHERE f.subject_entity_id = e.id AND ${liveFact('f', at)} AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
       ) > coalesce((
         SELECT max(f.recorded_at) FROM baumy_facts f
         WHERE f.subject_entity_id = e.id AND f.is_current AND f.predicate = ${PROFILE_PREDICATE}
@@ -48,31 +53,43 @@ export async function pickPeopleToReflect(
   return rowsOf(res).map((r) => ({ id: String(r.id), name: String(r.name) }))
 }
 
-// The material to reflect on for one person: their current, NON-SECRET facts (a secret
-// value is never fed to synthesis — it must never leak into a profile / digest) plus the
-// attributed notes filed under them, EXCLUDING quarantined (forwarded/bot) content. Note
-// authors are resolved to display names so sentiment stays attributed ("Ryan: …").
+// The material to reflect on for one person: their LIVE, NON-SECRET facts (a secret value is never
+// fed to synthesis — it must never leak into a profile / digest; an event that is over is not who
+// someone is) — each DATED and ATTRIBUTED (F11: the profile used to state an undated, unattributed
+// month-old plan as present-tense truth) — plus the attributed notes filed under them, EXCLUDING
+// relayed content — bot posts and member-forwarded messages (someone else's words are not who the
+// forwarder is). Authors are resolved to display names ("Ryan: …").
 export async function gatherPersonMaterial(
   db: Database,
   groupId: string,
   personId: string,
 ): Promise<{ facts: ReflectFact[]; notes: ReflectNote[] }> {
   const factRes = await db.execute(sql`
-    SELECT f.predicate, f.object_value AS value
+    SELECT f.predicate, f.object_value AS value, m.display_name AS by,
+           f.recorded_at AS "saidAt", f.event_at AS "eventAt", f.valid_to AS "validTo"
     FROM baumy_facts f
+    LEFT JOIN baumy_members m ON f.authored_by = m.telegram_user_id
     WHERE f.group_id = ${groupId} AND f.subject_entity_id = ${personId}
-      AND f.is_current AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
+      AND ${liveFact('f')} AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
       AND f.object_value IS NOT NULL AND length(f.object_value) > 0
     ORDER BY f.recorded_at DESC
     LIMIT 40`)
-  const facts: ReflectFact[] = rowsOf(factRes).map((r) => ({ predicate: String(r.predicate), value: String(r.value) }))
+  const date = (v: unknown) => (v == null ? null : new Date(v as string))
+  const facts: ReflectFact[] = rowsOf(factRes).map((r) => ({
+    predicate: String(r.predicate),
+    value: String(r.value),
+    by: (r.by ?? null) as string | null,
+    saidAt: date(r.saidAt),
+    eventAt: date(r.eventAt),
+    validTo: date(r.validTo),
+  }))
 
   const noteRes = await db.execute(sql`
     SELECT mi.content, m.display_name AS by
     FROM baumy_memory_items mi
     LEFT JOIN baumy_members m ON mi.authored_by = m.telegram_user_id
     WHERE mi.group_id = ${groupId} AND mi.about_entity_id = ${personId}
-      AND mi.is_active AND NOT mi.is_secure AND mi.trust_level <> 'quarantined'
+      AND mi.is_active AND NOT mi.is_secure AND mi.trust_level NOT IN ('quarantined', 'forwarded')
     ORDER BY mi.salience DESC, mi.created_at DESC
     LIMIT 20`)
   const notes: ReflectNote[] = rowsOf(noteRes).map((r) => ({

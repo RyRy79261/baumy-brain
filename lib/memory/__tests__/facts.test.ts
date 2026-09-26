@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, ne } from 'drizzle-orm'
 import { makeTestDb } from './pglite'
 import { entities, facts, memoryItems } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { embedSync } from '@/lib/ai/embed'
-import { reconcileFact, currentFactsForQuery, tagMemoryAboutPerson } from '@/lib/memory/facts'
+import { reconcileFact, reconcileFactDetailed, currentFactsForQuery, tagMemoryAboutPerson } from '@/lib/memory/facts'
+import { withSimulatedTime } from '@/lib/core/clock'
+import { forgetMemory } from '@/lib/memory/forget'
 
 const GROUP = '-100facts'
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 5).toString('base64')
@@ -136,7 +138,7 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
       authoredBy: null,
       trustLevel: t,
     })
-    expect((await edgeOf('go_out')).obj).toBeNull()
+    expect((await edgeOf('collection_day')).obj).toBeNull() // go_out is a synonym of collection_day (spec §7)
   })
 
   it('tags an evidence note with the person it is about (sentiment/notes, §3)', async () => {
@@ -147,8 +149,8 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
       { db, embed: async (t: string) => embedSync(t) },
     )
     const extracted = [{ subject: 'zuzana', subjectKind: 'person' as const, predicate: 'mentioned_by', object: 'ryan' }]
-    await reconcileFact(db, { groupId: GROUP, fact: extracted[0], authoredBy: '100', trustLevel: 'untrusted' })
-    await tagMemoryAboutPerson(db, GROUP, memId, extracted)
+    const r = await reconcileFactDetailed(db, { groupId: GROUP, fact: extracted[0], authoredBy: '100', trustLevel: 'untrusted' })
+    await tagMemoryAboutPerson(db, GROUP, memId, r.subjectEntityId)
 
     const [zuzana] = await db.select({ id: entities.id }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'zuzana')))
     const [mem] = await db.select({ about: memoryItems.aboutEntityId }).from(memoryItems).where(eq(memoryItems.id, memId))
@@ -170,12 +172,16 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     await reconcileFact(db, { groupId: GROUP, fact: F('landlord', 'phone', '0300'), authoredBy: null, trustLevel: 'trusted' })
-    // an untrusted (group / planted) contradiction is rejected, not applied
+    // an untrusted (group / planted) contradiction is NOT applied — it is kept as a non-current
+    // CONFLICT row pointing at the trusted fact (spec §7, F5: surfaced, never silently dropped)
     expect(
       await reconcileFact(db, { groupId: GROUP, fact: F('landlord', 'phone', '0666'), authoredBy: null, trustLevel: 'untrusted' }),
-    ).toBe('rejected')
+    ).toBe('conflict')
     const hits = await currentFactsForQuery(db, GROUP, 'landlord phone?')
-    expect(hits[0]?.content).toContain('0300') // the trusted value stands
+    expect(hits.map((h) => h.content)).toEqual([expect.stringContaining('0300')]) // the trusted value stands, alone
+    const [trusted] = await db.select({ id: facts.id }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.objectValue, '0300')))
+    const [conflict] = await db.select().from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.objectValue, '0666')))
+    expect(conflict).toMatchObject({ isCurrent: false, conflictsWithFactId: trusted.id })
   })
 
   it('quarantined (forwarded/bot) content never becomes a fact', async () => {
@@ -210,7 +216,7 @@ describe('fact lineage (origin + familial timeline)', () => {
     const [row] = await db
       .select({ src: facts.sourceMemoryItemId, author: facts.authoredBy })
       .from(facts)
-      .where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'arriving')))
+      .where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'arrives_on'))) // "arriving" → the canonical arrives_on
     expect(row.src).toBe(memId) // fact → its origin note
     expect(row.author).toBe('100') // ...stated by whom
   })
@@ -228,25 +234,41 @@ describe('fact lineage (origin + familial timeline)', () => {
     expect(oldAfter.sup).toBe(newRow.id) // old → new (existing forward pointer) — chain both ways
   })
 
-  it('chains a progression across predicates + people and surfaces the lineage', async () => {
+  it('lineage is a REAL relation only (F8): a correction shows what it replaced; an unrelated fact has no parent', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     await upsertMember(db, GROUP, '10', 'Ryan', 'member')
     await upsertMember(db, GROUP, '20', 'Marco', 'member')
-    // Ryan: "Zuzka is coming today"
-    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'arriving', object: 'today' }, authoredBy: '10', trustLevel: 'untrusted' })
-    const [first] = await db.select({ id: facts.id }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'arriving')))
-    // Marco: "Zuzka has arrived" — DIFFERENT predicate → an ADD that DERIVES from the prior fact about her
-    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'status', object: 'arrived' }, authoredBy: '20', trustLevel: 'untrusted' })
-    const [second] = await db.select({ derived: facts.derivedFromFactId }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'status')))
-    expect(second.derived).toBe(first.id) // familial link across predicates + authors
+    // Ryan: "Zuzka arrives Friday"; Marco, later: "Zuzka's getting in Saturday" — under a SYNONYM predicate.
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'arrives_on', object: 'Friday' }, authoredBy: '10', trustLevel: 'untrusted' })
+    expect(
+      await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'arrival_date', object: 'Saturday' }, authoredBy: '20', trustLevel: 'untrusted' }),
+    ).toBe('update') // arrival_date IS arrives_on (F3) → it supersedes
+    // A different predicate about her is NOT a child of the arrival — no invented "(follows from …)".
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'sibling_of', object: 'charl' }, authoredBy: '10', trustLevel: 'untrusted' })
+    const [sib] = await db.select({ derived: facts.derivedFromFactId }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'sibling_of')))
+    expect(sib.derived).toBeNull()
 
-    // the reply-grounding lookup surfaces the fact WITH its lineage parent + who authored each
-    const hits = await currentFactsForQuery(db, GROUP, 'has zuzka arrived?')
-    const arrived = hits.find((h) => h.content.includes('arrived'))
-    expect(arrived?.authoredBy).toBe('20') // stated by Marco
-    expect(arrived?.priorContent).toContain('arriving') // follows from the "arriving today" fact
-    expect(arrived?.priorAuthoredBy).toBe('10') // ...which Ryan stated
+    const hits = await currentFactsForQuery(db, GROUP, 'when does zuzka arrive?')
+    const arrival = hits.find((h) => h.content.includes('arrives on'))
+    expect(arrival?.content).toContain('Saturday')
+    expect(hits.some((h) => h.content.includes('Friday') && !h.priorContent)).toBe(false) // the old value is not current
+    expect(arrival?.authoredBy).toBe('20') // stated by Marco
+    expect(arrival?.priorContent).toContain('Friday') // …replacing what Ryan said
+    expect(arrival?.priorAuthoredBy).toBe('10')
+  })
+
+  it('a SOFT-FORGOTTEN fact never comes back as a lineage parent (F8)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const zuzka = (object: string) => ({ subject: 'zuzka', subjectKind: 'person' as const, predicate: 'stays_in', object })
+    await reconcileFact(db, { groupId: GROUP, fact: zuzka("marco's room"), authoredBy: null, trustLevel: 'untrusted' })
+    const [row] = await db.select({ id: facts.id }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'stays_in')))
+    await forgetMemory(db, GROUP, { factIds: [row.id], scrubValues: [], noteIds: [], aliasHits: [], mode: 'soft' })
+    expect(await reconcileFact(db, { groupId: GROUP, fact: zuzka('the cave'), authoredBy: null, trustLevel: 'untrusted' })).toBe('add')
+    const hits = await currentFactsForQuery(db, GROUP, 'where is zuzka staying')
+    expect(hits.map((h) => h.content)).toEqual(['zuzka stays in: the cave'])
+    expect(hits[0].priorContent).toBeNull()
   })
 
   it('never surfaces a SECRET lineage parent in the progression', async () => {
@@ -258,5 +280,111 @@ describe('fact lineage (origin + familial timeline)', () => {
     const hits = await currentFactsForQuery(db, GROUP, 'what wifi channel are we on')
     const child = hits.find((h) => h.content.includes('channel'))
     expect(child?.priorContent ?? '').not.toContain('hunter2') // the secret parent is redacted from lineage
+  })
+})
+
+// Phase 3 (spec §6): a dated fact is CURRENT only until its event is over (T2), and a repeat of the
+// same triple with a new date is a new occurrence, never a noop that throws the date away (T6).
+describe('the time model — expiry and new occurrences', () => {
+  const zuzka = { subject: 'zuzka', subjectKind: 'person' as const, predicate: 'staying_in', object: "charli's room", objectKind: 'place' as const }
+  const march = { eventAt: new Date('2026-03-13T23:00:00Z'), validTo: new Date('2026-03-15T22:59:59.999Z') } // Sat 14 – Sun 15 Mar
+  const october = { eventAt: new Date('2026-10-02T22:00:00Z'), validTo: new Date('2026-10-04T21:59:59.999Z') } // Sat 3 – Sun 4 Oct
+  // The facts under test — not the structural possessor edge ("charli's room" —belongs_to→ charli, F1)
+  // that creating the possessive room node records.
+  const rowsOf = (db: Awaited<ReturnType<typeof makeTestDb>>) =>
+    db.select().from(facts).where(and(eq(facts.groupId, GROUP), ne(facts.predicate, 'belongs_to')))
+
+  it('T2: a stay that is over no longer grounds "who is staying" — but it is kept (still is_current history)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await withSimulatedTime(new Date('2026-03-12T18:00:00Z'), () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...march }))
+    // During the stay it is current …
+    const during = await withSimulatedTime(new Date('2026-03-14T12:00:00Z'), () => currentFactsForQuery(db, GROUP, 'is zuzka staying here?'))
+    expect(during).toHaveLength(1)
+    expect(during[0].validTo?.toISOString()).toBe(march.validTo.toISOString())
+    // … six months later it is not.
+    const later = await withSimulatedTime(new Date('2026-09-26T10:00:00Z'), () => currentFactsForQuery(db, GROUP, 'is zuzka staying here?'))
+    expect(later).toHaveLength(0)
+    const [row] = await rowsOf(db)
+    expect(row.isCurrent).toBe(true) // not superseded — it happened; it is just over
+  })
+
+  it('T6: the same triple with a new date after the old one is over → a NEW occurrence (history kept, lineage linked)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await withSimulatedTime(new Date('2026-03-12T18:00:00Z'), () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...march }))
+    const r = await withSimulatedTime(new Date('2026-09-28T18:00:00Z'), () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))
+    expect(r).toBe('add') // not 'noop' — the October visit is learned
+    const rows = await rowsOf(db)
+    expect(rows).toHaveLength(2)
+    const [old, fresh] = [...rows].sort((a, b) => a.eventAt!.getTime() - b.eventAt!.getTime())
+    expect(fresh.eventAt?.toISOString()).toBe(october.eventAt.toISOString())
+    expect(fresh.derivedFromFactId).toBe(old.id) // the previous visit is its timeline parent
+    const now = await withSimulatedTime(new Date('2026-09-29T10:00:00Z'), () => currentFactsForQuery(db, GROUP, 'zuzka'))
+    expect(now.map((h) => h.eventAt?.toISOString())).toEqual([october.eventAt.toISOString()])
+  })
+
+  it('T6: a new date for a still-upcoming occurrence is a reschedule (supersede); the same date again is a noop', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const at = new Date('2026-09-28T18:00:00Z')
+    await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))).toBe('noop')
+    const nextWeekend = { eventAt: new Date('2026-10-09T22:00:00Z'), validTo: new Date('2026-10-11T21:59:59.999Z') }
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...nextWeekend }))).toBe('update')
+    const live = (await rowsOf(db)).filter((f) => f.isCurrent)
+    expect(live.map((f) => f.eventAt?.toISOString())).toEqual([nextWeekend.eventAt.toISOString()])
+  })
+
+  it('an undated fact that gets its date later is dated in place; restating a past occurrence is a noop', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const at = new Date('2026-09-28T18:00:00Z')
+    await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted' }))
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))).toBe('update')
+    const rows = await rowsOf(db)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].validTo?.toISOString()).toBe(october.validTo.toISOString())
+    // Months later, someone says it again with the same (past) date — history, not a new visit.
+    expect(await withSimulatedTime(new Date('2026-12-01T10:00:00Z'), () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))).toBe('noop')
+    expect(await rowsOf(db)).toHaveLength(1)
+  })
+
+  it('something said AFTER it happened is history: it never closes the upcoming occurrence', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const at = new Date('2026-09-28T18:00:00Z')
+    await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))
+    const lastWeekend = { eventAt: new Date('2026-09-25T22:00:00Z'), validTo: new Date('2026-09-27T21:59:59.999Z') }
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...lastWeekend }))).toBe('add')
+    const live = await withSimulatedTime(at, () => currentFactsForQuery(db, GROUP, 'zuzka'))
+    expect(live.map((h) => h.eventAt?.toISOString())).toEqual([october.eventAt.toISOString()]) // the October visit is untouched
+    expect((await rowsOf(db)).every((f) => f.isCurrent)).toBe(true)
+  })
+
+  it('a past-dated CHANGE of an undated state supersedes it and stays live ("fixed yesterday" over "broken")', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await withSimulatedTime(new Date('2026-09-20T10:00:00Z'), () => reconcileFact(db, { groupId: GROUP, fact: F('kitchen sink', 'status', 'broken'), authoredBy: null, trustLevel: 'untrusted' }))
+    const at = new Date('2026-09-26T10:00:00Z')
+    const yesterday = { eventAt: new Date('2026-09-24T22:00:00Z'), validTo: new Date('2026-09-25T21:59:59.999Z') } // Fri 25 Sep, all day
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: F('kitchen sink', 'status', 'fixed'), authoredBy: null, trustLevel: 'untrusted', ...yesterday }))).toBe('update')
+    const hits = await withSimulatedTime(at, () => currentFactsForQuery(db, GROUP, 'is the kitchen sink fixed'))
+    expect(hits.map((h) => h.content)).toEqual([expect.stringContaining('fixed')])
+    const live = (await rowsOf(db)).filter((f) => f.isCurrent)
+    expect(live).toHaveLength(1)
+    expect(live[0]).toMatchObject({ objectValue: 'fixed', validTo: null }) // holds until superseded …
+    expect(live[0].eventAt?.toISOString()).toBe(yesterday.eventAt.toISOString()) // … and keeps WHEN it changed
+    // Still trust-gated: a lower-trust past-dated change cannot overwrite a trusted state (kept as a conflict).
+    await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: F('boiler', 'status', 'working'), authoredBy: null, trustLevel: 'trusted' }))
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: F('boiler', 'status', 'broken'), authoredBy: null, trustLevel: 'untrusted', ...yesterday }))).toBe('conflict')
+  })
+
+  it('a dated fact given no end still expires (the timed default: start + 6h)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, { groupId: GROUP, fact: F('plumber', 'visits_on', 'Thu 1 Oct 09:00'), authoredBy: null, trustLevel: 'untrusted', eventAt: new Date('2026-10-01T07:00:00Z') })
+    const [row] = await rowsOf(db)
+    expect(row.validTo?.toISOString()).toBe('2026-10-01T13:00:00.000Z')
   })
 })

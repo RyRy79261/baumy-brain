@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { members } from '@/db/schema'
 import type { Roster } from '@/lib/core/origin'
+import { now as clockNow } from '@/lib/core/clock'
 
 export interface FullRoster extends Roster {
   canAccessDashboard: (id: number) => boolean
@@ -62,7 +63,7 @@ export async function deactivateMember(db: Database, userId: string): Promise<vo
   // silently restore a high-privilege grant without fresh owner authorization.
   await db
     .update(members)
-    .set({ isActive: false, deactivatedAt: new Date(), canAccessDashboard: false })
+    .set({ isActive: false, deactivatedAt: clockNow(), canAccessDashboard: false })
     .where(eq(members.telegramUserId, userId))
 }
 

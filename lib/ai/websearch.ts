@@ -1,6 +1,7 @@
 import { generateText, type LanguageModel } from 'ai'
 import { anthropicProvider, resolveModel } from './registry'
 import { WEB_SEARCH_SYSTEM } from './prompts'
+import { isMalformedObjectError, isPermanentProviderError } from './errors'
 
 // Max searches per request — bounds cost/latency. Web search runs ONLY when a member
 // genuinely asks to look something up online (classifier `webSearch` gate), never on a
@@ -42,8 +43,9 @@ function webSearchRan(result: SearchStep & { steps?: ReadonlyArray<SearchStep> }
 // server-side web search tool (still Anthropic-only — no new vendor). House memory is
 // passed alongside so Baumy blends what it already knows with fresh web results. The
 // tool executes server-side, so a single generateText call returns the finished answer.
-// Best-effort: returns { searched:false } on any error or an empty result so the caller
-// can fall back to a normal memory-only reply.
+// Best-effort on an empty result, a malformed output, or a PERMANENT provider refusal (e.g. the
+// tool isn't enabled — retrying can't help): returns { searched:false } so the caller falls back
+// to a normal memory-only reply. A TRANSIENT error rethrows so the reply step retries (I2).
 export async function webSearchAnswer(
   question: string,
   grounding: GroundingItem[] = [],
@@ -63,6 +65,7 @@ export async function webSearchAnswer(
     // Only claim `searched:true` when the tool genuinely ran; else fall back to memory.
     return out && webSearchRan(result) ? { text: out, searched: true } : { text: '', searched: false }
   } catch (err) {
+    if (!isMalformedObjectError(err) && !isPermanentProviderError(err)) throw err
     console.error('webSearchAnswer failed — falling back to memory-only reply:', err)
     return { text: '', searched: false }
   }

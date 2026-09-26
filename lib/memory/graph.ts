@@ -1,5 +1,11 @@
 import { sql } from 'drizzle-orm'
+import { DateTime } from 'luxon'
 import { type Database } from '@/db/client'
+import { liveFact } from '@/lib/memory/current'
+import { now as clockNow } from '@/lib/core/clock'
+import { houseTz } from '@/lib/env'
+import { lookupEntities } from '@/lib/memory/facts'
+import { lookupText, type LookupSpeaker } from '@/lib/memory/lookup'
 
 // Graph traversal over the facts knowledge graph — the "human-like" layer that walks
 // connections BETWEEN subjects (Zuzka —sibling of→ Charl —owns→ the cave) and the full
@@ -10,11 +16,10 @@ import { type Database } from '@/db/client'
 // object_entity_id set (subject —predicate→ object entity); attribute facts hang off a
 // subject; derived_from/superseded_by give the temporal chain. Nothing traversed it until now.
 //
-// Every query here is GROUP-SCOPED, current/active, and SECRET-EXCLUDED (a secret value or a
+// Every query here is GROUP-SCOPED, current/active (live: an event that is over is not a current
+// connection — lib/memory/current.ts), and SECRET-EXCLUDED (a secret value or a
 // secret edge is never surfaced as ambient "context" — it's only ever decrypted on a direct
 // answer, elsewhere). Bounded by hops + node/edge caps so a walk can never dump the whole graph.
-
-const READ_THRESHOLD = 0.6 // word_similarity to treat a query as referring to an entity (matches facts.ts)
 
 function rowsOf(res: unknown): Record<string, unknown>[] {
   return Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
@@ -28,33 +33,26 @@ export interface GraphContextItem {
   isSecure: false
   contentEncrypted: null
   authoredBy: string | null
+  /** The fact row behind this item + when it was recorded — the reply dates it (T1) and leaves out
+   *  the facts THIS turn just wrote (C1). */
+  factId?: string
+  saidAt?: Date | null
 }
 
-// The entities a query refers to — same name/alias/trigram match the fact lookup uses, so
-// "is charl's sister here" seeds on {charl}. Returns closest-matching entity ids first.
-export async function resolveSeedEntities(db: Database, groupId: string, query: string, limit = 3): Promise<string[]> {
-  const q = query.trim().toLowerCase()
-  if (!q) return []
-  const res = await db.execute(sql`
-    SELECT e.id AS id,
-           CASE
-             WHEN position(e.canonical_name IN ${q}) > 0
-               OR EXISTS (SELECT 1 FROM unnest(coalesce(e.aliases, '{}'::text[])) a WHERE length(a) > 0 AND position(a IN ${q}) > 0)
-             THEN 0 ELSE 1
-           END AS pri
-    FROM baumy_entities e
-    WHERE e.group_id = ${groupId} AND e.is_active = true AND length(e.canonical_name) > 0
-      AND (
-        position(e.canonical_name IN ${q}) > 0
-        OR EXISTS (SELECT 1 FROM unnest(coalesce(e.aliases, '{}'::text[])) a WHERE length(a) > 0 AND position(a IN ${q}) > 0)
-        OR word_similarity(e.canonical_name, ${q}) >= ${READ_THRESHOLD}
-      )
-    ORDER BY pri ASC
-    LIMIT ${limit}`)
-  return rowsOf(res).map((r) => String(r.id))
+// The entities a query refers to — the SAME whole-word / specificity matching the fact lookup uses
+// (lib/memory/lookup.ts, spec §7): "is charli's sister here" seeds on charli (the possessive-dropped
+// half of the lookup text), a named subject outranks the 'house' hub, and "my room" from Charli is
+// charli's room. Best match first — the timeline walks seeds[0], so it must be the most specific
+// named entity, not an arbitrary one (F4/F10).
+export async function resolveSeedEntities(db: Database, groupId: string, query: string, limit = 3, speaker?: LookupSpeaker | null): Promise<string[]> {
+  const text = lookupText(query, speaker)
+  if (!text.replace(/\|/g, '').trim()) return []
+  return (await lookupEntities(db, groupId, text)).slice(0, limit).map((m) => m.id)
 }
 
 export interface GraphEdge {
+  factId?: string
+  recordedAt?: Date | null
   subject: string
   predicate: string
   object: string
@@ -76,6 +74,7 @@ export async function connectedEdges(
   const maxHops = opts.maxHops ?? 2
   const maxNodes = opts.maxNodes ?? 10
   const maxEdges = opts.maxEdges ?? 12
+  const at = clockNow()
   const seedList = sql.join(
     seedIds.map((id) => sql`${id}::uuid`),
     sql`, `,
@@ -87,22 +86,25 @@ export async function connectedEdges(
       SELECT (CASE WHEN f.subject_entity_id = r.id THEN f.object_entity_id ELSE f.subject_entity_id END), r.depth + 1
       FROM reach r
       JOIN baumy_facts f
-        ON f.group_id = ${groupId} AND f.is_current = true AND f.object_entity_id IS NOT NULL AND f.is_secure = false
+        ON f.group_id = ${groupId} AND ${liveFact('f', at)} AND f.object_entity_id IS NOT NULL AND f.is_secure = false
        AND (f.subject_entity_id = r.id OR f.object_entity_id = r.id)
       WHERE r.depth < ${maxHops}
     ),
     nodes AS (SELECT id, min(depth) AS d FROM reach GROUP BY id ORDER BY d ASC LIMIT ${maxNodes})
-    SELECT se.canonical_name AS subject, f.predicate AS predicate, oe.canonical_name AS object,
+    SELECT f.id AS "factId", f.recorded_at AS "recordedAt",
+           se.canonical_name AS subject, f.predicate AS predicate, oe.canonical_name AS object,
            f.authored_by AS "authoredBy", least(ns.d, no.d) AS depth
     FROM baumy_facts f
     JOIN nodes ns ON ns.id = f.subject_entity_id
     JOIN nodes no ON no.id = f.object_entity_id
     JOIN baumy_entities se ON se.id = f.subject_entity_id
     JOIN baumy_entities oe ON oe.id = f.object_entity_id
-    WHERE f.group_id = ${groupId} AND f.is_current = true AND f.object_entity_id IS NOT NULL AND f.is_secure = false
+    WHERE f.group_id = ${groupId} AND ${liveFact('f', at)} AND f.object_entity_id IS NOT NULL AND f.is_secure = false
     ORDER BY depth ASC, f.recorded_at DESC
     LIMIT ${maxEdges}`)
   return rowsOf(res).map((r) => ({
+    factId: String(r.factId),
+    recordedAt: r.recordedAt ? new Date(r.recordedAt as string) : null,
     subject: String(r.subject),
     predicate: String(r.predicate).replace(/_/g, ' '),
     object: String(r.object),
@@ -112,30 +114,45 @@ export async function connectedEdges(
 }
 
 export interface TimelineEntry {
+  factId?: string
+  recordedAt?: Date | null
   content: string
   authoredBy: string | null
   isCurrent: boolean
 }
 
-// The full progression of ONE subject, oldest → newest, INCLUDING superseded rows (that's the
-// story: "coming today" then "arrived"). Secret values are shown as their descriptor only,
-// never the plaintext. Soft-deleted rows are excluded.
+// The progression of ONE subject, NEWEST first (F10: it used to sort oldest-first and then LIMIT, so a
+// busy subject's timeline was its first 8 facts and never "left on Sunday"), INCLUDING superseded rows
+// (that's the story: "coming today" then "arrived") and events that are OVER — the one place a past
+// visit still shows, as history: "(past, Sat 14 Mar)" (T2 — "when did Zuzka last visit?"). Secret
+// values are shown as their descriptor only, never the plaintext. Soft-deleted rows and refused
+// conflict rows (never true, only disputed — F5) are excluded.
 export async function entityTimeline(db: Database, groupId: string, entityId: string, limit = 8): Promise<TimelineEntry[]> {
+  const at = clockNow()
+  const tz = houseTz()
   const res = await db.execute(sql`
-    SELECT e.canonical_name AS subject, f.predicate AS predicate, f.object_value AS "objectValue",
-           f.is_secure AS "isSecure", f.authored_by AS "authoredBy", f.is_current AS "isCurrent"
+    SELECT f.id AS "factId", f.recorded_at AS "recordedAt",
+           e.canonical_name AS subject, f.predicate AS predicate, f.object_value AS "objectValue",
+           f.is_secure AS "isSecure", f.authored_by AS "authoredBy", f.is_current AS "isCurrent",
+           f.event_at AS "eventAt", f.valid_to AS "validTo"
     FROM baumy_facts f
     JOIN baumy_entities e ON f.subject_entity_id = e.id
     WHERE f.group_id = ${groupId} AND f.subject_entity_id = ${entityId}::uuid AND f.deleted_at IS NULL
-    ORDER BY f.recorded_at ASC
+      AND f.conflicts_with_fact_id IS NULL
+    ORDER BY f.recorded_at DESC
     LIMIT ${limit}`)
   return rowsOf(res).map((r) => {
     const base = `${String(r.subject)} ${String(r.predicate).replace(/_/g, ' ')}`
     const content = r.isSecure ? base : `${base}: ${(r.objectValue as string | null) ?? ''}`
+    const expired = r.isCurrent && r.validTo != null && new Date(r.validTo as string).getTime() <= at.getTime()
+    const live = Boolean(r.isCurrent) && !expired
+    const day = r.eventAt ? DateTime.fromJSDate(new Date(r.eventAt as string)).setZone(tz).toFormat('ccc d LLL yyyy') : null
     return {
-      content: r.isCurrent ? content : `${content} (past)`,
+      factId: String(r.factId),
+      recordedAt: r.recordedAt ? new Date(r.recordedAt as string) : null,
+      content: live ? content : `${content} (past${expired && day ? `, ${day}` : ''})`,
       authoredBy: (r.authoredBy ?? null) as string | null,
-      isCurrent: Boolean(r.isCurrent),
+      isCurrent: live,
     }
   })
 }
@@ -148,9 +165,9 @@ export async function gatherGraphContext(
   db: Database,
   groupId: string,
   query: string,
-  opts: { maxHops?: number; maxNodes?: number; maxEdges?: number; timelineLimit?: number } = {},
+  opts: { maxHops?: number; maxNodes?: number; maxEdges?: number; timelineLimit?: number; speaker?: LookupSpeaker | null } = {},
 ): Promise<GraphContextItem[]> {
-  const seeds = await resolveSeedEntities(db, groupId, query, 3)
+  const seeds = await resolveSeedEntities(db, groupId, query, 3, opts.speaker)
   if (!seeds.length) return []
   const [edges, timeline] = await Promise.all([
     connectedEdges(db, groupId, seeds, opts),
@@ -159,15 +176,15 @@ export async function gatherGraphContext(
 
   const items: GraphContextItem[] = []
   const seen = new Set<string>()
-  const push = (memoryType: 'connection' | 'timeline', content: string, authoredBy: string | null) => {
+  const push = (memoryType: 'connection' | 'timeline', content: string, authoredBy: string | null, factId?: string, saidAt?: Date | null) => {
     const key = content.toLowerCase()
     if (seen.has(key)) return
     seen.add(key)
-    items.push({ id: `graph:${items.length}`, memoryType, similarity: 1, content, isSecure: false, contentEncrypted: null, authoredBy })
+    items.push({ id: `graph:${items.length}`, memoryType, similarity: 1, content, isSecure: false, contentEncrypted: null, authoredBy, factId, saidAt })
   }
-  for (const e of edges) push('connection', `${e.subject} ${e.predicate} ${e.object}`, e.authoredBy)
+  for (const e of edges) push('connection', `${e.subject} ${e.predicate} ${e.object}`, e.authoredBy, e.factId, e.recordedAt)
   // Only surface the timeline when it shows a real progression (>1 entry) — a single current
   // fact is already covered by the direct-fact lookup, so it would just be noise here.
-  if (timeline.length > 1) for (const t of timeline) push('timeline', t.content, t.authoredBy)
+  if (timeline.length > 1) for (const t of timeline) push('timeline', t.content, t.authoredBy, t.factId, t.recordedAt)
   return items
 }

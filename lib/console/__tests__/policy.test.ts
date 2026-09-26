@@ -35,6 +35,8 @@ describe('the four classes hold the line', () => {
     expect(displayableColumns('memoryItems')).not.toContain('contentEncrypted')
     expect(displayableColumns('facts')).not.toContain('valueCiphertext')
     expect(displayableColumns('dashboardLoginTokens')).not.toContain('tokenHash')
+    // The conversation window is model context only — never shown (chat-understanding-v2 §5).
+    expect(displayableColumns('messages')).not.toContain('textRedacted')
   })
 
   it('marks the derived columns that a hand-edit would silently corrupt', () => {

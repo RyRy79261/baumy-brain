@@ -22,15 +22,20 @@ object** — and `"tomorrow night"` is **meaningless at scan time** (tomorrow re
 So this is a **two-part** feature:
 
 1. **Capture dates (wire it to real data).** Fact extraction now returns an optional `whenText` (the
-   time phrase, verbatim) for a fact about a specific happening. The ingest capture step resolves it
-   with `parseWhen` **at capture time** — while "tomorrow" is still unambiguous — into an absolute
+   time phrase, verbatim) for a fact about a specific happening — since chat-understanding-v2 §6 the
+   extractor also returns the resolved `when {start, end?, allDay}` (validated by code; the phrase is
+   the fallback). The ingest capture step resolves it **at capture time** — while "tomorrow" is still unambiguous — into an absolute
    `event_at` on the fact (`lib/ai/extract.ts`, `lib/memory/facts.ts` `reconcileFact`). No migration:
    `event_at` already existed. Additive + best-effort (unparseable → `null`, no behaviour change).
-2. **Scan + nudge.** A daily Inngest cron (`event-surfacing-scan`, 08:00 house tz) reads current,
-   **non-secret**, group-scoped facts with a future `event_at` in an 8-day horizon
+2. **Scan + nudge.** A daily Inngest cron (`event-surfacing-scan`, 07:45 house tz — just before the
+   08:00 digest) reads current (live — not yet over),
+   **non-secret**, group-scoped facts with an `event_at` from today in an 8-day horizon
    (`upcomingDatedFacts`), **groups them into events** (`groupEvents` — same subject entity, same
-   local day), and for each computes the still-future lead stages
-   (`computeNudgeStages`: `event_at − 7d`, `− 1d`, and 08:00 morning-of). For each new stage it
+   local day), and for each computes the still-future lead stages, each a DIGEST SLOT
+   (`computeNudgeStages`: 08:00 seven days before, 20:00 the evening before, 08:00 on the day — so a
+   "day before" nudge never misses its slot and lands on the event day; chat-understanding-v2 §6,
+   T11). The line is written again at DELIVERY with the real lead from that instant
+   (`headsUpAtDelivery`); one digest posts one line per event. For each new stage it
    creates an **event-anchored reminder** (`anchor_kind = 'event_offset'`, `event_fact_id` set).
    These are **excluded from near-time arming** and delivered **batched by the daily digest**
    (`docs/spec/reminders.md`) at waking-hour slots — framed 🗓️ (advance notice), not ⏰ — claim-once

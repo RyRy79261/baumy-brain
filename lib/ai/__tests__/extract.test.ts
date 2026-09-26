@@ -22,6 +22,23 @@ describe('extractFacts — speaker-aware (resolves first person)', () => {
     expect(captured.system).toContain('RESOLVE every first-person reference')
   })
 
+  it('T3: is told WHEN the message was sent + the calendar table, and asked for self-contained objects + a resolved `when`', async () => {
+    await extractFacts('Zuzka arrives tomorrow night', 'Charli', { at: new Date('2026-09-26T19:40:00Z'), tz: 'Europe/Berlin' })
+    expect(captured.prompt).toContain('MESSAGE SENT: Sat 26 Sep 2026 21:40 Europe/Berlin')
+    expect(captured.prompt).toContain('Sun 2026-09-27 (tomorrow)')
+    expect(captured.system).toContain('NO relative time words')
+    expect(captured.system).toMatch(/set `when`/)
+    expect(captured.system).not.toContain('Do NOT resolve it to a calendar date yourself')
+  })
+
+  it('the schema carries the resolved `when` range next to the verbatim phrase', async () => {
+    const { extractedFacts } = await import('@/lib/ai/extract')
+    const ok = extractedFacts.safeParse({
+      facts: [{ subject: 'zuzka', predicate: 'stays_in', object: "charli's room Sat 3–Sun 4 Oct", when: { start: '2026-10-03', end: '2026-10-04', allDay: true }, whenText: 'this weekend' }],
+    })
+    expect(ok.success).toBe(true)
+  })
+
   it('defaults the speaker label when unknown', async () => {
     await extractFacts('bins go out tuesday')
     expect(captured.prompt).toContain('SPEAKER: a housemate')
@@ -58,11 +75,11 @@ describe('extractFacts — speaker-aware (resolves first person)', () => {
     expect(gen).toHaveBeenCalledTimes(3)
   })
 
-  it('is BEST-EFFORT: keeps partial progress if a later page fails, never throws', async () => {
+  it('is BEST-EFFORT: keeps partial progress if a later page is MALFORMED, never throws', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
     gen
       .mockResolvedValueOnce({ object: { facts: facts('s', 12) } }) // full → probe
-      .mockRejectedValueOnce(new Error('model hiccup mid-pagination'))
+      .mockRejectedValueOnce(new Error('No object generated: response did not match schema'))
     const out = await extractFacts('dense then a hiccup')
     expect(out.facts).toHaveLength(12) // pass 1 kept despite pass 2 failing
     err.mockRestore()
@@ -73,5 +90,10 @@ describe('extractFacts — speaker-aware (resolves first person)', () => {
     gen.mockRejectedValueOnce(new Error('schema mismatch / model hiccup'))
     await expect(extractFacts('anything at all')).resolves.toEqual({ facts: [] })
     err.mockRestore()
+  })
+
+  it('a TRANSIENT error mid-pagination rethrows (the capture step retries from scratch — I2)', async () => {
+    gen.mockResolvedValueOnce({ object: { facts: facts('s', 12) } }).mockRejectedValueOnce(new Error('fetch failed'))
+    await expect(extractFacts('dense then a network blip')).rejects.toThrow('fetch failed')
   })
 })

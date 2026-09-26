@@ -1,0 +1,2 @@
+ALTER TABLE "baumy_facts" ADD COLUMN "conflicts_with_fact_id" uuid;--> statement-breakpoint
+ALTER TABLE "baumy_facts" ADD CONSTRAINT "baumy_facts_conflicts_with_fact_id_baumy_facts_id_fk" FOREIGN KEY ("conflicts_with_fact_id") REFERENCES "public"."baumy_facts"("id") ON DELETE set null ON UPDATE no action;

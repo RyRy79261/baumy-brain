@@ -16,12 +16,31 @@ export interface OutboundMessage {
   kind: 'message' | 'confirm-card' | 'dm' | 'reaction' | 'edit' | 'callback-answer'
   chatId: string
   text: string | null
-  /** Set for reactions ('👀', '🧠', null = cleared) and for confirm cards (the action id). */
+  /** Set for reactions ('👀', '✍', null = cleared) and for confirm cards (the action id). */
   meta?: string | null
+  /** For a message / confirm card sent as a Telegram reply: the message_id it replies to (C11). */
+  replyTo?: number
+  /** For a message / confirm card: the synthetic Telegram message_id the sandbox gave it (a real send
+   *  gets Telegram's). Lets the conversation window key Baumy's own turns (and a test reply to one). */
+  messageId?: number
   at: Date
 }
 
+// Synthetic message ids for captured sends: process-wide and monotonic (a sink lives for ONE sandbox
+// call, so a per-sink counter would reuse ids across turns), and far above any id a sandbox gives an
+// inbound message.
+export const SANDBOX_SENT_ID_BASE = 900_000_000
+let sentSeq = 0
+
 const sink = new AsyncLocalStorage<OutboundMessage[]>()
+
+/** The sandbox's stand-in for Telegram's group membership (getChatMember): a status ('member',
+ *  'administrator', 'left', …) or null when the user is unknown there. Installed with the sink. */
+export type ChatMemberDirectory = (chatId: string, userId: number) => string | null
+const directory = new AsyncLocalStorage<ChatMemberDirectory | null>()
+
+/** The installed sandbox membership directory — only ever consulted while capturing (no network). */
+export const sandboxChatMember = (chatId: string, userId: number): string | null => directory.getStore()?.(chatId, userId) ?? null
 
 /** Installed sink, or undefined when we are talking to the real Bot API. */
 export const outboundSink = (): OutboundMessage[] | undefined => sink.getStore()
@@ -29,19 +48,22 @@ export const outboundSink = (): OutboundMessage[] | undefined => sink.getStore()
 /** True while sends are being captured rather than delivered. */
 export const isCapturing = (): boolean => sink.getStore() !== undefined
 
-export function record(m: Omit<OutboundMessage, 'at'>, at: Date): boolean {
+/** Capture `m` when a sink is installed: returns the recorded entry (a sent message gets a synthetic
+ *  message id), or null when we are talking to the real Bot API. */
+export function record(m: Omit<OutboundMessage, 'at' | 'messageId'>, at: Date): OutboundMessage | null {
   const s = sink.getStore()
-  if (!s) return false
-  s.push({ ...m, at })
-  return true
+  if (!s) return null
+  const entry: OutboundMessage = { ...m, at, ...(m.kind === 'message' || m.kind === 'confirm-card' ? { messageId: SANDBOX_SENT_ID_BASE + ++sentSeq } : {}) }
+  s.push(entry)
+  return entry
 }
 
 /**
  * Run `fn` with outbound capture installed. Returns whatever Baumy tried to say, in order,
  * alongside the function's own result. Nothing reaches Telegram.
  */
-export async function captureOutbound<T>(fn: () => Promise<T>): Promise<{ result: T; sent: OutboundMessage[] }> {
+export async function captureOutbound<T>(fn: () => Promise<T>, opts: { chatMembers?: ChatMemberDirectory } = {}): Promise<{ result: T; sent: OutboundMessage[] }> {
   const box: OutboundMessage[] = []
-  const result = await sink.run(box, fn)
+  const result = await sink.run(box, () => directory.run(opts.chatMembers ?? null, fn))
   return { result, sent: box }
 }
