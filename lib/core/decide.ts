@@ -6,9 +6,9 @@ import { isAllowed } from './policy'
 // Untrusted group text can never escalate beyond capture / answer / reminder / list; scheduled
 // tasks + config/admin need a member/owner DM. How Baumy RESPONDS is not decided here — that is the
 // response planner (lib/turn/plan.ts), which reads what these actions actually did.
-export type Decision = 'drop' | 'capture' | 'reply' | 'reminder' | 'forget'
+export type Decision = 'drop' | 'capture' | 'reply' | 'reminder' | 'cancel_reminder' | 'forget'
 
-export type Intent = 'statement' | 'question' | 'request' | 'reminder' | 'forget' | 'banter' | 'chatter'
+export type Intent = 'statement' | 'question' | 'request' | 'reminder' | 'cancel_reminder' | 'forget' | 'banter' | 'chatter'
 
 export interface Verdict {
   intent: Intent
@@ -40,6 +40,11 @@ export function decide(origin: Origin, v: Verdict, directed = false, th: Thresho
   // in the group must not post to the whole house tomorrow. NOT confidence-gated (I6): the
   // extractor's isReminder + a resolvable time decide, and a failure is reported, never silent.
   if (v.intent === 'reminder' && acts && forBaumy && isAllowed(origin, 'create_reminder')) return 'reminder'
+  // "stop the bins reminder" only PROPOSES a cancellation (docs/spec/reminders.md §Cancelling from chat):
+  // the cancel itself is behind a confirm TAP downstream — it removes something the rest of the house may
+  // rely on, so it is NOT capture tier like creating one. Same directed-ask wall as a reminder (A9): "ugh,
+  // stop reminding me" said to a housemate is not an ask to Baumy. Lanes that may manage reminders only.
+  if (v.intent === 'cancel_reminder' && acts && forBaumy && isAllowed(origin, 'create_reminder')) return 'cancel_reminder'
   // "forget X" only PROPOSES a deletion; the actual delete is gated behind a confirm TAP downstream,
   // so group text can never delete on its own.
   if (v.intent === 'forget' && acts && isAllowed(origin, 'answer') && conf >= th.forget) return 'forget'
@@ -51,13 +56,13 @@ export function decide(origin: Origin, v: Verdict, directed = false, th: Thresho
 // May this message COMPLETE an earlier reminder that is still waiting for its time (the answer to
 // Baumy's "when should I remind you?" — lib/reminders/draft.ts)? The same wall as a fresh reminder:
 // a directed, non-relayed (not forwarded / bot) message from an authenticated sender whose lane may create reminders.
-// An explicit forget or list op is its own action and never doubles as the follow-up. Whether it
+// An explicit forget, reminder cancellation or list op is its own action and never doubles as the follow-up. Whether it
 // really answers the question is the extractor's call; this only decides whether to look.
 export function reminderFollowUpAllowed(origin: Origin, v: Pick<Verdict, 'intent'> & { list?: string }, directed: boolean, authorId: string | null): boolean {
   if (origin.lane === 'ignore' || !authorId) return false
   if (!(directed || origin.lane === 'member_dm')) return false
   if (isRelayed(origin.memoryTrust)) return false
-  if (v.intent === 'forget' || (v.list != null && v.list !== 'none')) return false
+  if (v.intent === 'forget' || v.intent === 'cancel_reminder' || (v.list != null && v.list !== 'none')) return false
   return isAllowed(origin, 'create_reminder')
 }
 
@@ -98,7 +103,7 @@ export function listOpProposed(
 ): boolean {
   if (origin.lane === 'ignore') return false
   if (listFlag === 'none') return false
-  if (intent === 'reminder' || intent === 'forget') return false // explicit action wins
+  if (intent === 'reminder' || intent === 'cancel_reminder' || intent === 'forget') return false // explicit action wins
   if (isRelayed(origin.memoryTrust)) return false
   if (!isAllowed(origin, 'mutate_list')) return false
   return origin.lane === 'member_dm' || policyEnabled

@@ -40,7 +40,7 @@ export interface ResolvedAction {
 // The action types a confirm TAP may resolve — the ones a card with buttons is ever sent for. Other
 // rows in this table (a reminder draft waiting for its time, lib/reminders/draft.ts) are internal
 // state: a callback naming one is refused rather than flipping it.
-export const TAPPABLE_ACTIONS = ['memory.forget', 'github.issue'] as const
+export const TAPPABLE_ACTIONS = ['memory.forget', 'github.issue', 'reminder.cancel'] as const
 
 // Atomic single-use resolve: flips pending → confirmed|cancelled ONLY if still
 // pending AND unexpired, returning the action to the first caller (exactly-once).

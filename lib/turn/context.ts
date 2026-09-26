@@ -77,6 +77,25 @@ export type ForgetOutcome =
   | { proposed: true; pendingId: string; card: string }
   | { proposed: false; reason: 'not_forget' | 'notes_only' | 'vague' | 'nothing' }
 
+// What the reminder-cancellation flow did (docs/spec/reminders.md §Cancelling from chat). `proposed` = a
+// confirm card listing exactly the reminders that would be cancelled is ready (nothing is cancelled
+// until a member taps it); otherwise `reason` says why not, with what the asker can SEE scheduled (their
+// visibility — the house's reminders, plus their own personal ones in their own DM) so Baumy can list
+// it. 'not_cancel' means the extractor read the message as something else — the planner then treats it
+// as an ordinary ask. Labels are code-rendered ("⏰ put the bins out — every Friday 20:00").
+export type CancelReminderOutcome =
+  | { proposed: true; pendingId: string; card: string; items: string[] }
+  | {
+      proposed: false
+      reason: 'not_cancel' | 'nothing' | 'vague' | 'ambiguous'
+      /** What the extractor said the reminder is about ('' when unsaid). */
+      target: string
+      /** 'ambiguous': the reminders the description matched — Baumy asks which. */
+      candidates: string[]
+      /** 'nothing' / 'vague': what the asker can see scheduled (short). */
+      scheduled: string[]
+    }
+
 export interface TurnOutcome {
   captured?: {
     memoryItemId: string
@@ -100,6 +119,7 @@ export interface TurnOutcome {
   reminders?: ReminderOutcome[]
   list?: ListOutcome
   forget?: ForgetOutcome
+  cancelReminder?: CancelReminderOutcome
 }
 
 // The message this one replies to, as the models may be told it. `text` is set ONLY when the replied-
@@ -293,6 +313,14 @@ export function describeOutcome(o: TurnOutcome, tz: string, opts: { withholdObje
     if (l.op === 'query' || l.notFound.length) parts.push(`shopping list now: ${l.open.length ? l.open.join(', ') : '(empty)'}`)
   }
   if (o.forget?.proposed) parts.push('a forget request is waiting for a confirm tap (nothing deleted yet)')
+  const c = o.cancelReminder
+  if (c?.proposed) parts.push(`a reminder cancellation is waiting for a confirm tap (NOTHING cancelled yet): ${c.items.join('; ')}`)
+  else if (c && c.reason !== 'not_cancel') {
+    const scheduled = `scheduled right now that they can see: ${c.scheduled.length ? c.scheduled.join('; ') : '(no reminders scheduled)'}`
+    if (c.reason === 'nothing') parts.push(`NO reminder was cancelled — nothing scheduled matches "${c.target}"; ${scheduled}`)
+    else if (c.reason === 'vague') parts.push(`NO reminder was cancelled — they did not say which reminder; ask which one; ${scheduled}`)
+    else parts.push(`NO reminder was cancelled — "${c.target}" matches more than one reminder; ask which one they mean: ${c.candidates.join('; ')}`)
+  }
   return parts.length ? parts.join('; ') : 'nothing was stored, scheduled or changed'
 }
 

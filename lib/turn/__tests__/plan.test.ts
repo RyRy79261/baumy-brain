@@ -135,6 +135,38 @@ describe('planResponse — forget', () => {
   })
 })
 
+describe('planResponse — reminder cancellation (docs/spec/reminders.md §Cancelling from chat)', () => {
+  const none = (reason: 'not_cancel' | 'nothing' | 'vague' | 'ambiguous'): TurnOutcome => ({
+    cancelReminder: { proposed: false, reason, target: 'bins', candidates: [], scheduled: [] },
+  })
+  it('a proposed cancellation → the deterministic confirm card, in either lane', () => {
+    const o: TurnOutcome = { cancelReminder: { proposed: true, pendingId: 'p', card: 'Cancel this reminder?', items: ['⏰ bins'] } }
+    expect(plan({ why: 'mention', verdict: V({ intent: 'cancel_reminder' }), outcome: o })).toEqual({ kind: 'cancel-reminder', row: 'cancel-reminder' })
+    expect(plan({ lane: 'member_dm', verdict: V({ intent: 'cancel_reminder' }), outcome: o })).toEqual({ kind: 'cancel-reminder', row: 'cancel-reminder' })
+  })
+  it('nothing matched → words (answer), told in THIS TURN that nothing was cancelled', () => {
+    expect(plan({ why: 'mention', verdict: V({ intent: 'cancel_reminder' }), outcome: none('nothing') })).toEqual({
+      kind: 'words',
+      mode: 'answer',
+      row: 'cancel-reminder-unmatched',
+      onMiss: 'words',
+    })
+  })
+  it('ambiguous or unsaid → a clarifying question (which one?)', () => {
+    for (const r of ['ambiguous', 'vague'] as const)
+      expect(plan({ lane: 'member_dm', verdict: V({ intent: 'cancel_reminder' }), outcome: none(r) })).toEqual({ kind: 'words', mode: 'clarify', row: 'cancel-reminder-which' })
+  })
+  it('not a cancellation after all → an ordinary ask; undirected (never run) → silence', () => {
+    expect(plan({ why: 'mention', verdict: V({ intent: 'cancel_reminder' }), outcome: none('not_cancel') })).toMatchObject({ kind: 'words', mode: 'answer', row: 'ask-directed' })
+    expect(plan({ verdict: V({ intent: 'cancel_reminder', asksBaumy: true }) })).toEqual({ kind: 'none', row: 'cancel-reminder-undirected' })
+  })
+  it('paused group → none; an edit never gets the card', () => {
+    const o: TurnOutcome = { cancelReminder: { proposed: true, pendingId: 'p', card: 'c', items: [] } }
+    expect(plan({ policy: PAUSED, why: 'mention', verdict: V({ intent: 'cancel_reminder' }), outcome: o })).toMatchObject({ row: 'paused' })
+    expect(plan({ edit: { processed: true }, why: 'mention', verdict: V({ intent: 'cancel_reminder' }), outcome: o })).toEqual({ kind: 'none', row: 'edit-silent' })
+  })
+})
+
 describe('planResponse — list (K4 store outcome, A10 continue to the question)', () => {
   it('group add: something new → ✍; everything already there → 👀', () => {
     expect(plan({ verdict: V({ list: 'add' }), outcome: { list: list({ added: ['milk'] }) } })).toEqual({ kind: 'react', emoji: '✍', row: 'list' })

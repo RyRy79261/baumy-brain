@@ -25,6 +25,10 @@ export type PlanRow =
   | 'edit-noted'
   | 'edit-reminder'
   | 'forget'
+  | 'cancel-reminder'
+  | 'cancel-reminder-unmatched'
+  | 'cancel-reminder-which'
+  | 'cancel-reminder-undirected'
   | 'list'
   | 'reminder-set'
   | 'reminder-set-undirected'
@@ -56,6 +60,8 @@ export type Plan =
   | { kind: 'list-words'; row: 'list' }
   /** The forget flow: the confirm card, or the deterministic "nothing to forget" line. */
   | { kind: 'forget'; row: 'forget' }
+  /** Reminder cancellation proposed: the deterministic confirm card listing exactly what would go. */
+  | { kind: 'cancel-reminder'; row: 'cancel-reminder' }
   /** A message a member forwarded to Baumy's DM (D4): the deterministic "filed it, as forwarded by you"
    *  line — the reply model never voices someone else's words back as a conversation turn. */
   | { kind: 'forward-ack'; row: 'forwarded-dm' }
@@ -121,6 +127,16 @@ function planTurn(ctx: TurnContext, policy: ResponsePolicy): Plan {
   // extractor did NOT read as a forget request falls through to the question rows below.
   if (o.forget && !(o.forget.proposed === false && o.forget.reason === 'not_forget')) return { kind: 'forget', row: 'forget' }
 
+  // Cancel a reminder: a card was proposed (nothing cancelled until a tap), or the reply model says why
+  // not — told in THIS TURN that NOTHING was cancelled, with what IS scheduled (nothing matched) or the
+  // candidates to choose from (ambiguous / unsaid). A message the extractor did NOT read as a
+  // cancellation falls through to the ordinary rows below.
+  const c = o.cancelReminder
+  if (c && !(c.proposed === false && c.reason === 'not_cancel')) {
+    if (c.proposed) return { kind: 'cancel-reminder', row: 'cancel-reminder' }
+    return c.reason === 'nothing' ? words('answer', 'cancel-reminder-unmatched', { onMiss: 'words' }) : words('clarify', 'cancel-reminder-which')
+  }
+
   const main = planMain(ctx, policy, directed)
 
   // List op handled: ack from the store outcome — unless the message ALSO asks something (A10), in
@@ -159,6 +175,11 @@ function planMain(ctx: TurnContext, policy: ResponsePolicy, directed: boolean): 
   if (!v || v.degraded) return directed ? words('answer', 'degraded-directed', { onMiss: 'words' }) : none('degraded')
 
   switch (v.intent) {
+    case 'cancel_reminder':
+      // Undirected, the cancellation never ran (A9 wall) — silence; a directed one that the extractor
+      // did not read as a cancellation is an ordinary ask (the case below).
+      if (!directed) return none('cancel-reminder-undirected')
+    // falls through
     case 'question':
     case 'request':
     case 'forget': // the extractor said it was not a forget request after all → an ordinary ask

@@ -13,7 +13,7 @@ import { renderRecentChat } from '@/lib/turn/window'
 // validated, schema-shaped verdict — the structured output IS an injection firewall: a
 // fully-compromised model can at most return these enums.
 export const classifierVerdict = z.object({
-  intent: z.enum(['statement', 'question', 'request', 'reminder', 'forget', 'banter', 'chatter']),
+  intent: z.enum(['statement', 'question', 'request', 'reminder', 'cancel_reminder', 'forget', 'banter', 'chatter']),
   // Is a question/request aimed at BAUMY (vs at another housemate)? The C6 fix.
   asksBaumy: z.boolean(),
   // Durable house info worth keeping. Never true for a pure question.

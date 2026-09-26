@@ -57,6 +57,7 @@ interface TurnOutcome {
            | { status: 'needs_time' | 'past' | 'unparsed'; content: string }
   list?: { op: 'add' | 'checkoff' | 'query'; added: string[]; already: string[]; checkedOff: string[]; notFound: string[] }
   forget?: { proposed: boolean }
+  cancelReminder?: { proposed: true; pendingId; card; items } | { proposed: false; reason; target; candidates; scheduled }
 }
 ```
 
@@ -79,7 +80,7 @@ reads as addressed to a person — and in phase 2 the last few turns) plus the m
 
 ```ts
 {
-  intent: 'statement' | 'question' | 'request' | 'reminder' | 'forget' | 'banter' | 'chatter',
+  intent: 'statement' | 'question' | 'request' | 'reminder' | 'cancel_reminder' | 'forget' | 'banter' | 'chatter',
   asksBaumy: boolean,     // is a question/request aimed at Baumy (vs at another housemate)?
   worthRemembering: boolean, // durable house info (statements/facts only — never true for a pure question)
   confidence: number,     // DEFINED: confidence in `intent` (I6)
@@ -112,6 +113,7 @@ is rendered as quoted data outside the CONTEXT block (§4).
 |---|---|
 | paused (house lane) | none (DM still works) |
 | forget intent | forget flow (confirm card) |
+| reminder cancellation (`cancel_reminder`) | proposed → the confirm card (deterministic); nothing matched → `answer` (THIS TURN: NOT cancelled + what is scheduled); ambiguous/unsaid → `clarify`; undirected → none (docs/spec/reminders.md §Cancelling from chat) |
 | list op handled | list ack from the **store outcome** (K4); if the message ALSO asks something → continue to the question row (A10) |
 | reminder set | directed/DM → `confirm` (one line incl. the resolved day+time, so a misparse is visible); else 👍 |
 | reminder needs_time/past/unparsed | directed/DM → `clarify` ("when should I remind you?"); undirected → none (undirected reminders are not created at all — A9) |

@@ -135,6 +135,25 @@ describe('injection corpus — group text never escalates to a privileged action
 
 // Completing an open reminder draft (the answer to "when should I remind you?") rides the same wall
 // as a fresh reminder: directed, authenticated, not quarantined, not an explicit forget / list op.
+describe('decide — reminder cancellation (proposes only; the confirm tap cancels)', () => {
+  it('needs a DIRECTED ask, like setting one — undirected group text never proposes a cancel', () => {
+    expect(decide(houseOrigin(), V({ intent: 'cancel_reminder' }))).toBe('drop')
+    expect(decide(houseOrigin(), V({ intent: 'cancel_reminder' }), true)).toBe('cancel_reminder')
+    expect(decide(memberDm(), V({ intent: 'cancel_reminder' }))).toBe('cancel_reminder')
+  })
+  it('is never captured, never a list op, never completes a reminder draft', () => {
+    expect(shouldCapture(houseOrigin(), V({ intent: 'cancel_reminder', worthRemembering: true }))).toBe(false)
+    expect(listOpProposed(houseOrigin(), 'checkoff', true, 'cancel_reminder')).toBe(false)
+    expect(reminderFollowUpAllowed(houseOrigin(), V({ intent: 'cancel_reminder' }), true, '100')).toBe(false)
+  })
+  it('forwarded content or an ignored origin can never propose one', () => {
+    const fwd = resolveOriginParts({ chatId: HOUSE, fromId: 100, text: 'x', isPrivate: false, isForwarded: true }, roster)
+    expect(decide(fwd, V({ intent: 'cancel_reminder' }), true)).not.toBe('cancel_reminder')
+    const ignored = resolveOriginParts({ chatId: '-999', fromId: 5, text: 'x', isPrivate: false }, roster)
+    expect(decide(ignored, V({ intent: 'cancel_reminder' }), true)).toBe('drop')
+  })
+})
+
 describe('reminderFollowUpAllowed', () => {
   it('directed house text or a member DM from an authenticated sender may complete a draft', () => {
     expect(reminderFollowUpAllowed(houseOrigin(), V({ intent: 'chatter' }), true, '100')).toBe(true)

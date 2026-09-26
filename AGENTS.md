@@ -95,16 +95,22 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   the memory-core "graduation rule"), not a fact; auto-commits (capture tier), never confirm-gated.
 - **Two human-authorization walls (don't conflate them):** (1) the **confirm-tap wall** —
   `callback_query` from a member's authenticated `from.id` (`lib/confirm/*`,
-  `functions/callback.ts`) gates **memory deletion / "forget"** (the only chat-initiated
-  privileged action). A "forget X" request only *proposes* a delete (LLM picks the target
-  *description*; code resolves it to exact, group-scoped row ids the human reviews); nothing
-  is removed until the tap. (2) the **dashboard-authz wall** — grants + response-policy/config
+  `functions/callback.ts`) gates the chat-initiated privileged actions: **memory deletion /
+  "forget"** and **reminder CANCELLATION** (`reminder.cancel`, `lib/reminders/cancel.ts`,
+  `docs/spec/reminders.md` §Cancelling from chat). A "forget X" / "stop the bins reminder" request
+  only *proposes* (LLM picks the target *description*; code resolves it to exact, group-scoped row
+  ids the human reviews on the card); nothing is removed until the tap, which executes in the
+  pending action's STORED scope. Cancellation resolves only reminders the asker may SEE (house
+  reminders; in their own DM also their personal ones — never someone else's DM reminder, re-checked
+  against the tapper), cancels every unsent row of a recurring series, and is audited. No tap-skip,
+  not even for a creator's own DM reminder. (2) the **dashboard-authz wall** — grants + response-policy/config
   changes commit via authenticated **owner/admin dashboard** server actions
   (`lib/auth/require-admin.ts` `requireAdmin`/`requireOwner`, re-checked live), **not** a
-  Telegram tap. **Reminders and shopping-list add/check-off are exempt from both — they
+  Telegram tap. **Reminder CREATION and shopping-list add/check-off are exempt from both — they
   auto-commit** (`lib/turn/actions.ts` `runReminder` + `runList`): a reminder only posts text to a
   fixed, code-resolved destination (the house group, or its creator's own DM — D2), and a list op only mutates the house's own group-scoped list (reversible,
-  low-privilege). Both are the capture tier. Do not re-add a confirm step to either. A reminder is
+  low-privilege). Both are the capture tier. Do not re-add a confirm step to either. (Cancelling a reminder is the
+  opposite case — it removes something the house may rely on — so it stays behind the tap.) A reminder is
   only created from a **directed** ask (DM / @mention / reply / console topic — `decide()`, A9), is
   not confidence-gated, and every failure (no time / unreadable / past) is an explicit outcome the
   reply turns into a clarifying question — never a silent drop or a ✍.

@@ -17,7 +17,7 @@ import { sendToHouse, getBotUsername, getBotId } from '@/lib/telegram/client'
 import { buildTurnContext, type ReplyToContext } from '@/lib/turn/context'
 import { planResponse } from '@/lib/turn/plan'
 import { runCapture } from '@/lib/turn/capture'
-import { runList, runReminder, runForget, primaryReminder } from '@/lib/turn/actions'
+import { runList, runReminder, runForget, runCancelReminder, primaryReminder } from '@/lib/turn/actions'
 import { takeReminderDraft } from '@/lib/reminders/draft'
 import { executePlan } from '@/lib/turn/respond'
 import { runCommands } from '@/lib/turn/commands'
@@ -34,7 +34,7 @@ type IngestStep = TurnStep
 //   intake:  record-inbound → origin (real roster) → directedness → window-append → pre-filter
 //            → slash commands
 //   turn:    window-read → TurnContext (deterministic) → classify (in context) → write-gate
-//            → capture (evidence + facts) → actions (list / reminder / forget) → ctx.outcome
+//            → capture (evidence + facts) → actions (list / reminder / forget / cancel-reminder) → ctx.outcome
 //            → ONE planResponse(ctx) → execute (reaction | deterministic text | reply-model words)
 //
 // The LLM proposes (triage verdict, extracted facts/items/times/targets, the words); deterministic
@@ -340,6 +340,12 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // Forget only PROPOSES (a confirm card) — pointless for an edit, which never speaks: re-ask instead.
   if (decision === 'forget' && canSpeak && canReply && !isEdit) {
     ctx.outcome.forget = await runForget(step, ctx)
+  }
+
+  // Cancelling a reminder only PROPOSES (a confirm card listing exactly what would go — the tap cancels,
+  // functions/callback.ts). Like forget: not on an edit (it never speaks), not into a paused group.
+  if (decision === 'cancel_reminder' && houseScope && canSpeak && canReply && !isEdit) {
+    ctx.outcome.cancelReminder = await runCancelReminder(step, ctx)
   }
 
   // What this message produced, on its window row — the map an edit needs to supersede it (I1). An edit

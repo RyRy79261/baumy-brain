@@ -4,6 +4,7 @@ import { loadRoster } from '@/lib/identity/roster'
 import { resolveHouseIds } from '@/lib/identity/house'
 import { resolvePendingAction } from '@/lib/confirm/store'
 import { forgetMemory, type ForgetMode, type AliasHit } from '@/lib/memory/forget'
+import { cancelRemindersOnTap } from '@/lib/reminders/cancel'
 import { createIssue } from '@/lib/github/issues'
 import { writeAudit } from '@/lib/audit'
 import { answerCallback, editMessageText } from '@/lib/telegram/client'
@@ -42,9 +43,12 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
   }
 
   if (verb === 'x') {
-    await step.run('cancel', () => resolvePendingAction(db, id, 'cancelled'))
-    await answerCallback(callbackId, 'Cancelled')
-    if (messageId) await editMessageText(chatId, messageId, '✖️ Cancelled.')
+    const dropped = await step.run('cancel', () => resolvePendingAction(db, id, 'cancelled'))
+    // On a reminder-cancellation card "Cancelled" would read as "the reminder was cancelled" — the
+    // opposite of what the tap did. Say what happened: the reminder is kept.
+    const keep = dropped?.actionType === 'reminder.cancel'
+    await answerCallback(callbackId, keep ? 'Kept' : 'Cancelled')
+    if (messageId) await editMessageText(chatId, messageId, keep ? '✖️ Kept — no reminder was cancelled.' : '✖️ Cancelled.')
     return { cancelled: id }
   }
 
@@ -60,7 +64,8 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
   // NOTE: reminders AUTO-COMMIT (they only post text to the fixed house group) — they are
   // deliberately exempt from this confirm wall, so there is no 'reminder.create' action (a
   // 'reminder.draft' row is internal state — resolvePendingAction refuses to flip it).
-  // The wall gates only genuinely privileged actions: memory.forget and github.issue.
+  // The wall gates only genuinely privileged actions: memory.forget, reminder.cancel (CANCELLING a
+  // reminder removes something the house may rely on — creating one stays auto-commit) and github.issue.
 
   if (action.actionType === 'memory.forget') {
     // The TAP is the wall: the delete targets the exact fact ids + value strings resolved
@@ -115,6 +120,38 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
     await answerCallback(callbackId, verb)
     if (messageId) await editMessageText(chatId, messageId, `${p.mode === 'purge' ? '🔥' : '🧽'} ${verb} — ${detail}.`)
     return { confirmed: id, forgot: res.facts, scrubbed: res.messagesScrubbed }
+  }
+
+  if (action.actionType === 'reminder.cancel') {
+    // The TAP is the wall (docs/spec/reminders.md §Cancelling from chat): cancel exactly the reminder ids
+    // resolved at propose time — every unsent row of each one's series — in the STORED house scope, never
+    // the chat the card was tapped in (A1). Visibility is re-checked against the TAPPER: a house reminder
+    // may be cancelled by any member's tap; a personal DM reminder only by its creator.
+    const { scopeId } = await resolveHouseIds(db)
+    if (!scopeId || action.groupId !== scopeId) {
+      await answerCallback(callbackId, 'This no longer applies.')
+      if (messageId) await editMessageText(chatId, messageId, '✖️ Not applied — this card no longer matches the house.')
+      return { ignored: 'scope-mismatch' }
+    }
+    const p = action.payload as { reminderIds?: string[]; labels?: string[]; target?: string }
+    const cancelled = await step.run('reminder-cancel', () => cancelRemindersOnTap(db, action.groupId, p.reminderIds ?? [], String(fromId)))
+    await step.run('reminder-cancel-audit', () =>
+      writeAudit(db, 'reminder.cancel', String(fromId), p.target || null, { proposed: p.reminderIds ?? [], cancelled, labels: p.labels ?? [] }),
+    )
+    if (cancelled.length === 0) {
+      await answerCallback(callbackId, 'Nothing to cancel')
+      if (messageId) await editMessageText(chatId, messageId, '✖️ Nothing cancelled — that reminder already went out or was cancelled.')
+      return { confirmed: id, remindersCancelled: 0 }
+    }
+    // Name only what really went: a one-off that was delivered meanwhile is not claimed. (A recurring
+    // one that rolled over is cancelled via its successor, so its head id is not in the list — then
+    // everything proposed is named.)
+    const ids = p.reminderIds ?? []
+    const direct = (p.labels ?? []).filter((_, i) => cancelled.includes(ids[i]))
+    const named = direct.length ? direct : (p.labels ?? [])
+    await answerCallback(callbackId, 'Reminder cancelled')
+    if (messageId) await editMessageText(chatId, messageId, `🗑️ Cancelled:\n${named.join('\n')}`)
+    return { confirmed: id, remindersCancelled: cancelled.length }
   }
 
   if (action.actionType === 'github.issue') {

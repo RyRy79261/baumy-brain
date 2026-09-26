@@ -7,7 +7,7 @@
 
 // ── Triage (spec §2) ─────────────────────────────────────────────────────────────────────────────
 
-export type Intent = 'statement' | 'question' | 'request' | 'reminder' | 'forget' | 'banter' | 'chatter'
+export type Intent = 'statement' | 'question' | 'request' | 'reminder' | 'cancel_reminder' | 'forget' | 'banter' | 'chatter'
 export type Vibe = '🔥' | '🎉' | '🤯' | '😁'
 
 export interface Verdict {
@@ -48,6 +48,7 @@ export const question = (o: Extra = {}) => verdict({ intent: 'question', ...o })
 export const request = (o: Extra = {}) => verdict({ intent: 'request', ...o })
 export const reminderAsk = (o: Extra = {}) => verdict({ intent: 'reminder', ...o })
 export const forgetAsk = (o: Extra = {}) => verdict({ intent: 'forget', ...o })
+export const cancelReminderAsk = (o: Extra = {}) => verdict({ intent: 'cancel_reminder', ...o })
 export const banter = (o: Extra = {}) => verdict({ intent: 'banter', ...o })
 export const chatter = (o: Extra = {}) => verdict({ intent: 'chatter', ...o })
 
@@ -120,4 +121,16 @@ export function toReminderOutput(r: ReminderSpec | ReminderSpec[] | null): Recor
       ...(x.forWhom ? { forWhom: x.forWhom } : {}),
     })),
   }
+}
+
+// ── Reminder cancellation (docs/spec/reminders.md §Cancelling from chat) ─────────────────────────
+
+export interface CancelReminderSpec {
+  /** What the reminder is about, in a few words ("bins", "call mum"); '' = they did not say which. */
+  target: string
+}
+
+/** A cancel fixture returns which reminder was meant, or null (not a cancellation after all). */
+export function toCancelReminderOutput(c: CancelReminderSpec | null): Record<string, unknown> {
+  return c == null ? { isCancel: false, target: '' } : { isCancel: true, target: c.target }
 }

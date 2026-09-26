@@ -4,16 +4,18 @@ import { inngest } from '@/lib/inngest/client'
 import { extractListOp } from '@/lib/ai/list-extract'
 import { extractReminder, type ExtractedReminder } from '@/lib/ai/reminder-extract'
 import { extractForget } from '@/lib/ai/forget-extract'
+import { extractReminderCancel } from '@/lib/ai/reminder-cancel-extract'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
 import { clampToWakingHours } from '@/lib/reminders/parse'
 import { fireAtFromModel, reminderTimeFromPhrase, minutesApart } from '@/lib/core/when'
 import { normaliseRecurrence, recurrenceFromPhrase, nextOccurrence } from '@/lib/reminders/recurrence'
 import { createReminder } from '@/lib/reminders/store'
 import { saveReminderDraft } from '@/lib/reminders/draft'
+import { cancellableReminders, matchReminders, reminderLabel } from '@/lib/reminders/cancel'
 import { findMemoryToForget, type ForgetMode } from '@/lib/memory/forget'
 import { createPendingAction } from '@/lib/confirm/store'
 import { memberDisplayNames } from '@/lib/identity/roster'
-import type { ForgetOutcome, ListOutcome, ReminderOutcome, TurnContext } from './context'
+import type { CancelReminderOutcome, ForgetOutcome, ListOutcome, ReminderOutcome, TurnContext } from './context'
 import type { TurnStep } from './step'
 
 // The turn's ACTIONS (docs/spec/chat-understanding-v2.md §1 TurnOutcome). Each one is the LLM
@@ -191,6 +193,60 @@ export function nameRequester(content: string, firstName: string | null | undefi
   if (!name) return content
   const opens = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
   return opens.test(content.trim()) ? content : `${name}: ${content}`
+}
+
+// ── Cancel a reminder (docs/spec/reminders.md §Cancelling from chat) ────────────────────────────
+// PROPOSE only — creating a reminder auto-commits, but cancelling one removes something the rest of the
+// house may rely on, so it rides the confirm-tap wall like a forget. The extractor DESCRIBES which
+// reminder; this code resolves it to concrete scheduled rows the ASKER may see (the house's reminders,
+// plus — in their own DM — their personal ones; never someone else's DM reminder) and stores a pending
+// action in the house SCOPE with exactly those ids. The card lists them; a member's tap cancels every
+// unsent row of each one's series (functions/callback.ts). No tap-skip even for a creator cancelling
+// their own DM reminder: the match is a description resolved by code, and the card is where a near-miss
+// is caught — one path, one wall. Memoized, so a retry never sends a second card.
+const CARD_MAX = 5
+const LIST_MAX = 8
+
+export async function runCancelReminder(step: TurnStep, ctx: TurnContext): Promise<CancelReminderOutcome> {
+  return (await step.run('cancel-reminder', async (): Promise<CancelReminderOutcome> => {
+    const db = createHttpDb()
+    const speaker = ctx.authorId ? ((await memberDisplayNames(db)).get(ctx.authorId) ?? ctx.sender.name) : null
+    const ex = await extractReminderCancel(ctx.text, speaker)
+    const target = ex.target.trim()
+    const none = (reason: 'not_cancel' | 'nothing' | 'vague' | 'ambiguous', o: { candidates?: string[]; scheduled?: string[] } = {}): CancelReminderOutcome => ({
+      proposed: false,
+      reason,
+      target,
+      candidates: o.candidates ?? [],
+      scheduled: o.scheduled ?? [],
+    })
+    if (!ex.isCancel) return none('not_cancel')
+    // Personal DM reminders are visible only to their creator, in their own DM (the authenticated private
+    // chat — chatId === the sender's id); the house lane sees house reminders only.
+    const privateTo = ctx.lane === 'member_dm' && ctx.authorId != null && ctx.chatId === ctx.authorId ? ctx.authorId : null
+    const rows = await cancellableReminders(db, ctx.houseScope, privateTo)
+    const label = (r: (typeof rows)[number]) => reminderLabel(r, ctx.tz)
+    const scheduled = rows.slice(0, LIST_MAX).map(label)
+    const m = matchReminders(rows, target)
+    if (m.kind === 'vague' || m.kind === 'nothing') return none(m.kind, { scheduled })
+    if (m.kind === 'ambiguous') return none('ambiguous', { candidates: m.rows.slice(0, CARD_MAX).map(label) })
+    const chosen = m.rows.slice(0, CARD_MAX)
+    const items = chosen.map(label)
+    const pendingId = await createPendingAction(db, {
+      groupId: ctx.houseScope, // the house whose reminders change (scope) — never the DM chat
+      actionType: 'reminder.cancel',
+      payload: { reminderIds: chosen.map((r) => r.id), labels: items, target },
+      requestedBy: ctx.authorId,
+    })
+    const recurring = chosen.some((r) => r.recurrence)
+    const head = chosen.length === 1 ? 'Cancel this reminder?' : `Cancel these ${chosen.length} reminders?`
+    return {
+      proposed: true,
+      pendingId,
+      items,
+      card: `${head}\n${items.join('\n')}${recurring ? '\n\n(every future repeat stops too)' : ''}\n\nTap to confirm.`,
+    }
+  })) as CancelReminderOutcome
 }
 
 // ── Forget (deletion on request) ─────────────────────────────────────────────────────────────────

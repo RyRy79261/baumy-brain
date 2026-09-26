@@ -85,7 +85,7 @@ describe('fake model — role detection', () => {
 })
 
 describe('shapes adapter — fixtures fit the schemas the code validates', () => {
-  const intents: Intent[] = ['statement', 'question', 'request', 'reminder', 'forget', 'banter', 'chatter']
+  const intents: Intent[] = ['statement', 'question', 'request', 'reminder', 'cancel_reminder', 'forget', 'banter', 'chatter']
 
   it('every triage verdict converts to a valid classifier object', () => {
     for (const intent of intents) {

@@ -8,6 +8,7 @@ import {
   EXTRACT_REMINDER_SYSTEM,
   EXTRACT_LIST_SYSTEM,
   FORGET_EXTRACT_SYSTEM,
+  CANCEL_REMINDER_EXTRACT_SYSTEM,
   REPLY_SYSTEM,
   REPLY_SYSTEM_TEXT,
   VOICE_SYSTEM,
@@ -22,7 +23,17 @@ import {
   ENTITY_DEDUPE_SYSTEM,
 } from '@/lib/ai/prompts'
 import { DELIBERATE_SYSTEM } from '@/lib/ai/deliberate'
-import { toTriageOutput, toExtractedFact, toReminderOutput, chatter, type Verdict, type FactSpec, type ReminderSpec } from './shapes'
+import {
+  toTriageOutput,
+  toExtractedFact,
+  toReminderOutput,
+  toCancelReminderOutput,
+  chatter,
+  type Verdict,
+  type FactSpec,
+  type ReminderSpec,
+  type CancelReminderSpec,
+} from './shapes'
 
 type LanguageModelV2 = Parameters<typeof wrapLanguageModel>[0]['model']
 
@@ -42,6 +53,7 @@ export type CallRole =
   | 'reminder'
   | 'list'
   | 'forget'
+  | 'cancel-reminder'
   | 'reply'
   | 'reply-text'
   | 'voice'
@@ -84,6 +96,7 @@ export const ROLE_PROMPTS: [CallRole, string][] = (
     ['reminder', EXTRACT_REMINDER_SYSTEM],
     ['list', EXTRACT_LIST_SYSTEM],
     ['forget', FORGET_EXTRACT_SYSTEM],
+    ['cancel-reminder', CANCEL_REMINDER_EXTRACT_SYSTEM],
     ['reply', REPLY_SYSTEM],
     ['reply-text', REPLY_SYSTEM_TEXT],
     ['voice', VOICE_SYSTEM],
@@ -128,7 +141,7 @@ export function messageOf(prompt: string): string | null {
 
 // Roles whose fixtures are a function of the message text. If their prompt layout changes so the
 // message can no longer be found, a fixture must not silently regex over MEMORY / THIS TURN instead.
-const TEXT_ROLES = new Set<CallRole>(['triage', 'extract', 'reminder', 'list', 'forget', 'reply', 'reply-text', 'websearch', 'expand', 'rerank', 'issue'])
+const TEXT_ROLES = new Set<CallRole>(['triage', 'extract', 'reminder', 'list', 'forget', 'cancel-reminder', 'reply', 'reply-text', 'websearch', 'expand', 'rerank', 'issue'])
 
 export function textOf(role: CallRole, prompt: string, strict = true): string {
   const m = messageOf(prompt)
@@ -159,6 +172,8 @@ export interface Fixtures {
     speaker: string | null,
     call: ModelCall,
   ) => { isForget: boolean; values?: string[]; subject?: string; attribute?: string; permanent?: boolean } | null
+  /** Which scheduled reminder a cancellation request means (docs/spec/reminders.md). Default: not a cancel. */
+  cancelReminder?: (text: string, speaker: string | null, call: ModelCall) => CancelReminderSpec | null
   reply?: (text: string, call: ModelCall) => string | ReplyScript
   headsup?: (call: ModelCall) => string
   reflect?: (call: ModelCall) => string
@@ -223,6 +238,8 @@ function answerFor(call: ModelCall, fx: Fixtures): string {
       const f = fx.forget ? fx.forget(call.text, speakerOf(call.prompt), call) : null
       return json({ isForget: false, values: [], subject: '', attribute: '', permanent: false, ...(f ?? {}) })
     }
+    case 'cancel-reminder':
+      return json(toCancelReminderOutput(fx.cancelReminder ? fx.cancelReminder(call.text, speakerOf(call.prompt), call) : null))
     case 'reply': {
       const r = fx.reply ? fx.reply(call.text, call) : noteDefaultReply(call)
       const s = typeof r === 'string' ? { reply: r, answered: true } : r

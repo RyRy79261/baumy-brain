@@ -79,6 +79,15 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
     return
   }
 
+  if (plan.kind === 'cancel-reminder') {
+    const c = ctx.outcome.cancelReminder
+    if (!c?.proposed) return
+    await once('cancel-reminder-send', async () => {
+      await sendConfirmCard(ctx.chatId, c.card, c.pendingId, threadId, ctx.messageId)
+    })
+    return
+  }
+
   // Words from the reply model. 👀 while it thinks, swapped for the words (or a 👎 on an ambient miss).
   const clear = () => reactToMessage(ctx.chatId, ctx.messageId, null)
   await once(

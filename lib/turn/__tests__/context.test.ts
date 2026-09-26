@@ -60,6 +60,22 @@ describe('describeOutcome — THIS TURN', () => {
       "noted — zuzka · stays in · charli's room (Sat 3 Oct); reminder set Fri 2 Oct 20:00 — bins out; ticked off the shopping list: milk; NOT on the shopping list (nothing ticked): eggs; shopping list now: bread",
     )
   })
+  it('a reminder cancellation: waiting for a tap (nothing cancelled yet), or NOT cancelled with what IS scheduled', () => {
+    const tz = 'Europe/Berlin'
+    expect(describeOutcome({ cancelReminder: { proposed: true, pendingId: 'p', card: 'c', items: ['⏰ put the bins out — every Friday 20:00'] } }, tz)).toBe(
+      'a reminder cancellation is waiting for a confirm tap (NOTHING cancelled yet): ⏰ put the bins out — every Friday 20:00',
+    )
+    const nothing = describeOutcome(
+      { cancelReminder: { proposed: false, reason: 'nothing', target: 'plumber', candidates: [], scheduled: ['⏰ put the bins out — every Friday 20:00'] } },
+      tz,
+    )
+    expect(nothing).toBe('NO reminder was cancelled — nothing scheduled matches "plumber"; scheduled right now that they can see: ⏰ put the bins out — every Friday 20:00')
+    const which = describeOutcome({ cancelReminder: { proposed: false, reason: 'ambiguous', target: 'call', candidates: ['⏰ a', '⏰ b'], scheduled: [] } }, tz)
+    expect(which).toContain('ask which one they mean: ⏰ a; ⏰ b')
+    expect(describeOutcome({ cancelReminder: { proposed: false, reason: 'not_cancel', target: '', candidates: [], scheduled: [] } }, tz)).toBe(
+      'nothing was stored, scheduled or changed',
+    )
+  })
   it('says so when nothing happened, and when a trust-gated fact was refused', () => {
     expect(describeOutcome({}, 'Europe/Berlin')).toBe('nothing was stored, scheduled or changed')
     const r = describeOutcome({ captured: { memoryItemId: 'n', factIds: [], learned: [], rejected: [summarizeFact({ subject: 'rent', predicate: 'is', object: '650' }, null)] } }, 'Europe/Berlin')

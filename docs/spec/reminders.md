@@ -47,6 +47,55 @@ Past that, a reminder is history, not news:
 
 24h is one digest slot of slack (a missed 20:00 still goes out at 08:00) plus room for a deploy gap.
 
+## Cancelling from chat
+
+A member can stop a reminder in words — "stop the bins reminder", "cancel my reminder to call mum",
+"no need to remind us about the plumber anymore" — in the house lane when **directed** at Baumy (the
+same A9 wall as setting one) or in a member DM. The dashboard's per-row cancel
+(`cancelReminderAction`) is unchanged.
+
+Creating a reminder auto-commits (capture tier). **Cancelling one does not**: it removes something the
+rest of the house may rely on, so it rides the **confirm-tap wall** like a forget:
+
+1. **Triage proposes** intent `cancel_reminder` (`lib/ai/classify.ts`); `decide` → `'cancel_reminder'`
+   only for a directed, non-relayed ask from a lane that may manage reminders. Never captured as a note,
+   never a list op, never a reminder-draft follow-up. Not on an edit; not into a paused group (a DM still
+   works — pause is lane-scoped).
+2. **The extractor describes** which reminder (`lib/ai/reminder-cancel-extract.ts`, Sonnet,
+   `{isCancel, target}`) — best-effort: a malformed object → not-a-cancel (the message is then an
+   ordinary ask); a transient error rethrows (I2). It never names a row.
+3. **Code resolves** (`lib/reminders/cancel.ts`): the scheduled, user-set reminders the ASKER may see
+   (`visibleReminders` — the house's; in their own DM also their personal DM reminders; event heads-ups
+   excluded), matched on content words with the shopping-list check-off's tolerance (case, articles,
+   "reminder", possessives, plain plurals). Precision-first: every target word must be in the reminder;
+   only if nothing matches fully, the rows sharing the most words (≥ half). Different reminders matching
+   → **ambiguous**; an empty description → **vague**.
+4. **Outcome** (`ctx.outcome.cancelReminder`, planner rows):
+   - one match (or identical duplicates) → a `pending_actions` row `reminder.cancel` in the house SCOPE
+     with exactly those ids, and a deterministic **confirm card** listing them
+     ("⏰ put the bins out — every Friday 20:00"; a series says every repeat stops) — row `cancel-reminder`;
+   - nothing matched → the reply model in MODE `answer`, told in THIS TURN that NO reminder was cancelled
+     and what IS scheduled (what the asker can see, short) — row `cancel-reminder-unmatched`;
+   - ambiguous / vague → MODE `clarify`, THIS TURN lists the candidates (or what is scheduled) and says to
+     ask which — row `cancel-reminder-which`.
+   The reply model may never claim a cancellation: THIS TURN only ever says "waiting for a confirm tap
+   (NOTHING cancelled yet)" or "NO reminder was cancelled".
+5. **The tap** (`functions/callback.ts`, `reminder.cancel` ∈ `TAPPABLE_ACTIONS`): a member's
+   authenticated tap cancels, in the pending action's STORED scope (never the chat the card was tapped
+   in — A1; fails closed if it is no longer the house scope), every unsent row of each proposed
+   reminder's series (`cancelUnsentSeries` — a series that rolled on between card and tap has its new
+   occurrence cancelled; a sent occurrence stays sent). Visibility is **re-checked against the tapper**
+   (`cancelRemindersOnTap`): a house reminder may be cancelled by any member's tap; a personal DM reminder
+   only by its creator. Audited (`writeAudit('reminder.cancel', …)`). The ✖️ button reads "Kept — no
+   reminder was cancelled".
+
+**No tap-skip, not even for a creator cancelling their own DM reminder in their DM.** The match is a
+description resolved by code, and the card is where a near-miss is caught; one path, one wall. The tap
+costs the creator one button press in their own chat.
+
+A cancelled recurring series stays cancelled: `repairRecurringSeries` only heals a sent occurrence
+with **no** successor row, and the cancelled successor still exists.
+
 ## Frequency (owner-settable)
 
 `response_policy.reminder_frequency` (`lib/policy.ts`, `setReminderFrequency`):
@@ -87,6 +136,10 @@ are inside the 06:00–02:00 waking window, so the digest never sends at 3am.
   switch — and after `/resume` the digest delivers it inside the grace window or retires it.
 
 ## Deliberately deferred
+
+- **Cancelling from chat a row that is mid-send (`firing`)** — it delivers, and a recurring one rolls on
+  to its next occurrence; cancelling again catches that one. Event heads-ups are not cancellable from chat
+  (they follow their fact — superseding/forgetting it retires them).
 
 - **Coalescing across the day into a single "here's everything" summary** beyond the per-slot batch.
 - **`reminder_frequency` beyond once/twice** (e.g. 3×/day) — the slot logic generalizes, not wired.
