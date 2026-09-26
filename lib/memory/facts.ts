@@ -152,22 +152,31 @@ async function resolveEntityId(db: Database, groupId: string, name: string, kind
 // predicate), NOOP (unchanged), UPDATE (soft-supersede on a trust-permitted
 // contradiction), or REJECTED (quarantined origin, or a lower-trust fact trying
 // to overwrite a higher-trust one).
-export async function reconcileFact(
+export interface ReconcileInput {
+  groupId: string
+  fact: ExtractedFact
+  authoredBy: string | null
+  trustLevel: Trust
+  neverSecret?: boolean
+  memoryItemId?: string | null
+  // Absolute event time, resolved by the CALLER from the fact's time phrase at capture (when
+  // relative words like "tomorrow" are unambiguous). Drives the proactive event-surfacing scan.
+  eventAt?: Date | null
+}
+
+export async function reconcileFact(db: Database, input: ReconcileInput): Promise<ReconcileResult> {
+  return (await reconcileFactDetailed(db, input)).result
+}
+
+// reconcileFact plus WHICH row it produced: the new current fact id for add/update, the untouched
+// incumbent for noop, null when rejected. The turn needs the ids of the facts THIS message wrote so
+// the reply can exclude them from its own grounding (C1).
+export async function reconcileFactDetailed(
   db: Database,
-  input: {
-    groupId: string
-    fact: ExtractedFact
-    authoredBy: string | null
-    trustLevel: Trust
-    neverSecret?: boolean
-    memoryItemId?: string | null
-    // Absolute event time, resolved by the CALLER from the fact's time phrase at capture (when
-    // relative words like "tomorrow" are unambiguous). Drives the proactive event-surfacing scan.
-    eventAt?: Date | null
-  },
-): Promise<ReconcileResult> {
+  input: ReconcileInput,
+): Promise<{ result: ReconcileResult; factId: string | null }> {
   // Quarantined (forwarded/bot) content NEVER becomes a fact (injection wall #7).
-  if (input.trustLevel === 'quarantined') return 'rejected'
+  if (input.trustLevel === 'quarantined') return { result: 'rejected', factId: null }
 
   const subjectId = await resolveEntity(db, input.groupId, input.fact.subject, input.fact.subjectKind ?? 'thing')
   const predicate = input.fact.predicate.trim().toLowerCase()
@@ -237,18 +246,18 @@ export async function reconcileFact(
       .where(and(eq(facts.groupId, input.groupId), eq(facts.subjectEntityId, subjectId)))
       .orderBy(desc(facts.recordedAt))
       .limit(1)
-    await db.insert(facts).values({ ...newValues, derivedFromFactId: prior?.id ?? null })
-    return 'add'
+    const [added] = await db.insert(facts).values({ ...newValues, derivedFromFactId: prior?.id ?? null }).returning({ id: facts.id })
+    return { result: 'add', factId: added.id }
   }
 
   // Unchanged non-secret value → nothing to do. Compare trimmed + lowercased (the STORED
   // value keeps its original case) so "Fixed" vs "fixed" isn't misread as a contradiction
   // that spuriously supersedes for nothing.
   const norm = (v: string | null) => (v ?? '').trim().toLowerCase()
-  if (!isSecure && !existing.isSecure && norm(existing.objectValue) === norm(objectValue)) return 'noop'
+  if (!isSecure && !existing.isSecure && norm(existing.objectValue) === norm(objectValue)) return { result: 'noop', factId: existing.id }
 
   // Contradiction: only a fact of >= trust may overwrite the incumbent.
-  if (rank(input.trustLevel) < rank(existing.trustLevel)) return 'rejected'
+  if (rank(input.trustLevel) < rank(existing.trustLevel)) return { result: 'rejected', factId: null }
 
   // Supersede atomically-enough WITHOUT a transaction (the http driver has none): CLOSE the
   // incumbent FIRST, then insert the new current row. If the run dies between these two
@@ -261,7 +270,7 @@ export async function reconcileFact(
   // forward supersededBy pointer — so the supersession chain is walkable in both directions.
   const [inserted] = await db.insert(facts).values({ ...newValues, derivedFromFactId: existing.id }).returning({ id: facts.id })
   await db.update(facts).set({ supersededBy: inserted.id }).where(eq(facts.id, existing.id))
-  return 'update'
+  return { result: 'update', factId: inserted.id }
 }
 
 // Current dated facts in a time window — the input to the proactive event-surfacing scan
@@ -365,6 +374,7 @@ export async function tagMemoryAboutPerson(
 // falls back to a trigram fuzzy match, so "is the sink fixed" finds the "kitchen
 // sink" entity. Secure values stay encrypted here (decrypted only in the reply).
 export interface FactHit {
+  id: string
   content: string
   isSecure: boolean
   contentEncrypted: string | null
@@ -374,18 +384,26 @@ export interface FactHit {
   priorContent: string | null
   /** Member id that stated the lineage parent. */
   priorAuthoredBy: string | null
+  /** When the fact was recorded (said) and, for a dated happening, when it happens (T1). */
+  recordedAt: Date | null
+  eventAt: Date | null
 }
 
-export async function currentFactsForQuery(db: Database, groupId: string, query: string, limit = 5): Promise<FactHit[]> {
+// `excludeIds`: fact ids to leave out — the reply excludes the facts THIS turn just wrote (C1).
+export async function currentFactsForQuery(db: Database, groupId: string, query: string, limit = 5, excludeIds: string[] = []): Promise<FactHit[]> {
   const q = query.trim().toLowerCase()
   if (!q) return []
+  const skip = new Set(excludeIds)
 
   // LEFT JOIN the lineage parent (derived_from_fact_id) so the reply can show the progression
   // "you said Zuzka's coming → Marco said she arrived". A secret parent is never surfaced.
   const res = await db.execute(sql`
-    SELECT e.canonical_name AS subject,
+    SELECT f.id AS id,
+           e.canonical_name AS subject,
            f.predicate AS predicate,
            f.object_value AS "objectValue",
+           f.recorded_at AS "recordedAt",
+           f.event_at AS "eventAt",
            f.is_secure AS "isSecure",
            f.value_ciphertext AS "valueCiphertext",
            f.authored_by AS "authoredBy",
@@ -409,10 +427,14 @@ export async function currentFactsForQuery(db: Database, groupId: string, query:
         OR word_similarity(e.canonical_name, ${q}) >= ${READ_THRESHOLD}
       )
     ORDER BY pri ASC, f.recorded_at DESC
-    LIMIT ${limit}`)
+    LIMIT ${limit + skip.size}`)
 
   const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
-  return rows.map((r) => ({
+  const toDate = (v: unknown) => (v == null ? null : new Date(v as string))
+  return rows.filter((r) => !skip.has(String(r.id))).slice(0, limit).map((r) => ({
+    id: String(r.id),
+    recordedAt: toDate(r.recordedAt),
+    eventAt: toDate(r.eventAt),
     content: `${r.subject as string} ${String(r.predicate).replace(/_/g, ' ')}${r.isSecure ? '' : `: ${(r.objectValue as string | null) ?? ''}`}`,
     isSecure: Boolean(r.isSecure),
     contentEncrypted: (r.valueCiphertext ?? null) as string | null,

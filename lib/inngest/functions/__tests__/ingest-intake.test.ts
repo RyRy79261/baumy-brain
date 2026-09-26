@@ -75,12 +75,11 @@ const ev = (over: Partial<TelegramMessageData> = {}): { data: TelegramMessageDat
   },
 })
 const V = (o: Partial<ClassifierVerdict> = {}): ClassifierVerdict => ({
-  worthRemembering: false,
   intent: 'chatter',
-  needsReply: false,
+  asksBaumy: false,
+  worthRemembering: false,
   confidence: 0.9,
-  respond: 'ignore',
-  reaction: null,
+  vibe: null,
   tier: 'quick',
   webSearch: false,
   list: 'none',
@@ -150,7 +149,7 @@ describe('C8/C9 — only a reply to BAUMY (by bot id) is directed; never the top
 
 describe('C12 — the @botname token never reaches triage, memory or retrieval', () => {
   it('stripped from classify + captured content + retrieval, still directed', async () => {
-    classifyMock.mockResolvedValue(V({ intent: 'fact', worthRemembering: true, respond: 'react' }))
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
     const res = await runIngest(ev({ text: '@baumy_bot Zuzka is staying in my room this weekend' }), step)
     expect(res).toMatchObject({ directed: true })
     expect(classifyMock).toHaveBeenCalledWith('Zuzka is staying in my room this weekend')
@@ -158,13 +157,14 @@ describe('C12 — the @botname token never reaches triage, memory or retrieval',
     expect(n.content).toBe('Zuzka is staying in my room this weekend')
     expect(extractFactsMock.mock.calls[0][0]).toBe('Zuzka is staying in my room this weekend')
     expect(String(retrieveMock.mock.calls[0]?.[0])).not.toContain('@baumy_bot')
-    expect(String(answerMock.mock.calls[0]?.[0])).not.toContain('@baumy_bot')
+    const ctx = answerMock.mock.calls[0]?.[0] as { text: string }
+    expect(ctx.text).toBe('Zuzka is staying in my room this weekend')
   })
 })
 
 describe('K1 — the "noted" ack is ✍ (a real Bot API reaction)', () => {
   it('an undirected statement Baumy stores gets ✍, never 🧠', async () => {
-    classifyMock.mockResolvedValue(V({ intent: 'fact', worthRemembering: true, respond: 'react' }))
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
     await runIngest(ev({ text: 'the boiler guy comes tuesday' }), step)
     expect(reactions()).toEqual(['✍'])
   })
@@ -233,7 +233,7 @@ describe('I8 — anonymous-admin posts are untrusted house text, never a bot "me
     ev({ fromId: GROUP_ANON_BOT, fromFirstName: 'Group', fromUsername: 'GroupAnonymousBot', isBot: true, senderChatId: HOUSE, text })
 
   it('captured as untrusted (not quarantined), unattributed, facts extracted; GroupAnonymousBot is not registered', async () => {
-    classifyMock.mockResolvedValue(V({ intent: 'fact', worthRemembering: true, respond: 'react' }))
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
     await runIngest(anon('rent goes up to 650 from October'), step)
     const [n] = await notes()
     expect(n.trustLevel).toBe('untrusted')
@@ -243,7 +243,7 @@ describe('I8 — anonymous-admin posts are untrusted house text, never a bot "me
     expect(bots).toHaveLength(0)
   })
   it('another bot in the group stays quarantined (no facts) and is not registered either', async () => {
-    classifyMock.mockResolvedValue(V({ intent: 'fact', worthRemembering: true }))
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
     await runIngest(ev({ fromId: 5555, fromFirstName: 'PollBot', isBot: true, text: 'Poll: pizza friday?' }), step)
     const [n] = await notes()
     expect(n.trustLevel).toBe('quarantined')
@@ -254,7 +254,7 @@ describe('I8 — anonymous-admin posts are untrusted house text, never a bot "me
 
 describe('I9 — a question about a secret is never stored as a "secret"', () => {
   it('"what\'s the wifi password again?" is not captured (no secure row)', async () => {
-    classifyMock.mockResolvedValue(V({ intent: 'question', worthRemembering: true, respond: 'answer' }))
+    classifyMock.mockResolvedValue(V({ intent: 'question', asksBaumy: true, worthRemembering: true }))
     await runIngest(ev({ text: "what's the wifi password again?" }), step)
     expect(await notes()).toHaveLength(0)
   })
@@ -264,7 +264,7 @@ describe('I9 — a question about a secret is never stored as a "secret"', () =>
     expect(await notes()).toHaveLength(0)
   })
   it('the STATEMENT of the password is still stored encrypted', async () => {
-    classifyMock.mockResolvedValue(V({ intent: 'fact', worthRemembering: true, respond: 'react' }))
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
     await runIngest(ev({ text: 'the wifi password is hunter2' }), step)
     const [n] = await notes()
     expect(n.isSecure).toBe(true)
@@ -284,7 +284,7 @@ describe('I2 — a transient extraction error retries the extraction, never re-s
         return r
       },
     }
-    classifyMock.mockResolvedValue(V({ intent: 'fact', worthRemembering: true, respond: 'react' }))
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
     extractFactsMock.mockRejectedValueOnce(new Error('Overloaded'))
     const e = ev({ text: 'the door code is 4471' }) // secure → skips consolidation, so a re-capture would duplicate
     await expect(runIngest(e, memoStep)).rejects.toThrow('Overloaded') // step fails → Inngest retries

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { resolveOrigin, type Roster } from '@/lib/core/origin'
 import { allowedActions, isAllowed } from '@/lib/core/policy'
-import { scanSensitivity, isSecretQuestion } from '@/lib/core/sensitivity'
+import { scanSensitivity, isSecretQuestion, asksForSecret } from '@/lib/core/sensitivity'
 import type { TelegramUpdate } from '@/lib/telegram/schema'
 
 const HOUSE = '-1001234567890'
@@ -185,6 +185,22 @@ describe('scanSensitivity', () => {
     expect(isSecretQuestion("what's the wifi password again?", 'chatter')).toBe(true) // degraded verdict: the "?" backstop
     expect(isSecretQuestion('the wifi password is hunter2', 'fact')).toBe(false)
     expect(isSecretQuestion('wifi password is hunter2 now, ok?', 'fact')).toBe(false)
+    expect(isSecretQuestion('wifi password is hunter2 now, ok?', 'statement')).toBe(false) // the spec §2 label
     expect(isSecretQuestion('when do the bins go out?', 'question')).toBe(false) // no secret involved
+  })
+
+  // C15: a secure value is decrypted into a reply only for a question asking for THAT value.
+  it('asksForSecret: only a direct ask for the value behind the secret', () => {
+    expect(asksForSecret("what's the wifi password?", 'the wifi password')).toBe(true)
+    expect(asksForSecret("what's the wifi?", 'the wifi password')).toBe(true) // asked bare, meant the password
+    expect(asksForSecret('what is the front door code', 'front door code')).toBe(true)
+    expect(asksForSecret('whats the code for the door again', 'an entry/door code')).toBe(true)
+    expect(asksForSecret("what's the password?", 'a saved password')).toBe(true)
+    // merely mentioning the same thing is not asking for the secret
+    expect(asksForSecret('the front door is sticking again', 'front door code')).toBe(false)
+    expect(asksForSecret('is the wifi router in the hallway broken?', 'the wifi password')).toBe(false)
+    expect(asksForSecret('when do the bins go out?', 'the wifi password')).toBe(false)
+    expect(asksForSecret("what's the door code?", 'the wifi password')).toBe(false) // a different secret
+    expect(asksForSecret(null, 'the wifi password')).toBe(false)
   })
 })

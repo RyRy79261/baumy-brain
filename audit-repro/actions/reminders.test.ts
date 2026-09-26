@@ -1,7 +1,6 @@
 // AUDIT REPRO (action flows: reminders). Real runIngest + PGlite; only the model transport,
 // Voyage and Telegram are mocked. A PASSING test == the finding is confirmed.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { eq } from 'drizzle-orm'
 import { DateTime } from 'luxon'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { ensureRegistered } from '@/lib/memory/write'
@@ -72,10 +71,10 @@ const ev = (over: Partial<TelegramMessageData>): { data: TelegramMessageData } =
     isBot: false, isForwarded: false, replyToBot: false, ...over,
   },
 })
-// A reminder request the classifier routes correctly (react, so the 👍 path — not the reply path).
+// A reminder request the classifier routes correctly. Group texts below are @-addressed: since
+// phase 1 an UNDIRECTED "remind us" creates nothing (A9), so the repros need a directed ask.
 const REM: ClassifierVerdict = {
-  worthRemembering: true, intent: 'reminder', needsReply: false, confidence: 0.9, respond: 'react',
-  reaction: null, tier: 'quick', webSearch: false, list: 'none',
+  intent: 'reminder', asksBaumy: true, worthRemembering: true, confidence: 0.9, vibe: null, tier: 'quick', webSearch: false, list: 'none',
 }
 const run = (e: { data: TelegramMessageData }) => withSimulatedTime(NOW.toJSDate(), () => runIngest(e, step))
 const rows = async () => dbh.db.select().from(reminders)
@@ -94,11 +93,11 @@ beforeEach(async () => {
 })
 
 describe('E18 — reminder content loses WHO', () => {
-  it('the reminder extractor never sees the speaker; "remind me…" posts a nameless "⏰ call the plumber"', async () => {
+  // Phase 1 gives the extractor the SPEAKER (fixed part); naming the requester in the content is
+  // still left to the model's wording, never enforced by code (A4 → phase 5).
+  it('"remind me…" still posts whatever nameless content the extractor returns — code never attributes it', async () => {
     reminderObj = { isReminder: true, whenText: '6pm', content: 'call the plumber' }
-    await run(ev({ text: 'remind me to call the plumber at 6pm' }))
-    const p = prompts.find((c) => c.system === EXTRACT_REMINDER_SYSTEM)!
-    expect(p.prompt).not.toMatch(/charli/i) // no SPEAKER line (contrast extractForget / extractFacts)
+    await run(ev({ text: '@baumy_bot remind me to call the plumber at 6pm' }))
     const [r] = await rows()
     expect(r.content).toBe('call the plumber')
     // deliver it
@@ -116,27 +115,10 @@ describe('E18 — reminder content loses WHO', () => {
   })
 })
 
-describe('E19 — unparseable / missing time is dropped silently', () => {
-  it('"remind us when Zuzka lands" → no reminder, no follow-up question, just a ✍', async () => {
-    reminderObj = { isReminder: true, whenText: 'when Zuzka lands', content: 'pick up Zuzka' }
-    const res = await run(ev({ text: 'remind us to pick up Zuzka when she lands' }))
-    expect(res.reminderSet).toBe(false)
-    expect(await rows()).toHaveLength(0)
-    expect(sendToHouse).not.toHaveBeenCalled()
-    expect(reactToMessage.mock.calls.at(-1)?.[2]).toBe('✍') // reads as "noted", reminder never exists (K1 fixed the emoji only)
-  })
-  it('no time at all ("remind us to buy a birthday card for Marco") → whenText "" → dropped silently', async () => {
-    reminderObj = { isReminder: true, whenText: '', content: 'buy a birthday card for Marco' }
-    const res = await run(ev({ text: 'remind us to buy a birthday card for Marco' }))
-    expect(res.reminderSet).toBe(false)
-    expect(sendToHouse).not.toHaveBeenCalled()
-  })
-})
-
 describe('time phrases the extractor is TOLD to produce are mis-resolved', () => {
   it('"Friday around 10pm" (EXTRACT_REMINDER_SYSTEM\'s own example) fires Friday 09:00 — time of day lost', async () => {
     reminderObj = { isReminder: true, whenText: 'Friday around 10pm', content: 'Zuzka arrives, let her in' }
-    await run(ev({ text: 'remind us friday around 10pm to let Zuzka in' }))
+    await run(ev({ text: '@baumy_bot remind us friday around 10pm to let Zuzka in' }))
     const [r] = await rows()
     expect(local(r.fireAt)).toBe('Fri 25 Sep 2026 09:00')
   })
@@ -144,17 +126,6 @@ describe('time phrases the extractor is TOLD to produce are mis-resolved', () =>
     const p = parseWhen('a week before friday', TZ, NOW)!
     expect(local(p.fireAt)).toBe('Fri 18 Sep 2026 09:00')
     expect(p.fireAt.getTime()).toBeLessThan(NOW.toMillis())
-  })
-  it('a past fire time is accepted and delivered IMMEDIATELY (no past check at create, none in reminderDeliver)', async () => {
-    reminderObj = { isReminder: true, whenText: '3 days before friday', content: 'the Friday party is in 3 days' }
-    await run(ev({ text: 'remind us 3 days before friday that the party is coming' }))
-    const [r] = await rows()
-    expect(r.fireAt.getTime()).toBeLessThan(NOW.toMillis()) // Tue 22 Sep 09:00, i.e. yesterday
-    expect(inngestSend).toHaveBeenCalled() // armed
-    let slept: Date | null = null
-    await reminderDeliver({ event: { data: { reminderId: r.id } }, step: { run: step.run, sleepUntil: async (_: string, d: Date) => { slept = d } } })
-    expect(slept!.getTime()).toBeLessThan(NOW.toMillis()) // sleepUntil(past) = fire now
-    expect(resilientSend).toHaveBeenCalledTimes(1)
   })
   it('"9/10" in a Berlin house (9 October) is read US-style → 10 September 2027', () => {
     expect(local(parseWhen('9/10', TZ, NOW)!.fireAt)).toBe('Fri 10 Sep 2027 09:00')
@@ -164,7 +135,7 @@ describe('time phrases the extractor is TOLD to produce are mis-resolved', () =>
 describe('recurrence + multiplicity', () => {
   it('"every friday at 8pm" silently becomes ONE Friday; after delivery nothing re-arms', async () => {
     reminderObj = { isReminder: true, whenText: 'every friday at 8pm', content: 'bins out' }
-    await run(ev({ text: 'remind us every friday at 8pm to put the bins out' }))
+    await run(ev({ text: '@baumy_bot remind us every friday at 8pm to put the bins out' }))
     const all = await rows()
     expect(all).toHaveLength(1)
     await reminderDeliver({ event: { data: { reminderId: all[0].id } }, step: { run: step.run, sleepUntil: async () => {} } })

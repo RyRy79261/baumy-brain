@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isDirectedAtBaumy, repliesToBaumy, stripBotMention, type ReplyToMessage } from '@/lib/pipeline/directed'
+import { isDirectedAtBaumy, repliesToBaumy, stripBotMention, directedness, addressesByName, type ReplyToMessage } from '@/lib/pipeline/directed'
 
 const U = 'baumy_bot' // the bot's real @username (from getMe)
 
@@ -19,6 +19,39 @@ describe('isDirectedAtBaumy', () => {
     expect(isDirectedAtBaumy('baumyish vibes', false, U)).toBe(false)
     expect(isDirectedAtBaumy(null, false, U)).toBe(false)
     expect(isDirectedAtBaumy('@baumy_bot hi', false, '')).toBe(false) // no username known
+  })
+})
+
+describe('addressesByName — the short name only as a vocative (C10)', () => {
+  it('true at the start ("Baumy, …", "hey baumy …") or closing the message ("…, baumy?", "thanks baumy")', () => {
+    for (const t of ['Baumy, when is bin day', 'baumy what is for dinner', 'hey baumy are you around?', 'ok baumy, remind us', 'when are the bins out, baumy?', 'thanks baumy', 'is it bin day baumy?', 'Baumy is it bin day?']) {
+      expect(addressesByName(t, U), t).toBe(true)
+    }
+  })
+  it('false for talk ABOUT Baumy: possessives, mid-sentence mentions, third-person statements', () => {
+    for (const t of ["Baumy's reminders are annoying lol", 'Marco, ask baumy, it knows', 'baumy keeps pinging me', 'Baumy is annoying', 'I told baumy about it yesterday', 'baumyish vibes']) {
+      expect(addressesByName(t, U), t).toBe(false)
+    }
+  })
+})
+
+describe('directedness — why a message is for Baumy (spec §1)', () => {
+  const base = { lane: 'house' as const, text: 'the bins go out friday', botUsername: U, replyToBaumy: false, inConsoleTopic: false, repliesToHuman: false }
+  it('a DM is always directed', () => {
+    expect(directedness({ ...base, lane: 'member_dm' })).toEqual({ value: true, why: 'dm' })
+  })
+  it('reply to Baumy, @mention, vocative name — in that order', () => {
+    expect(directedness({ ...base, replyToBaumy: true, text: '@baumy_bot hi' })).toEqual({ value: true, why: 'reply_to_baumy' })
+    expect(directedness({ ...base, text: 'hey @baumy_bot' })).toEqual({ value: true, why: 'mention' })
+    expect(directedness({ ...base, text: 'baumy, bins?' })).toEqual({ value: true, why: 'name' })
+  })
+  it('the ask-Baumy topic is directed — except a reply to another housemate there (C6)', () => {
+    expect(directedness({ ...base, inConsoleTopic: true })).toEqual({ value: true, why: 'console_topic' })
+    expect(directedness({ ...base, inConsoleTopic: true, repliesToHuman: true })).toEqual({ value: false, why: null })
+  })
+  it('plain group text is not directed', () => {
+    expect(directedness(base)).toEqual({ value: false, why: null })
+    expect(directedness({ ...base, text: "Baumy's reminders are annoying lol" })).toEqual({ value: false, why: null })
   })
 })
 

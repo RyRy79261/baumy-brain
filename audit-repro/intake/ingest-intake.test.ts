@@ -4,7 +4,6 @@ import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { memoryItems, reminders } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
-import { setConsoleThread } from '@/lib/identity/house'
 import { retrieve } from '@/lib/memory/retrieve'
 import { embedSync } from '@/lib/ai/embed'
 import type { ClassifierVerdict } from '@/lib/ai/classify'
@@ -18,7 +17,7 @@ const dbh: { db: any } = { db: null }
 const classifyMock = vi.fn<(t: string) => Promise<ClassifierVerdict>>()
 const extractFactsMock = vi.fn(async (_t: string, _s?: string | null) => ({ facts: [] as any[] }))
 const extractReminderMock = vi.fn(async (_t: string) => ({ isReminder: false, whenText: '', content: '' }))
-const answerMock = vi.fn(async (_q: string, _m: any[]) => ({ text: 'reply', answered: true }))
+const answerMock = vi.fn(async (..._a: unknown[]) => ({ text: 'reply', answered: true }))
 const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
 const reactToMessage = vi.fn(async (..._a: unknown[]) => {})
 
@@ -26,7 +25,7 @@ vi.mock('@/db/client', async (o) => ({ ...(await o<typeof import('@/db/client')>
 vi.mock('@/lib/ai/classify', async (o) => ({ ...(await o<typeof import('@/lib/ai/classify')>()), classify: (t: string) => classifyMock(t) }))
 vi.mock('@/lib/ai/extract', async (o) => ({ ...(await o<typeof import('@/lib/ai/extract')>()), extractFacts: (t: string, s?: string | null) => extractFactsMock(t, s) }))
 vi.mock('@/lib/ai/reminder-extract', async (o) => ({ ...(await o<typeof import('@/lib/ai/reminder-extract')>()), extractReminder: (t: string) => extractReminderMock(t) }))
-vi.mock('@/lib/ai/reply', async (o) => ({ ...(await o<typeof import('@/lib/ai/reply')>()), answer: (q: string, m: any[]) => answerMock(q, m) }))
+vi.mock('@/lib/ai/reply', async (o) => ({ ...(await o<typeof import('@/lib/ai/reply')>()), answer: (...a: unknown[]) => answerMock(...a) }))
 vi.mock('@/lib/ai/embed', async (o) => {
   const actual = await o<typeof import('@/lib/ai/embed')>()
   return { ...actual, embed: async (t: string) => actual.embedSync(t) }
@@ -39,19 +38,6 @@ vi.mock('@/lib/telegram/client', () => ({
 }))
 
 const { runIngest } = await import('@/lib/inngest/functions/ingest')
-const { classify: realClassify } = await vi.importActual<typeof import('@/lib/ai/classify')>('@/lib/ai/classify')
-// A model that answers with non-JSON → generateObject throws NoObjectGeneratedError → SAFE_VERDICT.
-const malformedModel = (): any => ({
-  specificationVersion: 'v2',
-  provider: 'mock',
-  modelId: 'mock',
-  supportedUrls: {},
-  doGenerate: async () => ({ content: [{ type: 'text', text: 'not json' }], finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, warnings: [] }),
-  doStream: async () => {
-    throw new Error('unused')
-  },
-})
-
 const HOUSE = '-100audit'
 const CHARLI = 701
 const MARCO = 702
@@ -79,12 +65,11 @@ const ev = (over: Partial<TelegramMessageData> = {}): { data: TelegramMessageDat
   }
 }
 const V = (over: Partial<ClassifierVerdict>): ClassifierVerdict => ({
-  worthRemembering: false,
   intent: 'chatter',
-  needsReply: false,
+  asksBaumy: false,
+  worthRemembering: false,
   confidence: 0.9,
-  respond: 'ignore',
-  reaction: null,
+  vibe: null,
   tier: 'quick',
   webSearch: false,
   list: 'none',
@@ -108,81 +93,21 @@ describe('AUDIT intake/triage/capture', () => {
     answerMock.mockResolvedValue({ text: 'reply', answered: true })
   })
 
-  // A1/A4 — the motivating symptom. In the /baumyhere console topic EVERY message is `directed`, so
-  // Charli's STATEMENT goes to answer() framed as a question, and — because capture runs first —
-  // the grounding handed to the model contains Charli's own just-captured message, attributed to her.
-  it('A1+A4: a statement in the console topic is answered with itself as grounding (quotes Charli back to Charli)', async () => {
-    await setConsoleThread(dbh.db, 42)
-    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'fact', respond: 'react', reaction: '👍' }))
-    const text = 'Zuzka is staying in my room this weekend'
-    await runIngest(ev({ text, messageThreadId: 42 }), step)
-
-    expect(answerMock).toHaveBeenCalledTimes(1)
-    const [query, grounding] = answerMock.mock.calls[0]
-    expect(query).toBe(text) // the statement is passed as the QUESTION
-    // the message itself is in the grounding, attributed to the speaker
-    const self = grounding.find((g: any) => g.content === text)
-    expect(self).toBeTruthy()
-    expect(self.authoredBy).toBe('Charli')
-    expect(sendToHouse).toHaveBeenCalledTimes(1) // words posted to the group instead of a 🧠
-  })
-
-  // A1 — even a normal directed question retrieves ITSELF as grounding (captured before reply).
-  it('A1/D15: a captured question grounds its own answer', async () => {
-    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'question', respond: 'answer', needsReply: true }))
-    const text = '@baumybot when is Zuzka arriving?'
-    await runIngest(ev({ text, fromId: MARCO, fromFirstName: 'Marco' }), step)
-    const [, grounding] = answerMock.mock.calls[0]
-    // (C12 fixed: the @mention is stripped before capture, so the self-hit is the bare question.)
-    expect(grounding.some((g: any) => g.content === 'when is Zuzka arriving?' && g.authoredBy === 'Marco')).toBe(true)
-    const [row] = await items()
-    expect(row.memoryType).toBe('question') // stored as a memory, later retrievable as "info"
-  })
-
-  // D15 — a captured question/chatter is later retrieved as if it were house info (no memoryType filter).
-  it('D15: an earlier QUESTION is returned by retrieval as grounding for a later question', async () => {
-    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'question', respond: 'ignore' }))
-    await runIngest(ev({ text: 'is the plumber coming on thursday?', fromId: MARCO, fromFirstName: 'Marco' }), step)
-    const got = await retrieve('when is the plumber coming?', { groupId: HOUSE, k: 8, floor: 0.05 }, { db: dbh.db, embed: async (t) => embedSync(t) })
-    expect(got.some((g) => g.content === 'is the plumber coming on thursday?' && g.memoryType === 'question')).toBe(true)
-  })
-
-  // D15 / SAFE_VERDICT — when triage fails, EVERYTHING is captured as 'chatter', including a
-  // "forget X" request (the forget flow never runs, and the thing to forget is re-stored).
-  it('SAFE_VERDICT: classifier failure captures a forget request verbatim and runs no forget flow', async () => {
-    const safe = await realClassify('x', malformedModel()) // malformed object → SAFE_VERDICT (I2: only malformed degrades)
-    expect(safe).toMatchObject({ worthRemembering: true, intent: 'chatter', respond: 'ignore', confidence: 0.5 })
-    classifyMock.mockResolvedValue(safe)
-    const res = await runIngest(ev({ text: 'baumy please forget my number 0176 5554433' }), step)
-    const rows = await items()
-    expect(rows.map((r: any) => r.content)).toContain('baumy please forget my number 0176 5554433')
-    expect(res.decision).toBe('capture') // decision is not 'forget' — the confirm-gated forget flow never runs
-    // `directed` (short-name mention) routes to the REPLY path instead, answering as a question
-    expect(answerMock).toHaveBeenCalledTimes(1)
-  })
-
-  // SAFE_VERDICT in a DM: a DM is NOT treated as directed, so a DM question during a triage
-  // failure gets no reply at all (the comment on SAFE_VERDICT claims the directed path covers it).
-  it('SAFE_VERDICT: a member DM question gets silence when triage fails', async () => {
-    const safe = await realClassify('x', malformedModel())
-    classifyMock.mockResolvedValue(safe)
-    const res = await runIngest(ev({ chatId: String(MARCO), chatType: 'private', fromId: MARCO, fromFirstName: 'Marco', text: 'when is bin day?' }), step)
-    expect(res.directed).toBe(false)
-    expect(answerMock).not.toHaveBeenCalled()
-    expect(sendToHouse).not.toHaveBeenCalled()
-    expect((await items()).length).toBe(1) // but the question is stored as memory
-  })
+  // (Phase 1 fixed and removed: A1/A4 self-grounded console statement, A1/D15 captured questions,
+  // SAFE_VERDICT capture-everything + DM silence (I3/K5), E20 confidence-gated reminders + needsReply
+  // (I6), and the reply blind to the reminder outcome (A3) — the correct behaviour is pinned in
+  // lib/turn/__tests__/plan.test.ts, lib/inngest/functions/__tests__/ingest-turn.test.ts and scenarios/.)
 
   // D16 — an edit re-runs the whole pipeline as a new message: duplicate note, duplicate reminder,
   // and the wrong original stays active (no supersede, contrary to spec D18).
   it('D16: editing a message duplicates the reminder and leaves the uncorrected note active', async () => {
-    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'reminder', respond: 'react' }))
+    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'reminder', asksBaumy: true }))
     extractReminderMock.mockResolvedValue({ isReminder: true, whenText: 'friday 9am', content: 'bins out' })
-    const first = ev({ text: 'remind us friday 9am bins out, cleaner comes monday' })
+    const first = ev({ text: '@baumybot remind us friday 9am bins out, cleaner comes monday' })
     await runIngest(first, step)
     // user fixes a typo in the same message → Telegram sends edited_message with a NEW update_id
     extractReminderMock.mockResolvedValue({ isReminder: true, whenText: 'friday 9am', content: 'bins out' })
-    await runIngest({ data: { ...first.data, updateId: first.data.updateId + 500, text: 'remind us friday 9am bins out, cleaner comes tuesday' } }, step)
+    await runIngest({ data: { ...first.data, updateId: first.data.updateId + 500, text: '@baumybot remind us friday 9am bins out, cleaner comes tuesday' } }, step)
 
     const rem = await dbh.db.select().from(reminders)
     expect(rem.length).toBe(2) // two "⏰ bins out" will fire
@@ -192,7 +117,7 @@ describe('AUDIT intake/triage/capture', () => {
   })
 
   it('D16: editing a directed question produces a SECOND worded reply', async () => {
-    classifyMock.mockResolvedValue(V({ intent: 'question', respond: 'answer', needsReply: true }))
+    classifyMock.mockResolvedValue(V({ intent: 'question', asksBaumy: true }))
     const first = ev({ text: '@baumybot whats the bin day' })
     await runIngest(first, step)
     await runIngest({ data: { ...first.data, updateId: first.data.updateId + 500, text: "@baumybot what's the bin day?" } }, step)
@@ -206,44 +131,24 @@ describe('AUDIT intake/triage/capture', () => {
     expect(classifyMock).not.toHaveBeenCalled()
   })
 
-  // Forwarded content — a housemate forwarding the landlord's notice is quarantined: stored, gets a
-  // ✍ "noted" reaction (K1 fixed the emoji), but no facts are extracted and retrieval never returns it.
-  it('forwarded landlord notice: ✍ acknowledged but never extractable or recallable', async () => {
-    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'fact', respond: 'react', reaction: '👍' }))
+  // Forwarded content — a housemate forwarding the landlord's notice is quarantined: stored, but no
+  // facts are extracted and retrieval never returns it (I5/D4 → phase 5). (Phase 1: no misleading ✍
+  // "noted" on it any more — the planner gives quarantined content no voice.)
+  it('forwarded landlord notice: stored but never extractable or recallable', async () => {
+    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'statement' }))
     const text = 'Landlord: the boiler inspection is on Tuesday at 10am, please be home'
     await runIngest(ev({ text, isForwarded: true }), step)
     expect(extractFactsMock).not.toHaveBeenCalled()
-    expect(reactToMessage).toHaveBeenCalledWith(HOUSE, expect.any(Number), '✍')
     const [row] = await items()
     expect(row.trustLevel).toBe('quarantined')
     const got = await retrieve('when is the boiler inspection?', { groupId: HOUSE, k: 8, floor: 0.0 }, { db: dbh.db, embed: async (t) => embedSync(t) })
     expect(got.find((g) => g.content === text)).toBeUndefined()
   })
 
-  // E20 — a reminder the classifier is only 0.65 "confident" about is silently NOT set, yet the
-  // message is captured and gets ✍ (K1 fixed the emoji), so the house believes it was handled.
-  it('E20: reminder with classifier confidence 0.65 is silently not created but gets ✍', async () => {
-    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'reminder', respond: 'react', confidence: 0.65 }))
-    extractReminderMock.mockResolvedValue({ isReminder: true, whenText: 'tomorrow 8am', content: 'put the bins out' })
-    const res = await runIngest(ev({ text: 'remind us tomorrow 8am to put the bins out' }), step)
-    expect(res.decision).toBe('capture')
-    expect(extractReminderMock).not.toHaveBeenCalled()
-    expect((await dbh.db.select().from(reminders)).length).toBe(0)
-    expect(reactToMessage).toHaveBeenCalledWith(HOUSE, expect.any(Number), '✍')
-  })
-
-  // E20 — needsReply has NO effect: respond=answer + needsReply=false still answers; the only
-  // consumer (decide()'s 'reply' branch) is dead — no caller acts on decision==='reply'.
-  it('E20: needsReply is ignored by routing', async () => {
-    classifyMock.mockResolvedValue(V({ intent: 'question', respond: 'answer', needsReply: false, confidence: 0.95 }))
-    await runIngest(ev({ text: 'does anyone know when the landlord visits' }), step)
-    expect(answerMock).toHaveBeenCalledTimes(1)
-  })
-
   // New: a housemate the bot has not yet seen speak in the group (chat_member not delivered when
   // Baumy isn't admin) is 'ignore' in DMs — silently dropped with no feedback.
   it('unknown DM sender (new housemate not yet seen in group) is silently dropped', async () => {
-    classifyMock.mockResolvedValue(V({ intent: 'question', respond: 'answer' }))
+    classifyMock.mockResolvedValue(V({ intent: 'question', asksBaumy: true }))
     const res = await runIngest(ev({ chatId: '999', chatType: 'private', fromId: 999, fromFirstName: 'Newbie', text: 'what is the wifi password?' }), step)
     expect(res).toMatchObject({ decision: 'drop', reason: 'out-of-scope' })
     expect(sendToHouse).not.toHaveBeenCalled()
@@ -252,7 +157,7 @@ describe('AUDIT intake/triage/capture', () => {
   // New: near-verbatim restatement consolidation — a NEW occurrence ("cleaner is coming tomorrow"
   // said again weeks later, by someone else) folds onto the OLD note: old created_at, old author.
   it('consolidation folds a fresh restatement by another person onto the old note (old date, old author)', async () => {
-    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'fact', respond: 'react' }))
+    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'statement' }))
     await runIngest(ev({ text: 'the cleaner is coming tomorrow' }), step)
     const [orig] = await items()
     await dbh.db.update(memoryItems).set({ createdAt: new Date('2026-01-01T00:00:00Z') }).where(eq(memoryItems.id, orig.id))
@@ -261,18 +166,5 @@ describe('AUDIT intake/triage/capture', () => {
     expect(rows.length).toBe(1)
     expect(rows[0].authoredBy).toBe(String(CHARLI))
     expect(new Date(rows[0].createdAt).toISOString()).toBe('2026-01-01T00:00:00.000Z')
-  })
-
-  // New: a directed / "answer"-routed reminder request goes to the REPLY path, and answer() is never
-  // told whether the reminder was actually created. REPLY_SYSTEM says "If they ALSO asked you to
-  // remember/remind something, acknowledge that part" — so Baumy confirms reminders that do not exist.
-  it('reminder request routed to reply: answer() gets no reminder outcome, even when none was set', async () => {
-    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'reminder', respond: 'answer', confidence: 0.9 }))
-    extractReminderMock.mockResolvedValue({ isReminder: true, whenText: 'when the landlord replies', content: 'chase the deposit' })
-    await runIngest(ev({ text: '@baumybot can you remind us to chase the deposit when the landlord replies?' }), step)
-    expect((await dbh.db.select().from(reminders)).length).toBe(0) // unparseable → no reminder
-    expect(answerMock).toHaveBeenCalledTimes(1)
-    expect(answerMock.mock.calls[0].length).toBe(2) // (query, grounding) only — no reminderSet signal
-    expect(reactToMessage).not.toHaveBeenCalledWith(HOUSE, expect.any(Number), '👍')
   })
 })

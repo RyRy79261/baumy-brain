@@ -160,10 +160,15 @@ export function promptSection(prompt: string, header: string): string[] {
   return out
 }
 
-const noteDefaultReply = (call: ModelCall): ReplyScript =>
-  memoryLines(call.prompt).length === 0
+// Default reply: in MODE answer, an honest miss when MEMORY is empty; any other mode (ack /
+// confirm / clarify / banter) just echoes the mode, so a scenario can see which one was used.
+const noteDefaultReply = (call: ModelCall): ReplyScript => {
+  const mode = call.prompt.match(/^MODE: (\w+)$/m)?.[1] ?? 'answer'
+  if (mode !== 'answer') return { reply: `(scripted ${mode})`, answered: true }
+  return memoryLines(call.prompt).length === 0
     ? { reply: "Nobody's mentioned anything like that 🐈‍⬛", answered: false }
     : { reply: '(scripted reply)', answered: true }
+}
 
 // The answer for one call, as the raw text the provider would have returned.
 function answerFor(call: ModelCall, fx: Fixtures): string {

@@ -14,14 +14,14 @@ const dbh: { db: Awaited<ReturnType<typeof makeTestDb>> | null } = { db: null }
 const classifyMock = vi.fn<(t: string) => Promise<ClassifierVerdict>>()
 const extractFactsMock = vi.fn<(t: string, s?: string | null) => Promise<{ facts: unknown[] }>>()
 const extractReminderMock = vi.fn<(t: string) => Promise<{ isReminder: boolean; whenText: string; content: string }>>()
-const answerMock = vi.fn<(q: string) => Promise<{ text: string; answered: boolean }>>()
+const answerMock = vi.fn<(...a: unknown[]) => Promise<{ text: string; answered: boolean }>>()
 const writeHeadsUpMock = vi.fn<(f: { subject: string }[], lead: string, when: string) => Promise<string | null>>()
 
 vi.mock('@/db/client', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/db/client')>()), createHttpDb: () => dbh.db }))
 vi.mock('@/lib/ai/classify', async (o) => ({ ...(await o<typeof import('@/lib/ai/classify')>()), classify: (t: string) => classifyMock(t) }))
 vi.mock('@/lib/ai/extract', async (o) => ({ ...(await o<typeof import('@/lib/ai/extract')>()), extractFacts: (t: string, s?: string | null) => extractFactsMock(t, s) }))
 vi.mock('@/lib/ai/reminder-extract', async (o) => ({ ...(await o<typeof import('@/lib/ai/reminder-extract')>()), extractReminder: (t: string) => extractReminderMock(t) }))
-vi.mock('@/lib/ai/reply', async (o) => ({ ...(await o<typeof import('@/lib/ai/reply')>()), answer: (q: string) => answerMock(q) }))
+vi.mock('@/lib/ai/reply', async (o) => ({ ...(await o<typeof import('@/lib/ai/reply')>()), answer: (...a: unknown[]) => answerMock(...a) }))
 vi.mock('@/lib/ai/nudge', async (o) => ({ ...(await o<typeof import('@/lib/ai/nudge')>()), writeHeadsUp: (...a: [{ subject: string }[], string, string]) => writeHeadsUpMock(...a) }))
 vi.mock('@/lib/ai/embed', async (o) => {
   const actual = await o<typeof import('@/lib/ai/embed')>()
@@ -33,19 +33,18 @@ const { createSandbox, sendAs, advanceTo, advanceBy, spoken } = await import('@/
 // Real verdict shape — worthRemembering is what gates capture, so a fixture missing it silently
 // disables the whole memory path (it did, first time round).
 const CHATTER: ClassifierVerdict = {
-  worthRemembering: false,
   intent: 'chatter',
-  needsReply: false,
+  asksBaumy: false,
+  worthRemembering: false,
   confidence: 0.9,
-  respond: 'ignore',
-  reaction: null,
+  vibe: null,
   tier: 'quick',
   webSearch: false,
   list: 'none',
 }
-const FACT: ClassifierVerdict = { ...CHATTER, worthRemembering: true, intent: 'fact', respond: 'react' }
-const REMINDER: ClassifierVerdict = { ...CHATTER, worthRemembering: true, intent: 'reminder', respond: 'react' }
-const QUESTION: ClassifierVerdict = { ...CHATTER, intent: 'question', respond: 'answer', needsReply: true, confidence: 0.95 }
+const FACT: ClassifierVerdict = { ...CHATTER, worthRemembering: true, intent: 'statement' }
+const REMINDER: ClassifierVerdict = { ...CHATTER, worthRemembering: true, intent: 'reminder', asksBaumy: true }
+const QUESTION: ClassifierVerdict = { ...CHATTER, intent: 'question', asksBaumy: true, confidence: 0.95 }
 
 const PEOPLE = [
   { id: 501, name: 'Madeleine', role: 'owner' as const },
@@ -107,7 +106,8 @@ describe('sandbox — talk as anyone, move time, watch what happens', () => {
     const sb = await freshSandbox('2026-07-01T09:00:00Z')
     classifyMock.mockResolvedValue(REMINDER)
     extractReminderMock.mockResolvedValue({ isReminder: true, whenText: '3 July at 9am', content: 'bins go out' })
-    await sendAs(sb, 'Charl', 'remind us to put the bins out on the 3rd at 9am')
+    // Directed (@mention): an undirected "remind us" in the group schedules nothing (A9).
+    await sendAs(sb, 'Charl', 'remind us to put the bins out on the 3rd at 9am', { mention: true })
 
     // Jump a WEEK in one call. The reminder must land on the 3rd's digest, not be flushed at the
     // destination timestamp — that difference is the whole reason jobs run at their own `now`.

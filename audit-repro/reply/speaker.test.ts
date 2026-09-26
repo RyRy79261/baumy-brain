@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
-import { setConsoleThread } from '@/lib/identity/house'
 import { houseConfig } from '@/db/schema'
 import { TRIAGE_SYSTEM, EXTRACT_FACTS_SYSTEM, REPLY_SYSTEM } from '@/lib/ai/prompts'
 import type { ClassifierVerdict } from '@/lib/ai/classify'
@@ -11,7 +10,12 @@ import type { TelegramMessageData } from '@/lib/inngest/client'
 // AUDIT REPRO (reply/voice area). Drives the REAL runIngest end to end — real classify()/extractFacts()/
 // answer() wrappers, real capture + reconcile + hybrid retrieve + currentFactsForQuery against PGlite —
 // and mocks ONLY the model transport (`ai`.generateObject), Voyage (→ embedSync) and Telegram.
-// It captures the exact prompt the REPLY model receives for the "Charli" scenario.
+//
+// Phase 1 (chat-understanding-v2 §1–§4) fixed and removed the "Charli scenario" repros — no speaker
+// (C2), statement framed as a QUESTION (C3), grounded on itself (C1), statements routed to the reply
+// path / 👎 on news (C4), console-topic housemate questions answered (C6), the DM classifier blind to
+// its lane. The correct behaviour lives in scenarios/charli + routing, lib/turn/__tests__/plan.test.ts
+// and lib/ai/__tests__/reply.test.ts. What is still open is below.
 
 const dbh: { db: any } = { db: null }
 const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
@@ -88,12 +92,11 @@ const ev = (over: Partial<TelegramMessageData>): { data: TelegramMessageData } =
 
 // A realistic Haiku verdict for a plain informative statement.
 const STATEMENT: ClassifierVerdict = {
+  intent: 'statement',
+  asksBaumy: false,
   worthRemembering: true,
-  intent: 'fact',
-  needsReply: false,
   confidence: 0.9,
-  respond: 'react',
-  reaction: null,
+  vibe: null,
   tier: 'quick',
   webSearch: false,
   list: 'none',
@@ -115,97 +118,18 @@ beforeEach(async () => {
   replyObject = { reply: "No idea — Charli said Zuzka's staying", answered: false, needsStrongerModel: false }
 })
 
-function assertCharliBug(prompt: string) {
-  // A2: nothing tells the model WHO is talking — "Charli" appears only as the author of memory rows.
-  expect(prompt).not.toMatch(/SPEAKER|SENDER|from Charli:|Charli (asks|says|wrote)/i)
-  // A3: the statement is framed as a QUESTION.
-  expect(prompt).toContain('QUESTION (data): ')
-  // A1: the MEMORY block already contains the very message being replied to (captured moments earlier),
-  // attributed to Charli — so the model "answers" Charli by quoting Charli back.
-  const memory = prompt.split('MEMORY:\n')[1].split('\n\nQUESTION')[0]
-  expect(memory).toMatch(/from Charli\) (@baumy_bot )?Zuzka is staying in my room this weekend/)
-  expect(memory).toMatch(/from Charli\) zuzka staying in: charli's room/)
-}
-
-describe('Charli scenario — what the reply model actually receives', () => {
-  it('(a) @mention statement → reply path; prompt has no speaker, frames it as a QUESTION, MEMORY holds the message itself', async () => {
-    const res = await runIngest(ev({ text: '@baumy_bot Zuzka is staying in my room this weekend' }), step)
-    expect(res.directed).toBe(true)
-    expect(replyCalls()).toHaveLength(1)
-    const p = replyCalls()[0].prompt
-    assertCharliBug(p)
-    // the words go out (directed ⇒ always words even when answered=false) — the ✍ ack is lost
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
-    expect(reactToMessage.mock.calls.map((c) => c[2])).not.toContain('✍')
-    // eslint-disable-next-line no-console
-    console.log('\n===== (a) REPLY PROMPT =====\n' + p + '\n============================\n')
-  })
-
-  it('(b) /baumyhere topic: a plain statement (even one addressed to another housemate) is forced down the reply path', async () => {
-    await setConsoleThread(dbh.db, 42)
-    const res = await runIngest(ev({ text: 'Zuzka is staying in my room this weekend', messageThreadId: 42 }), step)
-    expect(res.directed).toBe(true)
-    expect(replyCalls()).toHaveLength(1)
-    assertCharliBug(replyCalls()[0].prompt)
-    expect(sendToHouse).toHaveBeenCalledTimes(1) // words, not ✍
-  })
-
-  it('(b2) /baumyhere topic: Marco asking CHARLI a question is answered by Baumy', async () => {
-    await setConsoleThread(dbh.db, 42)
-    triageVerdict = { ...STATEMENT, worthRemembering: false, intent: 'question', respond: 'answer', needsReply: true }
-    await runIngest(ev({ fromId: MARCO, fromFirstName: 'Marco', text: 'Charli are you around tonight?', messageThreadId: 42 }), step)
-    expect(replyCalls()).toHaveLength(1)
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
-  })
-
-  it('(c) DM statement: the classifier is never told this is a DM; "answer" OR a reply-to-Baumy sends it to the reply path', async () => {
-    // Plain DM statement with the realistic react verdict → ✍ only (no reply) — OK.
-    await runIngest(ev({ chatId: String(CHARLI), chatType: 'private' }), step)
-    expect(replyCalls()).toHaveLength(0)
-    const triage = calls.find((c) => c.system === TRIAGE_SYSTEM)!
-    expect(triage.prompt).not.toMatch(/private|DM|direct message|lane/i) // classifier sees text only
-    // Same DM statement sent as a Telegram reply to any earlier Baumy message → directed → reply path.
+describe('first-person questions — "my room" is not resolved to the asker in the fact lookup (F13 → phase 4)', () => {
+  it('Charli asks "who is staying in my room this weekend?" — the fact keyed on "charli\'s room" is not retrieved', async () => {
+    await runIngest(ev({ fromId: MARCO, fromFirstName: 'Marco', text: "Zuzka is staying in Charli's room this weekend" }), step)
     calls.length = 0
-    await runIngest(ev({ chatId: String(CHARLI), chatType: 'private', replyToBot: true }), step)
-    expect(replyCalls()).toHaveLength(1)
-    assertCharliBug(replyCalls()[0].prompt)
-  })
-
-  it('(d) undirected group statement misread as respond=answer → reply model gets it as a QUESTION; answered=false ⇒ 👎 on an informative statement, ✍ lost', async () => {
-    triageVerdict = { ...STATEMENT, respond: 'answer', confidence: 0.9 }
-    const res = await runIngest(ev({}), step)
-    expect(res.directed).toBe(false)
-    expect(replyCalls()).toHaveLength(1)
-    assertCharliBug(replyCalls()[0].prompt)
-    expect(sendToHouse).not.toHaveBeenCalled()
-    expect(reactToMessage.mock.calls.map((c) => c[2])).toEqual(['👀', '👎'])
-  })
-
-  it('A1 corollary: an ambient question that was captured can never hit the "blank" honest-miss — its own echo is always in MEMORY', async () => {
-    triageVerdict = { ...STATEMENT, intent: 'question', respond: 'answer', needsReply: true, confidence: 0.95, worthRemembering: true }
-    replyObject = { reply: 'nothing on that', answered: false, needsStrongerModel: false }
-    await runIngest(ev({ fromId: MARCO, fromFirstName: 'Marco', text: 'when is the plumber coming?' }), step)
-    const p = replyCalls()[0].prompt
-    expect(p).toMatch(/\(question, from Marco\) when is the plumber coming\?/)
-    expect(p).not.toContain('(no relevant memory found)')
-    // grounding non-empty → 👎 instead of the informative "we've never mentioned that"
-    expect(reactToMessage.mock.calls.map((c) => c[2])).toEqual(['👀', '👎'])
-  })
-})
-
-describe('first-person questions — the asker is unknown to the reply model', () => {
-  it('Charli asks "who is staying in my room this weekend?" — prompt never says the asker is Charli; the fact row keyed on "charli\'s room" is not even retrieved', async () => {
-    await runIngest(ev({ fromId: MARCO, fromFirstName: 'Marco', text: 'Zuzka is staying in Charli\'s room this weekend' }), step)
-    calls.length = 0
-    triageVerdict = { ...STATEMENT, worthRemembering: false, intent: 'question', respond: 'answer', needsReply: true, confidence: 0.95 }
+    triageVerdict = { ...STATEMENT, worthRemembering: false, intent: 'question', asksBaumy: true, confidence: 0.95 }
     replyObject = { reply: 'no idea whose room that is', answered: false, needsStrongerModel: false }
     await runIngest(ev({ text: '@baumy_bot who is staying in my room this weekend?' }), step)
     const p = replyCalls()[0].prompt
-    // eslint-disable-next-line no-console
-    console.log('\n===== first-person REPLY PROMPT =====\n' + p + '\n=====================================\n')
-    expect(p).not.toMatch(/asked by Charli|SPEAKER|SENDER/i)
-    // currentFactsForQuery substring-matches entity names inside the query text; "my room" never
-    // contains "zuzka", so the structured fact is missing from grounding
-    expect(p).not.toMatch(/zuzka staying in: charli's room/)
+    // (C2 fixed: the prompt now says FROM: Charli, so the model CAN resolve "my" — but) the fact lookup
+    // substring-matches entity names inside the query text; "my room" never contains "zuzka", so the
+    // structured fact is missing from grounding.
+    expect(p).toMatch(/FROM: Charli/)
+    expect(p).not.toMatch(/- fact · [^\n]*zuzka staying in/)
   })
 })

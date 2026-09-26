@@ -1,0 +1,73 @@
+import { describe, it, expect } from 'vitest'
+import { buildTurnContext, describeOutcome, describeWhere, summarizeFact } from '@/lib/turn/context'
+
+// The TurnContext is pure: transport facts in, context out — nothing in it comes from message text.
+
+const input = {
+  updateId: 1,
+  messageId: 9,
+  chatId: '-100h',
+  houseScope: '-100h',
+  lane: 'house' as const,
+  fromId: 701,
+  senderName: 'Charli Weber',
+  isOwner: true,
+  anonymous: false,
+  authorId: '701',
+  trust: 'untrusted' as const,
+  sentAt: new Date('2026-09-26T19:40:00Z'),
+  tz: 'Europe/Berlin',
+  threadId: null,
+  isConsole: false,
+  directed: { value: false, why: null },
+  replyTo: null,
+  text: 'hi',
+}
+
+describe('buildTurnContext', () => {
+  it('maps transport facts into the turn, with an empty outcome and window', () => {
+    const c = buildTurnContext(input)
+    expect(c.sender).toEqual({ id: 701, name: 'Charli Weber', firstName: 'Charli', role: 'owner' })
+    expect(c).toMatchObject({ chatId: '-100h', houseScope: '-100h', lane: 'house', trust: 'untrusted', outcome: {}, recent: [] })
+  })
+  it('an anonymous admin is never given a housemate’s name; a nameless sender is "a housemate"', () => {
+    expect(buildTurnContext({ ...input, anonymous: true, authorId: null }).sender.name).toBe('an admin (posting anonymously)')
+    expect(buildTurnContext({ ...input, senderName: null }).sender.firstName).toBe('a housemate')
+    expect(buildTurnContext({ ...input, senderName: '  ' }).sender.name).toBe('a housemate')
+  })
+})
+
+describe('describeWhere', () => {
+  it('names the DM, the ask-Baumy topic, another topic, or the group', () => {
+    expect(describeWhere({ lane: 'member_dm', topic: { threadId: null, isConsole: false } })).toMatch(/private DM/)
+    expect(describeWhere({ lane: 'house', topic: { threadId: 77, isConsole: true } })).toBe('house group, ask-Baumy topic')
+    expect(describeWhere({ lane: 'house', topic: { threadId: 5, isConsole: false } })).toBe('house group, a topic thread')
+    expect(describeWhere({ lane: 'house', topic: { threadId: null, isConsole: false } })).toBe('house group')
+  })
+})
+
+describe('describeOutcome — THIS TURN', () => {
+  it('lists what actually happened, one clause per action', () => {
+    const s = describeOutcome(
+      {
+        captured: { memoryItemId: 'n', factIds: ['f'], learned: [summarizeFact({ subject: 'zuzka', predicate: 'stays_in', object: "charli's room" }, 'Sat 3 Oct')], rejected: [] },
+        reminder: { status: 'set', fireAt: new Date('2026-10-02T18:00:00Z'), content: 'bins out', deliverTo: 'house' },
+        list: { op: 'checkoff', added: [], already: [], checkedOff: ['milk'], notFound: ['eggs'], open: ['bread'] },
+      },
+      'Europe/Berlin',
+    )
+    expect(s).toBe(
+      "noted — zuzka · stays in · charli's room (Sat 3 Oct); reminder set Fri 2 Oct 20:00 — bins out; ticked off the shopping list: milk; NOT on the shopping list (nothing ticked): eggs; shopping list now: bread",
+    )
+  })
+  it('says so when nothing happened, and when a trust-gated fact was refused', () => {
+    expect(describeOutcome({}, 'Europe/Berlin')).toBe('nothing was stored, scheduled or changed')
+    const r = describeOutcome({ captured: { memoryItemId: 'n', factIds: [], learned: [], rejected: [summarizeFact({ subject: 'rent', predicate: 'is', object: '650' }, null)] } }, 'Europe/Berlin')
+    expect(r).toContain('NOT stored (conflicts with something more trusted) — rent · is · 650')
+  })
+  it('a secret in a learned fact is a descriptor, never the value (the ack cannot echo it)', () => {
+    const f = summarizeFact({ subject: 'wifi', predicate: 'password', object: 'hunter2' }, null)
+    expect(f.secure).toBe(true)
+    expect(describeOutcome({ captured: { memoryItemId: 'n', factIds: ['f'], learned: [f], rejected: [] } }, 'Europe/Berlin')).not.toContain('hunter2')
+  })
+})

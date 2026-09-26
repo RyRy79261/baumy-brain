@@ -65,8 +65,11 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   (grounds replies, never privileged). Member DM text is `trusted`. One exception: an
   **anonymous-admin post** (`from` = @GroupAnonymousBot, `sender_chat.id` = the house itself) is
   native `untrusted` house text, never attributed and never registered as a member (I8).
-  **Directedness** (a reply to Baumy) is `reply_to_message.from.id === Baumy's bot id` — never
-  `is_bot` alone, never the forum topic-root service message (`chat-understanding-v2.md` §1).
+  **Directedness** (`lib/pipeline/directed.ts` `directedness`, spec §1) is transport-derived and
+  changes verbosity, never trust: a DM; a reply to Baumy (`reply_to_message.from.id === Baumy's bot
+  id` — never `is_bot` alone, never the forum topic-root service message); the exact `@username`; the
+  short name as a **vocative** only ("Baumy, …", "…, baumy?" — not "Baumy's reminders are annoying");
+  or the ask-Baumy topic (except a reply to another housemate there).
 - **DM queries (`member_dm` lane, `docs/spec/dm-queries-and-house-scoping.md`):** a member can
   DM Baumy to **read** house memory (answered privately) and **write** facts through to shared
   house memory at `trusted`. The **scope** a message reads/writes is `houseScopeForOrigin(origin,
@@ -87,9 +90,12 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   changes commit via authenticated **owner/admin dashboard** server actions
   (`lib/auth/require-admin.ts` `requireAdmin`/`requireOwner`, re-checked live), **not** a
   Telegram tap. **Reminders and shopping-list add/check-off are exempt from both — they
-  auto-commit** (`ingest.ts` reminder step + `list` step): a reminder only posts text to the fixed
-  house group, and a list op only mutates the house's own group-scoped list (reversible,
-  low-privilege). Both are the capture tier. Do not re-add a confirm step to either.
+  auto-commit** (`lib/turn/actions.ts` `runReminder` + `runList`): a reminder only posts text to the
+  fixed house group, and a list op only mutates the house's own group-scoped list (reversible,
+  low-privilege). Both are the capture tier. Do not re-add a confirm step to either. A reminder is
+  only created from a **directed** ask (DM / @mention / reply / console topic — `decide()`, A9), is
+  not confidence-gated, and every failure (no time / unreadable / past) is an explicit outcome the
+  reply turns into a clarifying question — never a silent drop or a ✍.
 - **LLM errors (I2):** only a *malformed object* degrades to a safe default
   (`lib/ai/errors.ts` `isMalformedObjectError`); a transient provider error (429/529/timeout)
   **rethrows** so the Inngest step retries — never swallow it into a memoized degraded value.
@@ -108,17 +114,49 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   **not** obtainable via the Bot API (D9a) — don't try to add them.
 - **Ask-Baumy topic + introspection (`docs/spec/telegram.md` D9c):** `house_config.console_thread_id`
   (owner `/baumyhere`) marks a topic where Baumy is fully conversational (a message there is treated as
-  `directed`). `/reminders` + `/recent` are deterministic, **secret-safe** read-only introspection
+  `directed`, except a reply to another housemate; a question there is answered only when triage says
+  it is for Baumy — `asksBaumy`, C6). `/reminders` + `/recent` are deterministic, **secret-safe** read-only introspection
   (exclude `is_secure`). The topic changes **verbosity, not trust** — still untrusted house text, no
   privileged path rides on the topic id. A real introspection API belongs in the authed dashboard.
 - **Secrets at rest:** wifi/door/bank values are AES-256-GCM encrypted (`lib/core/crypto.ts`);
-  only a non-secret descriptor is stored/embedded; decrypt only to answer a direct request,
-  never in digests.
+  only a non-secret descriptor is stored/embedded; decrypt only to answer a direct request
+  (`lib/turn/grounding.ts` `disclose`: MODE answer + `asksForSecret` on that value — never for an
+  ack/confirm, never because a message merely mentions the door), never in digests, never into the
+  tool-enabled web-search generation.
 - **Dashboard authz is live:** re-checked against the DB on every request
   (`lib/auth/require-admin.ts`) — never cached in the cookie.
 - **Trust-gated facts:** a fact may supersede an incumbent only if its trust ≥ the incumbent's
   (`lib/memory/facts.ts`) — the memory-poisoning defense.
 - **Fail closed** everywhere (roster, env, webhook secret).
+
+## The turn & Baumy's voice (`lib/turn/*`, `docs/spec/chat-understanding-v2.md` §1–§4)
+
+`runIngest` (`lib/inngest/functions/ingest.ts`) is intake (record → origin → directedness → noise
+filter → slash commands, `lib/turn/commands.ts`) and then ONE turn:
+
+1. **`TurnContext`** (`context.ts`, pure): sender, lane, trust, scope vs destination, topic,
+   directedness + why, replied-to author/text, the @mention-stripped text, `sentAt` in the house tz.
+2. **Triage in context** (`lib/ai/classify.ts`): intent (statement / question / request / reminder
+   / forget / banter / chatter), `asksBaumy`, `worthRemembering`, confidence *in the intent*, vibe,
+   tier (quick/deep), webSearch, list. It **does not decide whether Baumy speaks.** A malformed
+   object → `SAFE_VERDICT` (captures nothing, `degraded`).
+3. **Write-gate** (`lib/core/decide.ts`): `shouldCapture` = statements / info-carrying requests and
+   reminders only — **never a question, chatter or a forget request** (I3).
+4. **Capture** (`capture.ts`) returns `{memoryItemId, factIds, learned, rejected}`; **actions**
+   (`actions.ts`: list, reminder, forget) return what actually happened. All land in `ctx.outcome`.
+5. **`planResponse(ctx, policy)`** (`plan.ts`) — pure, table-driven, exhaustively tested — picks
+   none / a reaction / the deterministic list or forget text / words in a **MODE** (answer, ack,
+   confirm, clarify, banter). Paused house → none (DMs still work); quarantined content → none.
+   Don't add voice logic anywhere else.
+6. **Words** (`respond.ts` → `lib/ai/reply.ts` `answer(ctx, mode, grounding)`): the prompt is the
+   verified CONTEXT (FROM / WHERE / NOW / REPLYING TO / THIS TURN) + dated, attributed MEMORY + MODE +
+   `MESSAGE from <name>`. Grounding (`grounding.ts`) **excludes this turn's own note and facts** (C1).
+   The model never third-persons the sender and never claims an action THIS TURN doesn't report.
+   Words go out as a Telegram **reply** to the triggering message, through the `claimReply` /
+   `releaseReply` exactly-once belt; Sonnet→Opus self-escalation and the malformed-object text
+   fallback are kept.
+
+Reactions are limited to `PLANNER_EMOJI` (`lib/turn/emoji.ts`, Bot-API-valid — ✍ is "noted").
 
 ## Auth reality (read before touching auth)
 
@@ -175,7 +213,7 @@ crown jewels. The pipeline:
 - **Extraction has NO fact ceiling** (`extract.ts`): a dense message **paginates** (re-ask for
   new facts until a short page drains; `MAX_PASSES` backstop is logged, never a silent drop).
   Every hot-path `generateObject` is **best-effort** — a malformed object degrades to a safe
-  default (classify→SAFE_VERDICT, extract→[], reminder/forget→none, reply→text fallback) so no
+  default (classify→SAFE_VERDICT (stores nothing), extract→[], reminder/forget→none, reply→text fallback) so no
   single LLM hiccup crash-loops ingest. See the structured-output rule before adding one.
 - Reserved + intentionally unused: `entities.name_embedding` (semantic entity resolution —
   today it's redundant with expansion; wire it only if recall proves thin in the wild).

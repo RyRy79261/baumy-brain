@@ -41,9 +41,8 @@ describe('scenario: reminders', () => {
   scenario('the reply model is told the reminder was set, with the resolved day and time (confirm mode)', {
     people: HOUSE,
     startAt: start,
-    // A3: the reply model is never told what the reminder step did, so it can't confirm the actual
-    // time (or honestly say it failed). Spec §4 THIS TURN + MODE: confirm.
-    knownGap: { refs: 'A3', phase: 1, note: 'THIS TURN outcome + confirm mode' },
+    // A3: the reply model is told what the reminder step did (spec §4 THIS TURN) and asked to
+    // confirm it (MODE: confirm), so a misparsed time is visible in the reply.
     fixtures,
     steps: [
       say('Ryan', BINS, { mention: true }),
@@ -67,9 +66,8 @@ describe('scenario: reminders', () => {
   scenario('an unparseable reminder time is a clarifying question (clarify mode, needs_time)', {
     people: HOUSE,
     startAt: start,
-    // A2/A3: the failed parse is silent — the reply model answers the raw text as a QUESTION with no
-    // idea nothing was scheduled. Spec: reminder needs_time → MODE: clarify.
-    knownGap: { refs: 'A2 A3', phase: 1, note: 'reminder outcome needs_time → clarify' },
+    // A2/A3: a reminder with no time is an explicit needs_time outcome → MODE: clarify, and the
+    // model is never told (or allowed to claim) that anything was scheduled.
     fixtures,
     steps: [
       say('Ryan', VAGUE, { mention: true }),
@@ -81,8 +79,7 @@ describe('scenario: reminders', () => {
   scenario('an undirected "remind us" in the group creates no reminder', {
     people: HOUSE,
     startAt: start,
-    // A9: un-directed group text still creates reminders; spec §3 requires a directed ask.
-    knownGap: { refs: 'A9', phase: 1, note: 'undirected reminders are not created' },
+    // A9: a reminder needs a directed ask (spec §3) — group talk between housemates never schedules one.
     fixtures,
     steps: [say('Ryan', BINS), expectReminder({ count: 0 })],
   })

@@ -1,20 +1,71 @@
-// Is a group message DIRECTED at Baumy (product.md #82)? A directed message —
-// an @mention of the bot's REAL username, addressing it by its short name, or a
-// reply to one of its messages — is ALWAYS answered; an undirected message only
-// gets the policy-gated auto-answer. `botUsername` is Baumy's actual Telegram
-// username (from getMe), so it knows its own name instead of guessing.
-export function isDirectedAtBaumy(text: string | null, replyToBaumy: boolean, botUsername: string): boolean {
-  if (replyToBaumy) return true
-  const t = (text ?? '').toLowerCase()
+// Is a group message DIRECTED at Baumy (product.md #82, chat-understanding-v2 §1)? `botUsername`
+// is Baumy's actual Telegram username (from getMe), so it knows its own name instead of guessing.
+// Directedness changes VERBOSITY only (the planner answers instead of reacting) — never trust.
+export type DirectedWhy = 'mention' | 'reply_to_baumy' | 'console_topic' | 'dm' | 'name'
+
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// Words that make "Baumy …" at the start of a message a sentence ABOUT Baumy rather than one TO it
+// ("Baumy is annoying", "baumy keeps pinging"). Only applied when the message is not a question —
+// "baumy is it bin day?" is still addressed to it.
+const THIRD_PERSON = /^\s+(?:is|was|has|had|keeps|kept|isn't|wasn't|doesn't|didn't|never|always|just|seems|sucks|said|says|should|shouldn't)\b/i
+const OPENERS = '(?:hey|hi|hello|hiya|yo|oi|ok|okay|so|and|also|dear|morning|evening|thanks|thank you|thx|ty|cheers)'
+
+// The short name ("baumy" for @baumy_bot) used as a VOCATIVE (C10): at the start of the message
+// ("Baumy, …", "hey baumy …") or closing it ("…, baumy?", "thanks baumy"). A mid-sentence mention
+// ("Marco, ask baumy, it knows") or a possessive ("Baumy's reminders are annoying") is talk ABOUT
+// Baumy, not to it — the classifier can still judge `asksBaumy` for those.
+export function addressesByName(text: string | null, botUsername: string): boolean {
   const uname = (botUsername ?? '').toLowerCase()
-  if (!uname) return false
-  if (t.includes(`@${uname}`)) return true // exact @mention, e.g. "@baumy_bot"
-  // Also its short name (username minus a trailing "bot"/"_bot") as a whole word,
-  // so "hey baumy" counts — but not substrings like "baumyish".
   const short = uname.replace(/_?bot$/, '')
   if (!short) return false
-  const esc = short.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`(?:^|[^a-z0-9_@])${esc}(?![a-z0-9_])`, 'i').test(t)
+  const t = (text ?? '').trim()
+  if (!t) return false
+  const n = esc(short)
+  const start = new RegExp(`^(?:${OPENERS}[\\s,!]+)?${n}(?![\\w'’@])`, 'i').exec(t)
+  if (start) {
+    const rest = t.slice(start.index + start[0].length)
+    if (!THIRD_PERSON.test(rest) || /\?\s*$/.test(t)) return true
+  }
+  // Closing vocative: after a comma/punctuation or a thanks-word, or "… baumy?" at the very end.
+  return new RegExp(`(?:[,;:!.]\\s*|\\b(?:thanks|thank you|thx|ty|cheers|please|pls)\\s+)${n}\\s*[?!.]*\\s*$|\\s${n}\\s*\\?+\\s*$`, 'i').test(t)
+}
+
+// An exact "@username" mention anywhere in the text.
+export function mentionsBot(text: string | null, botUsername: string): boolean {
+  const uname = (botUsername ?? '').toLowerCase()
+  if (!uname) return false
+  return new RegExp(`(?<![\\w@])@${esc(uname)}(?![\\w])`, 'i').test(text ?? '')
+}
+
+export interface DirectednessInput {
+  lane: 'house' | 'member_dm'
+  /** The ORIGINAL text (the @mention not yet stripped). */
+  text: string | null
+  botUsername: string
+  replyToBaumy: boolean
+  /** The message sits in the house's ask-Baumy topic (/baumyhere). */
+  inConsoleTopic: boolean
+  /** The message is a reply to ANOTHER housemate's message (not Baumy, not the topic root). */
+  repliesToHuman: boolean
+}
+
+// Why (if at all) this message is for Baumy — spec §1. A DM is always directed. In the ask-Baumy
+// topic a message is directed by default, EXCEPT a reply to another housemate — that is two people
+// talking in Baumy's topic, not a question to Baumy (C6).
+export function directedness(i: DirectednessInput): { value: boolean; why: DirectedWhy | null } {
+  if (i.lane === 'member_dm') return { value: true, why: 'dm' }
+  if (i.replyToBaumy) return { value: true, why: 'reply_to_baumy' }
+  if (mentionsBot(i.text, i.botUsername)) return { value: true, why: 'mention' }
+  if (addressesByName(i.text, i.botUsername)) return { value: true, why: 'name' }
+  if (i.inConsoleTopic && !i.repliesToHuman) return { value: true, why: 'console_topic' }
+  return { value: false, why: null }
+}
+
+// Back-compat boolean view (group text only): an @mention, a vocative short name, or a reply to Baumy.
+export function isDirectedAtBaumy(text: string | null, replyToBaumy: boolean, botUsername: string): boolean {
+  if (replyToBaumy) return true
+  return mentionsBot(text, botUsername) || addressesByName(text, botUsername)
 }
 
 // The replied-to message, as the webhook forwards it (Telegram-authenticated transport fields).

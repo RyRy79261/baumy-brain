@@ -85,12 +85,11 @@ const event = (over: Partial<TelegramMessageData> = {}): { data: TelegramMessage
 })
 
 const verdict = (over: Partial<ClassifierVerdict>): ClassifierVerdict => ({
-  worthRemembering: false,
   intent: 'chatter',
-  needsReply: false,
+  asksBaumy: false,
+  worthRemembering: false,
   confidence: 0.5,
-  respond: 'ignore',
-  reaction: null,
+  vibe: null,
   tier: 'quick',
   webSearch: false,
   list: 'none',
@@ -148,9 +147,9 @@ describe('ingest handler — shopping list end-to-end (real routing, mocked LLM/
 
   it('a member DM "what\'s on the list?" renders the current list and does NOT double-reply', async () => {
     await addListItems(dbh.db, { groupId: HOUSE, items: ['milk', 'eggs'], addedBy: null })
-    // a list query is ALSO a question (respond=answer) — proves the list branch preempts the
-    // generic reply (one send, the rendered list) instead of both firing.
-    classifyMock.mockResolvedValue(verdict({ list: 'query', intent: 'question', needsReply: true, respond: 'answer', confidence: 0.9 }))
+    // a list query is ALSO a question — proves the planner's list row renders it (one send, the
+    // rendered list) instead of the list AND a generic reply both firing.
+    classifyMock.mockResolvedValue(verdict({ list: 'query', intent: 'question', asksBaumy: true, confidence: 0.9 }))
     extractMock.mockResolvedValue({ op: 'query', items: [] })
 
     const res = await runIngest(event({ text: "what's on the list?" }), step)
@@ -287,21 +286,25 @@ describe('ingest handler — ask-Baumy topic (/baumyhere + fully conversational)
     expect((await resolveHouseIds(dbh.db)).consoleThreadId).toBeNull()
   })
 
-  it('answers a plain statement IN the ask-Baumy topic — no @mention needed', async () => {
+  // Behaviour change (phase 1, spec §3): a statement in the ask-Baumy topic is directed, so it gets a
+  // one-line ACK (MODE ack) — not an "answer" to itself, and not a ✍ either.
+  it('acknowledges a plain statement IN the ask-Baumy topic in words — no @mention needed', async () => {
     await setConsoleThread(dbh.db, CONSOLE_THREAD)
-    classifyMock.mockResolvedValue(verdict({ intent: 'chatter', respond: 'ignore', confidence: 0.3 }))
+    classifyMock.mockResolvedValue(verdict({ intent: 'statement', confidence: 0.9 }))
     await runIngest(
       event({ chatId: HOUSE, chatType: 'supergroup', fromId: MEMBER, text: 'the boiler is making a weird noise', messageThreadId: CONSOLE_THREAD }),
       step,
     )
     expect(answerMock).toHaveBeenCalledTimes(1) // fully conversational
+    expect(answerMock.mock.calls[0][1]).toBe('ack')
     expect(sendToHouse).toHaveBeenCalledTimes(1)
-    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: CONSOLE_THREAD }) // reply lands in the topic
+    // the ack lands in the topic, as a Telegram reply to the statement (C11)
+    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: CONSOLE_THREAD, replyToMessageId: uid })
   })
 
   it('stays QUIET on the same statement in a different topic (not the console)', async () => {
     await setConsoleThread(dbh.db, CONSOLE_THREAD)
-    classifyMock.mockResolvedValue(verdict({ intent: 'chatter', respond: 'ignore', confidence: 0.3 }))
+    classifyMock.mockResolvedValue(verdict({ intent: 'statement', confidence: 0.9 }))
     await runIngest(
       event({ chatId: HOUSE, chatType: 'supergroup', fromId: MEMBER, text: 'the boiler is making a weird noise', messageThreadId: 999 }),
       step,

@@ -2,7 +2,7 @@ import { describe } from 'vitest'
 import { and, eq, isNull } from 'drizzle-orm'
 import { listItems } from '@/db/schema'
 import { scenario, say, expectWords, expectNoWords, expectReaction, expectDb, expectPrompt } from './dsl'
-import { statement, request, chatter } from './shapes'
+import { statement, question, request, chatter } from './shapes'
 import { HOUSE } from './house'
 
 // The shared shopping list (docs/spec/shopping-list.md): group acks come from the STORE OUTCOME
@@ -19,9 +19,11 @@ const fixtures = {
       ? statement({ worthRemembering: false, list: 'add' })
       : /^got /.test(t)
         ? statement({ worthRemembering: false, list: 'checkoff' })
-        : /add coffee/.test(t)
-          ? request({ asksBaumy: true, list: 'add' })
-          : chatter(),
+        : /plumber/.test(t)
+          ? question({ asksBaumy: true, list: 'add' }) // a list change AND an unrelated question (TRIAGE_SYSTEM)
+          : /add coffee/.test(t)
+            ? request({ asksBaumy: true, list: 'add' })
+            : chatter(),
   list: (t: string) =>
     /out of oat milk/.test(t)
       ? { op: 'add' as const, items: ['oat milk'] }
@@ -52,9 +54,8 @@ describe('scenario: shopping list', () => {
   scenario('a list op that also asks something still gets the question answered', {
     people: HOUSE,
     startAt: '2026-09-24 19:00',
-    // A10: the list branch returns early, so the question half is never answered. Spec §3: list ack
-    // from the store outcome, then continue to the question row.
-    knownGap: { refs: 'A10', phase: 1, note: 'planner continues past a handled list op' },
+    // A10: the list op is acked from the store outcome AND the question half is answered (spec §3
+    // "list op handled … if the message ALSO asks something → continue to the question row").
     fixtures,
     steps: [
       say('Marco', "add coffee — and when's the plumber coming?", { mention: true }),

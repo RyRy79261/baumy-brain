@@ -56,6 +56,11 @@ interface TurnOutcome {
 }
 ```
 
+(As implemented: `TurnContext` also carries `authorId` — null for quarantined content or an anonymous
+admin; `outcome.list` carries `open`, the list after the op; `outcome.forget` is `{proposed:true,
+pendingId, card}` or `{proposed:false, reason}`; `reminder.deliverTo` is always `'house'` until D2
+lands in phase 5.)
+
 **Directedness (C8–C10, K5):** `dm` is always directed. `reply_to_baumy` only when
 `reply_to_message.from.id === bot id` (the webhook forwards the replied-to message's author id, its
 text, and whether it is the forum topic-root service message — a topic root never counts). `mention`
@@ -65,7 +70,8 @@ text, and whether it is the forum topic-root service message — a topic root ne
 ## 2. Triage (`lib/ai/classify.ts`)
 
 The classifier receives a **context header** (lane, directed + why, console topic, replied-to
-author/text, and in phase 2 the last few turns) plus the message. Its output:
+author/text, the sender's first name and the housemates' first names — so "Charli, are you home?"
+reads as addressed to a person — and in phase 2 the last few turns) plus the message. Its output:
 
 ```ts
 {
@@ -110,6 +116,25 @@ LLM is called; only a malformed object degrades to a safe default. Helper: `lib/
 Reaction emoji are limited to `PLANNER_EMOJI = ['✍','👍','👎','👀','🔥','🎉','🤯','😁']`, all members of
 the Bot API `ReactionTypeEmoji` union (unit test asserts it).
 
+**As implemented in phase 1** (`lib/turn/plan.ts`; deviations from the table above, each deliberate):
+- `Plan` also has `{ kind: 'list-words' }` (the deterministic store-outcome text — K4) and
+  `{ kind: 'forget' }` (the confirm card or the deterministic "nothing to forget" line); `words`
+  carries `onMiss: 'words' | '👎'` and every plan a `row` naming the table row that fired.
+- **Console topic.** `console_topic` is the weakest `why`: a reply to another housemate inside the
+  ask-Baumy topic is not directed at all, and a question there is answered only when `asksBaumy`
+  (otherwise every housemate-to-housemate question in that topic got Baumy's two cents — C6).
+- **Quarantined** (forwarded / bot) content gets no voice at all (it is not a housemate talking to
+  Baumy; a ✍ on it claimed a memory that can never ground anything).
+- **Degraded triage** (`SAFE_VERDICT`): a directed/DM message is still answered (`answer`, K5);
+  undirected text gets nothing.
+- **A list op + a question** continues to the question row only when the message is intent
+  `question` (triage sets `list` AND `intent:'question'` for "add coffee — and when's the plumber?");
+  a list `request` ("@baumy add coffee") is acked from the store. A list ack that needed words is
+  folded into THIS TURN instead of a second message.
+- **Reminders:** not confidence-gated (I6); `past` is detected at creation. An intent-`reminder`
+  message the extractor did not read as one: directed → `answer` (told nothing was set),
+  undirected → none.
+
 ## 4. The reply (`lib/ai/reply.ts` + `lib/ai/prompts.ts`)
 
 `answer(ctx, plan.mode, grounding)`. The prompt is:
@@ -134,7 +159,10 @@ MESSAGE from Charli: Zuzka is staying in my room this weekend
   happened unless THIS TURN says so (A3).
 - Words are sent as a Telegram **reply** to the triggering message (`reply_parameters`) (C11).
 - Secure values are decrypted into grounding only when `mode === 'answer'` and the question is about
-  that value (C15).
+  that value (C15) — `asksForSecret` in `lib/core/sensitivity.ts`. A secret typed into the MESSAGE
+  itself is replaced by its descriptor in every mode but `answer`.
+- Phase 1 also drops pre-v2 `question`/`chatter` notes from grounding (they were captured before I3
+  and would otherwise still ground answers), and reports `answered:false` only in MODE `answer`.
 
 ## 5. Conversation window (phase 2, `lib/turn/window.ts`, table `baumy_messages`)
 

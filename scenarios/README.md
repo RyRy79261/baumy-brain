@@ -94,10 +94,10 @@ Write fixtures in the **spec's** shapes, using `verdict()`/`statement()`/`questi
 converts them to the schemas the code validates today.
 
 - When a phase changes a schema, update `shapes.ts`. No scenario should need to change.
-- The triage adapter switches itself to the spec shape once `asksBaumy` appears in the classifier
-  schema.
-- For the legacy schema, the adapter returns what a model faithfully following today's triage
-  prompt would say. That keeps known bugs visible: C6 is one example.
+- Since phase 1 the classifier schema IS the spec §2 shape, so the triage adapter is the identity;
+  facts and reminders still convert (their spec §6 shapes land in phase 3).
+- The scripted reply echoes the MODE when a fixture doesn't script it (`(scripted ack)`), and in
+  MODE answer admits a miss when MEMORY is empty — so a scenario can see which mode was used.
 
 ### Known gaps
 

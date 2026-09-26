@@ -18,6 +18,8 @@ export interface OutboundMessage {
   text: string | null
   /** Set for reactions ('👀', '✍', null = cleared) and for confirm cards (the action id). */
   meta?: string | null
+  /** For a message / confirm card sent as a Telegram reply: the message_id it replies to (C11). */
+  replyTo?: number
   at: Date
 }
 

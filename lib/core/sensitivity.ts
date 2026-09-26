@@ -56,6 +56,31 @@ export function scanSensitivity(text: string | null | undefined): SensitivityRes
 // (never overriding an explicit 'fact' — "wifi password is hunter2 now, ok?" is still a statement).
 export function isSecretQuestion(text: string | null | undefined, intent: string): boolean {
   if (!text) return false
-  const asks = intent === 'question' || (intent !== 'fact' && /\?\s*$/.test(text.trim()))
+  const asks = intent === 'question' || (intent !== 'fact' && intent !== 'statement' && /\?\s*$/.test(text.trim()))
   return asks && scanSensitivity(text).isSecure
 }
+
+// Does this QUESTION ask for the value behind a stored secret (C15)? Secure rows are decrypted into a
+// reply's grounding ONLY when it does — never because the message merely mentions the same thing
+// ("baumy the front door is sticking again" must not put the door code in front of the model).
+// `secretLabel` is the secure row's non-secret descriptor ("the wifi password", "front door code").
+// Match = the question names the same thing (a shared keyword) AND asks for a secret-ish attribute
+// (password / code / pin / iban …) — or names the wifi, which people ask for bare ("what's the wifi?").
+const SECRET_THINGS = ['wifi', 'wi-fi', 'wireless', 'door', 'gate', 'alarm', 'lock', 'garage', 'building', 'entry', 'bank', 'iban', 'card', 'account', 'router', 'safe']
+const SECRET_ATTRS = /\b(password|pass|passcode|code|pin|key|combo|combination|iban|number|details|login)\b/i
+export function asksForSecret(question: string | null | undefined, secretLabel: string): boolean {
+  if (!question) return false
+  const words = (s: string) => new Set(s.toLowerCase().match(/[a-z][a-z-]*/g) ?? [])
+  const q = words(question)
+  const label = words(secretLabel)
+  const shared = SECRET_THINGS.filter((t) => q.has(t) && label.has(t))
+  if (shared.length === 0) {
+    // A bare attribute ("what's the password?") matches a row whose label names that attribute.
+    const attr = question.match(SECRET_ATTRS)?.[1]?.toLowerCase()
+    return attr != null && label.has(attr) && /\b(what|what's|whats|tell|give|send|remind|need)\b/i.test(question)
+  }
+  if (SECRET_ATTRS.test(question)) return true
+  // "what's the wifi?" / "send me the iban" — the bare thing, but plainly asking for it.
+  return shared.some((t) => t === 'wifi' || t === 'wi-fi' || t === 'wireless' || t === 'iban') && ASKS_FOR.test(question)
+}
+const ASKS_FOR = /\b(what'?s|what is|whats|tell me|give me|send me|need|remind me of)\b/i

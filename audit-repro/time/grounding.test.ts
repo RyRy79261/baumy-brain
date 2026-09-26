@@ -19,7 +19,6 @@ process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64')
 const { makeTestDb } = await import('@/lib/memory/__tests__/pglite')
 const { ensureRegistered } = await import('@/lib/memory/write')
 const { reconcileFact, currentFactsForQuery } = await import('@/lib/memory/facts')
-const { groundedReply } = await import('@/lib/ai/reply')
 const { extractFacts } = await import('@/lib/ai/extract')
 const { withSimulatedTime } = await import('@/lib/core/clock')
 const { facts } = await import('@/db/schema')
@@ -28,25 +27,10 @@ const { runEventSurfacingScan } = await import('@/lib/inngest/functions/surfacin
 const GROUP = '-100time'
 beforeEach(() => { calls.length = 0 })
 
-describe('B7 — reply grounding carries no dates', () => {
-  it('a note\'s createdAt is available on RetrievedMemory but memoryBlock drops it', async () => {
-    await withSimulatedTime(new Date('2026-09-26T10:00:00Z'), () =>
-      groundedReply('is anyone staying this weekend?', [
-        {
-          id: 'm1', memoryType: 'fact', authoredBy: 'Charli', similarity: 0.9, isSecure: false, contentEncrypted: null,
-          content: 'Zuzka is staying in my room this weekend',
-          createdAt: '2026-03-12T18:00:00.000Z', // said in MARCH
-        },
-      ]),
-    )
-    const prompt = calls[0].prompt!
-    expect(prompt).toContain('Zuzka is staying in my room this weekend')
-    expect(prompt).toContain('TODAY is Saturday, 26 September 2026')
-    // Nothing tells the model the note is six months old:
-    expect(prompt).not.toMatch(/2026-03|March|12 Mar/i)
-  })
-
-  it('fact content has neither event_at nor recorded_at; a PAST event stays current and grounds replies', async () => {
+// (B7/T1 "reply grounding carries no dates" fixed in phase 1: every MEMORY line now carries who said
+// it and when, facts their event day — lib/ai/__tests__/reply.test.ts. What remains is the fact model.)
+describe('B8/B9 — stored facts do not expire and keep relative wording', () => {
+  it('a PAST event stays current and is still returned as a current fact (T2 → phase 3)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     // Captured in March, event resolved to 14 March.
@@ -60,7 +44,7 @@ describe('B7 — reply grounding carries no dates', () => {
     // Six months later:
     const hits = await currentFactsForQuery(db, GROUP, 'is zuzka staying here?')
     expect(hits).toHaveLength(1)
-    expect(hits[0].content).toBe("zuzka staying in: charli's room") // no date of any kind
+    expect(hits[0].content).toBe("zuzka staying in: charli's room")
     const [row] = await db.select().from(facts).where(eq(facts.groupId, GROUP))
     expect(row.isCurrent).toBe(true) // never expires (B8)
   })
@@ -76,7 +60,9 @@ describe('B7 — reply grounding carries no dates', () => {
       }),
     )
     const hits = await currentFactsForQuery(db, GROUP, 'when does iman arrive')
-    expect(hits[0].content).toBe('iman arrives: tomorrow night') // re-read against TODAY (26 Sep) = wrong day
+    // The relative phrase is stored verbatim (T3 → phase 3); since phase 1 the reply at least sees the
+    // said-on date + event day next to it, but the object itself still says "tomorrow night".
+    expect(hits[0].content).toBe('iman arrives: tomorrow night')
   })
 })
 

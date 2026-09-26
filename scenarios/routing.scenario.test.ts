@@ -36,9 +36,8 @@ describe('scenario: routing — words, reactions, silence', () => {
   scenario('housemates asking each other a question — Baumy stays out of it', {
     people: HOUSE,
     startAt: start,
-    // C6: today's triage prompt routes ANY question to "answer", whoever it is aimed at; the spec's
-    // `asksBaumy` flag + the planner's "question, undirected, not asksBaumy → none" row fix it.
-    knownGap: { refs: 'C6', phase: 1, note: 'asksBaumy in triage + planner' },
+    // C6: triage's `asksBaumy` flag + the planner's "question, undirected, not asksBaumy → none" row
+    // keep Baumy out of questions housemates ask each other.
     fixtures: { triage: () => question({ asksBaumy: false }) },
     steps: [say('Marco', 'Charli are you home tonight?'), expectSilent()],
   })
@@ -77,9 +76,7 @@ describe('scenario: routing — words, reactions, silence', () => {
   scenario('a DM statement gets a short worded ack in the DM (not silence, not just an emoji)', {
     people: HOUSE,
     startAt: start,
-    // K3: a DM statement is not a "wantAnswer", so the only feedback is a reaction; the planner's
-    // "statement, directed/DM → ack" row gives it words.
-    knownGap: { refs: 'K3', phase: 1, note: 'planner ack mode for DM statements' },
+    // K3: the planner's "statement, directed/DM → ack" row — a DM statement gets words, not silence.
     fixtures: {
       triage: () => statement(),
       extract: () => [fact({ subject: 'boiler service', predicate: 'scheduled_on', object: 'tuesday', when: 'tuesday' })],
@@ -108,9 +105,8 @@ describe('scenario: routing — words, reactions, silence', () => {
   scenario('a reply to Baumy tells the model what Baumy had said', {
     people: HOUSE,
     startAt: start,
-    // C5: the replied-to text is forwarded by the webhook now (phase 0) but never reaches the reply
-    // prompt; spec §4's REPLYING TO line carries it.
-    knownGap: { refs: 'C5', phase: 1, note: 'REPLYING TO in the reply prompt' },
+    // C5 (the part phase 1 covers): the replied-to text reaches the reply prompt as spec §4's
+    // REPLYING TO line. The recent-chat window is phase 2.
     fixtures: {
       triage: (t) => (t === 'yes' ? banter({ asksBaumy: true }) : chatter()),
       reply: () => 'On it 😼',

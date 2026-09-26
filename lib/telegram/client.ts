@@ -21,11 +21,15 @@ const NO_PREVIEW = { link_preview_options: { is_disabled: true } }
 
 // Fixed-destination send (architecture D9): the caller resolves the destination
 // (house config / stored deliver_chat_id / task group_id) — never the LLM.
-export async function sendToHouse(chatId: string, text: string, opts?: { silent?: boolean; threadId?: number }): Promise<void> {
+export async function sendToHouse(
+  chatId: string,
+  text: string,
+  opts?: { silent?: boolean; threadId?: number; replyToMessageId?: number },
+): Promise<void> {
   if (!chatId) throw new Error('[baumy/telegram] no house chat id resolved (bot not added to a group yet?)')
   // Sandbox capture (lib/telegram/outbox.ts): enforced HERE, at the exit, so a sandbox cannot
   // reach the real house even if it is holding production config.
-  if (record({ kind: 'message', chatId, text }, now())) return
+  if (record({ kind: 'message', chatId, text, ...(opts?.replyToMessageId != null ? { replyTo: opts.replyToMessageId } : {}) }, now())) return
   await api().sendMessage(chatId, text, {
     ...NO_PREVIEW,
     disable_notification: opts?.silent ?? false,
@@ -33,16 +37,21 @@ export async function sendToHouse(chatId: string, text: string, opts?: { silent?
     // channel"), else omit → the General topic. Only valid in a forum supergroup; Telegram ignores
     // it elsewhere. The id is code-resolved (config / echoed inbound thread), never LLM-chosen.
     ...(opts?.threadId != null ? { message_thread_id: opts.threadId } : {}),
+    // A conversational answer is a Telegram REPLY to the message that triggered it (C11), so in a
+    // busy chat it is clear what Baumy is answering. allow_sending_without_reply: if that message
+    // was deleted meanwhile, still send rather than fail the step.
+    ...(opts?.replyToMessageId != null ? { reply_parameters: { message_id: opts.replyToMessageId, allow_sending_without_reply: true } } : {}),
   })
 }
 
 // Inline-keyboard confirm card (security B4). The tap — a callback_query from a
 // member's authenticated from.id — is the injection wall for a privileged action.
-export async function sendConfirmCard(chatId: string, text: string, actionId: string, threadId?: number): Promise<void> {
+export async function sendConfirmCard(chatId: string, text: string, actionId: string, threadId?: number, replyToMessageId?: number): Promise<void> {
   if (!chatId) throw new Error('[baumy/telegram] no chat id for confirm card')
-  if (record({ kind: 'confirm-card', chatId, text, meta: actionId }, now())) return
+  if (record({ kind: 'confirm-card', chatId, text, meta: actionId, ...(replyToMessageId != null ? { replyTo: replyToMessageId } : {}) }, now())) return
   await api().sendMessage(chatId, text, {
     ...NO_PREVIEW,
+    ...(replyToMessageId != null ? { reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } } : {}),
     // Land in the forum topic the request came from (else the card jumps to General); omitted elsewhere.
     ...(threadId != null ? { message_thread_id: threadId } : {}),
     reply_markup: {

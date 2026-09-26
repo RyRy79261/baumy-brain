@@ -5,6 +5,7 @@ import { embed, EMBED_MODEL } from '@/lib/ai/embed'
 import { scanSensitivity } from '@/lib/core/sensitivity'
 import { encryptSecret } from '@/lib/core/crypto'
 import type { Trust } from '@/lib/core/origin'
+import { now as clockNow } from '@/lib/core/clock'
 
 // Consolidation (memory Phase 5): a new item this cosine-close to an existing active
 // one is treated as a restatement, not a new memory. Near-verbatim only — distinct
@@ -102,6 +103,9 @@ export async function captureMemory(input: CaptureInput, deps?: Partial<MemoryDe
       isSecure: sens.isSecure,
       contentEncrypted,
       salience: Math.min(1, Math.max(0, input.salience ?? 0.5)),
+      // Explicit, not the column default: created_at is when it was SAID — the reply renders it as the
+      // note's date (T1), and a Postgres defaultNow() is unreachable from a simulated clock.
+      createdAt: clockNow(),
     })
     .returning({ id: memoryItems.id })
 

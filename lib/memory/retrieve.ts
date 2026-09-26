@@ -32,6 +32,9 @@ export interface RetrieveOpts {
   groupId: string
   k?: number
   floor?: number
+  /** Memory item ids to leave out — the reply excludes THIS turn's own evidence note (C1), which
+   *  would otherwise rank first on self-similarity and ground the reply on the message itself. */
+  excludeIds?: string[]
 }
 
 export interface RetrieveDeps {
@@ -155,7 +158,8 @@ export async function retrieve(
   const db = deps?.db ?? createHttpDb()
   const embedFn = deps?.embed ?? embed
   const vec = await embedFn(query)
-  const rows = await runHybrid(db, vec, query, opts.groupId, opts.floor ?? 0.2)
+  const skip = new Set(opts.excludeIds ?? [])
+  const rows = (await runHybrid(db, vec, query, opts.groupId, opts.floor ?? 0.2)).filter((r) => !skip.has(r.id))
   return rows
     .map((r) => ({ r, s: compose(r.rrf, r.createdAt, r.salience) }))
     .sort((a, b) => b.s - a.s)
@@ -197,7 +201,9 @@ export async function retrieveExpanded(
     })
   }
 
+  const skip = new Set(opts.excludeIds ?? [])
   return [...acc.values()]
+    .filter((e) => !skip.has(e.row.id))
     .map((e) => ({ row: e.row, s: compose(e.score, e.row.createdAt, e.row.salience) }))
     .sort((a, b) => b.s - a.s)
     .slice(0, opts.k ?? 8)

@@ -53,7 +53,6 @@ describe('scenario: Charli tells Baumy who is staying, Marco asks later', () => 
   // The spec §4 turn: ack mode, FROM, MESSAGE framing, no self-grounding, dated attributed memory.
   scenario('Charli gets an ack (not an answer to herself); Marco gets a dated answer attributed to her', {
     ...base,
-    knownGap: { refs: 'C1 C2 C3 T1', phase: 1, note: 'reply prompt v2 (turn context + MODE + self-exclusion + dated MEMORY)' },
     steps: [
       say('Charli', STATEMENT, { topic: 'console' }),
       expectPrompt('reply', /FROM: Charli\b/, 'the model was told who is speaking (C2)'),

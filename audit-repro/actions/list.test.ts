@@ -57,8 +57,7 @@ const ev = (over: Partial<TelegramMessageData>): { data: TelegramMessageData } =
   },
 })
 const V = (o: Partial<ClassifierVerdict>): ClassifierVerdict => ({
-  worthRemembering: false, intent: 'chatter', needsReply: false, confidence: 0.9, respond: 'ignore',
-  reaction: null, tier: 'quick', webSearch: false, list: 'none', ...o,
+  intent: 'chatter', asksBaumy: false, worthRemembering: false, confidence: 0.9, vibe: null, tier: 'quick', webSearch: false, list: 'none', ...o,
 })
 
 beforeEach(async () => {
@@ -71,24 +70,12 @@ beforeEach(async () => {
   sendToHouse.mockClear(); reactToMessage.mockClear()
 })
 
-describe('list early-return swallows the rest of the message', () => {
-  it('"@baumy add milk to the list — and what\'s the wifi password?" → milk added, ✍, the question is never answered', async () => {
-    triage = V({ list: 'add', intent: 'question', needsReply: true, respond: 'answer' })
-    listObj = { op: 'add', items: ['milk'] }
-    const res = await runIngest(ev({ text: "@baumy_bot add milk to the list — and what's the wifi password?" }), step)
-    expect(res.decision).toBe('list')
-    expect(systems).not.toContain(REPLY_SYSTEM) // reply path never runs
-    expect(sendToHouse).not.toHaveBeenCalled()
-    expect(reactToMessage.mock.calls.at(-1)?.[2]).toBe('✍') // K1 fixed the emoji; A10 (question dropped) is still open
-  })
-})
-
 describe('list ops are ALSO captured as memory and never retired', () => {
   it('"we\'re out of milk" is stored as an active note; after "got the milk" the note is still active grounding', async () => {
-    triage = V({ list: 'add', worthRemembering: true, intent: 'fact' })
+    triage = V({ list: 'add', worthRemembering: true, intent: 'statement' })
     listObj = { op: 'add', items: ['milk'] }
     await runIngest(ev({ text: "we're out of milk" }), step)
-    triage = V({ list: 'checkoff', worthRemembering: true, intent: 'fact' })
+    triage = V({ list: 'checkoff', worthRemembering: true, intent: 'statement' })
     listObj = { op: 'checkoff', items: ['milk'] }
     await runIngest(ev({ text: 'got the milk' }), step)
     const notes = await dbh.db.select().from(memoryItems).where(and(eq(memoryItems.groupId, HOUSE), eq(memoryItems.isActive, true)))

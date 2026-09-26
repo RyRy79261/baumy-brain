@@ -28,6 +28,10 @@ export interface GraphContextItem {
   isSecure: false
   contentEncrypted: null
   authoredBy: string | null
+  /** The fact row behind this item + when it was recorded — the reply dates it (T1) and leaves out
+   *  the facts THIS turn just wrote (C1). */
+  factId?: string
+  saidAt?: Date | null
 }
 
 // The entities a query refers to — same name/alias/trigram match the fact lookup uses, so
@@ -55,6 +59,8 @@ export async function resolveSeedEntities(db: Database, groupId: string, query: 
 }
 
 export interface GraphEdge {
+  factId?: string
+  recordedAt?: Date | null
   subject: string
   predicate: string
   object: string
@@ -92,7 +98,8 @@ export async function connectedEdges(
       WHERE r.depth < ${maxHops}
     ),
     nodes AS (SELECT id, min(depth) AS d FROM reach GROUP BY id ORDER BY d ASC LIMIT ${maxNodes})
-    SELECT se.canonical_name AS subject, f.predicate AS predicate, oe.canonical_name AS object,
+    SELECT f.id AS "factId", f.recorded_at AS "recordedAt",
+           se.canonical_name AS subject, f.predicate AS predicate, oe.canonical_name AS object,
            f.authored_by AS "authoredBy", least(ns.d, no.d) AS depth
     FROM baumy_facts f
     JOIN nodes ns ON ns.id = f.subject_entity_id
@@ -103,6 +110,8 @@ export async function connectedEdges(
     ORDER BY depth ASC, f.recorded_at DESC
     LIMIT ${maxEdges}`)
   return rowsOf(res).map((r) => ({
+    factId: String(r.factId),
+    recordedAt: r.recordedAt ? new Date(r.recordedAt as string) : null,
     subject: String(r.subject),
     predicate: String(r.predicate).replace(/_/g, ' '),
     object: String(r.object),
@@ -112,6 +121,8 @@ export async function connectedEdges(
 }
 
 export interface TimelineEntry {
+  factId?: string
+  recordedAt?: Date | null
   content: string
   authoredBy: string | null
   isCurrent: boolean
@@ -122,7 +133,8 @@ export interface TimelineEntry {
 // never the plaintext. Soft-deleted rows are excluded.
 export async function entityTimeline(db: Database, groupId: string, entityId: string, limit = 8): Promise<TimelineEntry[]> {
   const res = await db.execute(sql`
-    SELECT e.canonical_name AS subject, f.predicate AS predicate, f.object_value AS "objectValue",
+    SELECT f.id AS "factId", f.recorded_at AS "recordedAt",
+           e.canonical_name AS subject, f.predicate AS predicate, f.object_value AS "objectValue",
            f.is_secure AS "isSecure", f.authored_by AS "authoredBy", f.is_current AS "isCurrent"
     FROM baumy_facts f
     JOIN baumy_entities e ON f.subject_entity_id = e.id
@@ -133,6 +145,8 @@ export async function entityTimeline(db: Database, groupId: string, entityId: st
     const base = `${String(r.subject)} ${String(r.predicate).replace(/_/g, ' ')}`
     const content = r.isSecure ? base : `${base}: ${(r.objectValue as string | null) ?? ''}`
     return {
+      factId: String(r.factId),
+      recordedAt: r.recordedAt ? new Date(r.recordedAt as string) : null,
       content: r.isCurrent ? content : `${content} (past)`,
       authoredBy: (r.authoredBy ?? null) as string | null,
       isCurrent: Boolean(r.isCurrent),
@@ -159,15 +173,15 @@ export async function gatherGraphContext(
 
   const items: GraphContextItem[] = []
   const seen = new Set<string>()
-  const push = (memoryType: 'connection' | 'timeline', content: string, authoredBy: string | null) => {
+  const push = (memoryType: 'connection' | 'timeline', content: string, authoredBy: string | null, factId?: string, saidAt?: Date | null) => {
     const key = content.toLowerCase()
     if (seen.has(key)) return
     seen.add(key)
-    items.push({ id: `graph:${items.length}`, memoryType, similarity: 1, content, isSecure: false, contentEncrypted: null, authoredBy })
+    items.push({ id: `graph:${items.length}`, memoryType, similarity: 1, content, isSecure: false, contentEncrypted: null, authoredBy, factId, saidAt })
   }
-  for (const e of edges) push('connection', `${e.subject} ${e.predicate} ${e.object}`, e.authoredBy)
+  for (const e of edges) push('connection', `${e.subject} ${e.predicate} ${e.object}`, e.authoredBy, e.factId, e.recordedAt)
   // Only surface the timeline when it shows a real progression (>1 entry) — a single current
   // fact is already covered by the direct-fact lookup, so it would just be noise here.
-  if (timeline.length > 1) for (const t of timeline) push('timeline', t.content, t.authoredBy)
+  if (timeline.length > 1) for (const t of timeline) push('timeline', t.content, t.authoredBy, t.factId, t.recordedAt)
   return items
 }

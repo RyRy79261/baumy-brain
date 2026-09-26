@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { TRIAGE_SYSTEM } from '@/lib/ai/prompts'
 import { replyAllowed, type ResponsePolicy } from '@/lib/policy'
 
 // AUDIT REPRO — the webhook's field mapping (what actually reaches ingest) + pure intake units.
@@ -37,11 +36,8 @@ describe('AUDIT webhook mapping', () => {
 })
 
 describe('AUDIT intake units', () => {
-  it('E20: TRIAGE_SYSTEM never defines needsReply and gives confidence no meaning', () => {
-    expect(TRIAGE_SYSTEM).not.toContain('needsReply')
-    expect(TRIAGE_SYSTEM).toContain('- confidence: 0..1.')
-  })
-
+  // (E20/I6 "needsReply undefined, confidence meaningless" fixed in phase 1: the spec §2 schema drops
+  // needsReply and TRIAGE_SYSTEM defines confidence as confidence in the intent.)
   it('reply floor compares the TRIAGE confidence (certainty of classification) against "how meaningful" thresholds', () => {
     const p: ResponsePolicy = { global_enabled: true, categories: {}, confidence_threshold: 0.7, muted_topics: [], reply_frequency: 'quiet', reminder_frequency: 'twice' }
     // an obvious rhetorical/banter question the classifier is very SURE about clears the "quiet" floor
