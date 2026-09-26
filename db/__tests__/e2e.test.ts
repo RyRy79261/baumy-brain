@@ -10,7 +10,7 @@ import { reconcileFact, reconcileFactDetailed, currentFactsForQuery, upcomingDat
 import { runHygieneSweep } from '@/lib/memory/hygiene'
 import { resolveSeedEntities, connectedEdges, gatherGraphContext } from '@/lib/memory/graph'
 import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/forget'
-import { appendInbound, recentTurns, scrubWindow, purgeWindow, linkProduced, withholdProducing } from '@/lib/turn/window'
+import { appendInbound, recentTurns, scrubWindow, purgeWindow, linkProduced, withholdProducing, EXPIRED_WINDOW_TEXT } from '@/lib/turn/window'
 import { createReminder, claimReminder, markSent, releaseReminder, scheduleNextOccurrence, loadSeriesRow, repairRecurringSeries, orphanedEventReminders, reminderDestination } from '@/lib/reminders/store'
 import { lookupEdit, withdrawForEdit, settleEditedFacts } from '@/lib/turn/edit'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
@@ -505,5 +505,48 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     // D2: a personal reminder's destination is its creator's DM only while they are an active member
     expect(await reminderDestination(h.db, { groupId: G, deliverChatId: '912', createdBy: '912' })).toEqual({ kind: 'dm', chatId: '912' })
     expect(await reminderDestination(h.db, { groupId: G, deliverChatId: '912', createdBy: '911' })).toBeNull()
+  })
+
+  it('phase-5 review: the purge keeps an edit map for a pending reminder series, a shared note survives an edit, forget sees stated ownership (real SQL)', async () => {
+    const G = '-100e2e-review'
+    await ensureRegistered(h.db, G, null)
+    await upsertMember(h.db, G, '921', 'Charli', 'owner')
+    const T = new Date('2026-09-26T19:00:00Z')
+    const base = { groupId: G, chatId: G, authorKind: 'member' as const, authorMemberId: '921', authorName: 'Charli', trust: 'untrusted', replyToMessageId: null, threadId: null }
+    const old = new Date(T.getTime() - 50 * 3_600_000)
+
+    // purgeWindow: jsonb_array_elements_text + the recursive series walk — a row whose series still has a
+    // scheduled occurrence keeps its map (text replaced), one whose reminder is over is deleted.
+    const sent = await createReminder(h.db, { groupId: G, deliverChatId: G, content: 'plants', fireAt: new Date(T.getTime() - 3_600_000), createdBy: '921', recurrence: 'FREQ=WEEKLY;BYDAY=FR' })
+    await claimReminder(h.db, sent)
+    await markSent(h.db, sent)
+    await scheduleNextOccurrence(h.db, (await loadSeriesRow(h.db, sent))!, new Date(T.getTime() - 3_500_000), 'Europe/Berlin')
+    const over = await createReminder(h.db, { groupId: G, deliverChatId: G, content: 'over', fireAt: new Date(T.getTime() - 7_200_000), createdBy: '921' })
+    await claimReminder(h.db, over)
+    await markSent(h.db, over)
+    await appendInbound(h.db, { ...base, messageId: 1, text: 'remind us to water the plants every friday', sentAt: old })
+    await appendInbound(h.db, { ...base, messageId: 2, text: 'remind us of something over', sentAt: old })
+    await linkProduced(h.db, { chatId: G, messageId: 1 }, { reminderIds: [sent] })
+    await linkProduced(h.db, { chatId: G, messageId: 2 }, { reminderIds: [over] })
+    expect(await purgeWindow(h.db, T)).toBe(1)
+    const left = await h.pool.query('SELECT message_id, text_redacted FROM baumy_messages WHERE group_id = $1', [G])
+    expect(left.rows).toEqual([{ message_id: '1', text_redacted: EXPIRED_WINDOW_TEXT }])
+    expect((await lookupEdit(h.db, { chatId: G, messageId: 1 })).reminderIds).toEqual([sent])
+
+    // withdrawForEdit: a note two window rows produced (a consolidated repeat) is not retired by editing one
+    const note = await captureMemory({ groupId: G, content: 'the boiler is broken', memoryType: 'statement', authoredBy: '921', trustLevel: 'untrusted' }, { db: h.db, embed })
+    await appendInbound(h.db, { ...base, messageId: 10, text: 'the boiler is broken', sentAt: T })
+    await appendInbound(h.db, { ...base, messageId: 12, text: 'the boiler is broken', sentAt: T })
+    await linkProduced(h.db, { chatId: G, messageId: 10 }, { memoryItemId: note })
+    await linkProduced(h.db, { chatId: G, messageId: 12 }, { memoryItemId: note })
+    expect((await withdrawForEdit(h.db, G, await lookupEdit(h.db, { chatId: G, messageId: 12 }))).noteRetired).toBe(false)
+    await linkProduced(h.db, { chatId: G, messageId: 10 }, { memoryItemId: null })
+    expect((await withdrawForEdit(h.db, G, await lookupEdit(h.db, { chatId: G, messageId: 12 }))).noteRetired).toBe(true)
+
+    // forget: the structural possessor edge (system) is excluded, a stated belongs_to is not
+    await reconcileFact(h.db, { groupId: G, fact: { subject: "charli's bike", predicate: 'location', object: 'the shed' }, authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(h.db, { groupId: G, fact: { subject: 'the ladder', predicate: 'owned_by', object: 'marco' }, authoredBy: null, trustLevel: 'untrusted' })
+    expect((await findMemoryToForget(h.db, G, { values: [], subject: "charli's bike", attribute: '' })).facts.map((f) => f.label)).toEqual(["charli's bike location: the shed"])
+    expect((await findMemoryToForget(h.db, G, { values: [], subject: 'the ladder', attribute: '' })).facts.map((f) => f.label)).toEqual(['ladder belongs to: marco'])
   })
 })

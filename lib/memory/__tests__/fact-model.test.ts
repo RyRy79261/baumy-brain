@@ -122,6 +122,17 @@ describe('entity resolution (F1, F6)', () => {
     expect((await put(db2, P('the tap', 'status', 'fixed'))).result).toBe('update') // the ONE "… tap" node
   })
 
+  it('the bare head is not stored as an alias: once a second "… tap" exists, "the tap" is no longer either', async () => {
+    const db = await fresh()
+    await put(db, P('the bathroom tap', 'status', 'dripping'))
+    expect((await put(db, P('the tap', 'status', 'fixed'))).result).toBe('update')
+    const [bath] = await db.select({ aliases: entities.aliases }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'bathroom tap')))
+    expect(bath.aliases ?? []).not.toContain('tap')
+    await put(db, P('the kitchen tap', 'status', 'fine'))
+    expect((await put(db, P('the tap', 'status', 'leaking'))).result).toBe('add') // ambiguous now → its own node, not the bathroom's
+    expect(await ask(db, 'is the bathroom tap fixed?')).toContain('bathroom tap status: fixed')
+  })
+
   it('never trigram-merges two people ("marta" / "martha")', async () => {
     const db = await fresh()
     await put(db, P('marta', 'arrives_on', 'friday', 'person'))
@@ -181,6 +192,16 @@ describe('lookup (F4, F7, F13, the sender as "I")', () => {
     await put(db, P('marco', 'stays_in', 'the blue room', 'person')) // value-only object
     expect(await ask(db, "who's staying in the cave?")).toEqual(['zuzka stays in: the cave'])
     expect(await ask(db, 'who sleeps in the blue room?')).toEqual(['marco stays in: the blue room'])
+  })
+
+  it('finds the OBJECT side through the object ENTITY, not just the value text ("the basement" = the cave\'s alias)', async () => {
+    const db = await fresh()
+    await put(db, P('zuzka', 'stays_in', 'the cave', 'person', 'place'))
+    const set = await db.update(entities).set({ aliases: ['basement'] }).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'cave'))).returning({ id: entities.id })
+    expect(set).toHaveLength(1)
+    // "basement" appears nowhere in the stored value ("the cave") and the question cues no predicate —
+    // only the object_entity_id arm finds it.
+    expect(await ask(db, 'anyone in the basement?')).toEqual(['zuzka stays in: the cave'])
   })
 
   it('"my room" is the SENDER\'s room', async () => {
@@ -245,6 +266,25 @@ describe('the trust gate (F5)', () => {
     // a system (reflect) fact is never correctable, not even by its subject or the owner
     await put(db, P('zuzka', 'profile', 'a guest', 'person'), { trustLevel: 'system', neverSecret: true })
     expect((await put(db, P('zuzka', 'profile', 'no', 'person'), { authoredBy: '111', authorIsOwner: true })).result).toBe('conflict')
+  })
+
+  it('the name-derived possessor edge is a default, not a statement: a stated owner replaces it (any lane)', async () => {
+    const db = await fresh()
+    await ensureRegistered(db, GROUP, 111, 'Charli')
+    await ensureRegistered(db, GROUP, 222, 'Marco')
+    await ensureRegistered(db, GROUP, 333, 'Ryan')
+    // Untrusted group text mints "marco's room —belongs_to→ marco" (system, no author)…
+    await put(db, P("marco's room", 'has', 'the router', 'place'))
+    const [edge] = await db.select().from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'belongs_to')))
+    expect(edge).toMatchObject({ trustLevel: 'system', authoredBy: null, isCurrent: true })
+    // …and a housemate's plain statement of who owns it now supersedes it — not a permanent conflict.
+    const r = await put(db, P("marco's room", 'belongs_to', 'charli', 'place'), { trustLevel: 'untrusted', authoredBy: '111' })
+    expect(r.result).toBe('update')
+    const [closed] = await db.select().from(facts).where(eq(facts.id, edge.id))
+    expect(closed.isCurrent).toBe(false)
+    // A STATED owner is an ordinary fact again: someone else's lower-trust contradiction is a conflict.
+    await put(db, P('the shed', 'belongs_to', 'marco'), { trustLevel: 'trusted', authoredBy: '222' })
+    expect((await put(db, P('the shed', 'belongs_to', 'charli'), { authoredBy: '333' })).result).toBe('conflict')
   })
 
   it('a refused REMOVAL is a conflict too — the value stays', async () => {

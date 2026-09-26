@@ -12,8 +12,9 @@ import { now as clockNow } from '@/lib/core/clock'
 // module works from:
 //
 //   • the original's evidence note is retired BEFORE the edited text is captured (so consolidation can
-//     never fold the edit back onto it), and facts the edit restates keep their row, re-pointed at the
-//     new note;
+//     never fold the edit back onto it) — unless another message on record produced the same note (a
+//     consolidated repeat), which still says it — and facts the edit restates keep their row, re-pointed
+//     at the new note;
 //   • a fact only the original stated is soft-retracted (deleted_at, like a forget — it was never true,
 //     so it must not live on as "earlier" history), and a fact the edit corrects inherits the retracted
 //     row's own parent (the chain skips the typo);
@@ -28,6 +29,9 @@ import { now as clockNow } from '@/lib/core/clock'
 export interface EditMap {
   /** The original is on record (its window row exists). */
   processed: boolean
+  /** Which message this is (the window key) — to tell its own produced note from one another message
+   *  on record also produced. */
+  key?: { chatId: string; messageId: number }
   memoryItemId: string | null
   factIds: string[]
   reminderIds: string[]
@@ -40,8 +44,8 @@ export async function lookupEdit(db: Database, k: { chatId: string; messageId: n
     .from(messages)
     .where(and(eq(messages.chatId, k.chatId), eq(messages.messageId, String(k.messageId))))
     .limit(1)
-  if (!row) return { processed: false, memoryItemId: null, factIds: [], reminderIds: [] }
-  return { processed: true, memoryItemId: row.memoryItemId ?? null, factIds: row.factIds ?? [], reminderIds: row.reminderIds ?? [] }
+  if (!row) return { processed: false, key: k, memoryItemId: null, factIds: [], reminderIds: [] }
+  return { processed: true, key: k, memoryItemId: row.memoryItemId ?? null, factIds: row.factIds ?? [], reminderIds: row.reminderIds ?? [] }
 }
 
 /**
@@ -51,7 +55,27 @@ export async function lookupEdit(db: Database, k: { chatId: string; messageId: n
  */
 export async function withdrawForEdit(db: Database, groupId: string, map: EditMap): Promise<{ noteRetired: boolean; remindersCancelled: string[] }> {
   let noteRetired = false
-  if (map.memoryItemId) {
+  // A near-verbatim repeat is CONSOLIDATED onto the earlier message's note (lib/memory/write.ts), so two
+  // window rows can name one note. It is retired only when no OTHER message on record produced it: an
+  // edit of the repeat must not hide what the first message (never edited) said, and an edit of the first
+  // must not hide what the repeat still says.
+  const shared =
+    map.memoryItemId && map.key
+      ? (
+          await db
+            .select({ id: messages.id })
+            .from(messages)
+            .where(
+              and(
+                eq(messages.groupId, groupId),
+                eq(messages.producedMemoryItemId, map.memoryItemId),
+                sql`NOT (${messages.chatId} = ${map.key.chatId} AND ${messages.messageId} = ${String(map.key.messageId)})`,
+              ),
+            )
+            .limit(1)
+        ).length > 0
+      : false
+  if (map.memoryItemId && !shared) {
     const r = await db
       .update(memoryItems)
       .set({ isActive: false })

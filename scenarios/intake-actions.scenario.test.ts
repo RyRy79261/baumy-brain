@@ -44,6 +44,29 @@ describe('scenario: edits (I1)', () => {
     ],
   })
 
+  scenario('editing a near-verbatim REPEAT never hides the first message’s note (they were consolidated into one)', {
+    people: HOUSE,
+    startAt: '2026-09-28 10:00',
+    fixtures: {
+      triage: (t) => (/is broken/.test(t) ? statement() : /what.s broken/.test(t) ? question({ asksBaumy: true }) : chatter()),
+    },
+    steps: [
+      say('Charli', 'the boiler is broken'),
+      say('Marco', 'ugh'),
+      say('Charli', 'the boiler is broken'),
+      expectDb(async (db) => (await rows(db, sql`SELECT id FROM baumy_memory_items`)).length === 1, 'the repeat was folded onto the first note'),
+      say('Charli', 'the kettle is broken', { edit: true }),
+      expectNoWords(),
+      expectDb(async (db) => {
+        const active = await rows<{ content: string }>(db, sql`SELECT content FROM baumy_memory_items WHERE is_active ORDER BY content`)
+        return active.map((a) => a.content).join('|') === 'the boiler is broken|the kettle is broken'
+      }, 'the first message (never edited) is still remembered next to the edited one'),
+      say('Marco', "what's broken?", { mention: true }),
+      expectPrompt('reply', (c) => memoryLines(c.prompt).some((l) => /boiler/.test(l)) && memoryLines(c.prompt).some((l) => /kettle/.test(l)), 'both ground the answer'),
+      expectWords({ judge: 'Says the boiler and the kettle are both broken (per Charli).' }),
+    ],
+  })
+
   scenario('an edit of a message Baumy never saw is handled as new — but silently', {
     people: HOUSE,
     startAt: '2026-09-28 10:00',
@@ -189,6 +212,50 @@ describe('scenario: personal reminders (A4, A5, D2)', () => {
       say('Marco', 'remind me to call the plumber friday 9am', { mention: true }),
       expectReminder({ content: 'Marco: call the plumber', at: '2026-10-02 09:00', count: 1 }),
       expectDb(async (db, r) => (await rows<{ deliver_chat_id: string }>(db, sql`SELECT deliver_chat_id FROM baumy_reminders`))[0]?.deliver_chat_id === r.sb.houseChatId, 'a group ask posts to the group'),
+    ],
+  })
+})
+
+describe('scenario: a personal DM reminder stays private — content too (D2)', () => {
+  scenario('DM "remind me before my doctor appointment Fri 3pm": delivered to the DM, and the appointment never becomes house memory, /weekly or recall', {
+    people: HOUSE,
+    startAt: '2026-09-28 10:00',
+    fixtures: {
+      triage: (t) =>
+        /doctor/.test(t) && /remind/.test(t)
+          ? reminderAsk({ asksBaumy: true, worthRemembering: true })
+          : /landlord/.test(t)
+            ? reminderAsk({ asksBaumy: true, worthRemembering: true })
+            : /friday/.test(t)
+              ? question({ asksBaumy: true })
+              : chatter(),
+      reminder: (t) =>
+        /doctor/.test(t)
+          ? reminder({ content: 'leave for the doctor', when: 'fri 2:30pm', fireAt: '2026-10-02T14:30', forWhom: 'speaker' })
+          : /landlord/.test(t)
+            ? reminder({ content: 'the landlord visits tomorrow', when: 'friday 9am', fireAt: '2026-10-02T09:00', forWhom: 'house' })
+            : null,
+      extract: (t) =>
+        /doctor/.test(t)
+          ? [fact({ subject: 'charli', subjectKind: 'person', predicate: 'has_appointment', object: 'doctor', when: { start: '2026-10-02T15:00' } })]
+          : /landlord/.test(t)
+            ? [fact({ subject: 'landlord', subjectKind: 'person', predicate: 'visits_on', object: 'saturday', when: { start: '2026-10-03T10:00' } })]
+            : [],
+    },
+    steps: [
+      say('Charli', 'remind me before my doctor appointment Fri 3pm', { dm: true }),
+      expectReminder({ content: /doctor/, at: '2026-10-02 14:30', status: 'scheduled', count: 1 }),
+      expectNoPrompt('extract', 'a private reminder request is never mined for house facts'),
+      expectFact({ count: 0 }),
+      expectDb(async (db) => (await rows(db, sql`SELECT id FROM baumy_memory_items`)).length === 0, 'nothing written to shared house memory'),
+      say('Marco', '/weekly'),
+      expectWords({ notContains: 'doctor' }),
+      say('Marco', "what's Charli up to on friday?", { mention: true }),
+      expectPrompt('reply', (c) => !memoryLines(c.prompt).some((l) => /doctor/.test(l)), 'the appointment is not in the group’s MEMORY'),
+      // A reminder she asks for the HOUSE from her DM is house business: its words are remembered.
+      say('Charli', 'remind everyone friday 9am that the landlord visits saturday', { dm: true }),
+      expectReminder({ content: /landlord/, count: 1 }),
+      expectFact({ subject: /landlord/, object: 'saturday', current: true }),
     ],
   })
 })

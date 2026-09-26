@@ -123,6 +123,12 @@ export const PREDICATE_SYNONYMS: Record<string, string> = {
  *  created (F1) — deterministic from the name, so stored at 'system' trust with no author. */
 export const POSSESSOR_PREDICATE = 'belongs_to'
 
+/** That name-derived edge itself (not a housemate's "X belongs to Y"): `system` trust, no author. It is
+ *  a default, not a statement — any stated owner replaces it (the trust gate and the hygiene replay let
+ *  a non-relayed statement through), and it is never a lookup hit or a forget detail. */
+export const isStructuralEdge = (r: { predicate: string; trustLevel: string; authoredBy: string | null }) =>
+  r.predicate === POSSESSOR_PREDICATE && r.trustLevel === 'system' && r.authoredBy == null
+
 // Shape only: lowercase snake_case ("Arrival Date" / "arrival-date" → arrival_date).
 export function normalizePredicateShape(raw: string): string {
   const s = raw

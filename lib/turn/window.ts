@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, lte, ne, lt, or, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, lte, ne, lt, notInArray, or, sql } from 'drizzle-orm'
 import { DateTime } from 'luxon'
 import { type Database } from '@/db/client'
 import { members, messages } from '@/db/schema'
@@ -17,7 +17,8 @@ import type { WindowTurn } from './context'
 //
 // PRIVACY (replaces the old "never persist the message body" rule): a SECRET is never persisted — the
 // text is redacted with scanSensitivity BEFORE it is stored, a secure message kept only as its
-// descriptor — and nothing outlives 48h (purgeWindow, hourly; every read also filters by 48h). The
+// descriptor — and no text outlives 48h (purgeWindow, hourly; every read also filters by 48h; a row
+// whose reminder is still to come keeps only its produced-map, so an edit can still replace it). The
 // window is context only: it never writes a fact and is never shown to anyone (the console does not
 // render it).
 
@@ -230,9 +231,41 @@ export async function scrubWindow(db: Database, groupId: string, values: string[
   return n
 }
 
-/** Delete every window row older than 48h (the purge cron). Returns how many went. */
+/** What a window row past 48h keeps as its text while it is only an edit map (below). */
+export const EXPIRED_WINDOW_TEXT = '[older than 48h — kept only as an edit map]'
+
+/**
+ * Delete every window row older than 48h (the purge cron). Returns how many went. One exception: a row
+ * whose produced reminders (or a later occurrence of their series) are still SCHEDULED keeps its
+ * produced-map — its TEXT is replaced, so no words outlive 48h — because an edit of that message ("make
+ * it 7pm", days later) must still cancel + re-create the reminder (I1); without the map it was handled as
+ * new, and the old AND the corrected reminder both fired. It goes on the first purge after nothing it set
+ * is still to come.
+ */
 export async function purgeWindow(db: Database, at: Date = now()): Promise<number> {
-  const gone = await db.delete(messages).where(lt(messages.sentAt, cutoff(at))).returning({ id: messages.id })
+  const before = cutoff(at).toISOString()
+  const keptRes = await db.execute(sql`
+    WITH RECURSIVE series(msg_id, rid) AS (
+      SELECT m.id, r.id
+        FROM baumy_messages m
+        CROSS JOIN LATERAL jsonb_array_elements_text(m.produced_reminder_ids) AS e(v)
+        JOIN baumy_reminders r ON r.id::text = e.v AND r.group_id = m.group_id
+       WHERE m.sent_at < ${before}
+      UNION
+      SELECT s.msg_id, r.id FROM baumy_reminders r JOIN series s ON r.previous_reminder_id = s.rid
+    )
+    SELECT DISTINCT s.msg_id AS id FROM series s JOIN baumy_reminders r ON r.id = s.rid WHERE r.status = 'scheduled'`)
+  const keep = (Array.isArray(keptRes) ? keptRes : ((keptRes as { rows?: Record<string, unknown>[] }).rows ?? [])).map((r) => String(r.id))
+  if (keep.length) {
+    await db
+      .update(messages)
+      .set({ textRedacted: EXPIRED_WINDOW_TEXT })
+      .where(and(inArray(messages.id, keep), ne(messages.textRedacted, EXPIRED_WINDOW_TEXT)))
+  }
+  const gone = await db
+    .delete(messages)
+    .where(and(lt(messages.sentAt, cutoff(at)), keep.length ? notInArray(messages.id, keep) : undefined))
+    .returning({ id: messages.id })
   return gone.length
 }
 

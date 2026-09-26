@@ -1,5 +1,6 @@
 import { describe } from 'vitest'
-import { scenario, say, advance, expectPrompt, expectWords, expectNoWords, expectReaction, expectReminder, check } from './dsl'
+import { sql } from 'drizzle-orm'
+import { scenario, say, advance, expectPrompt, expectWords, expectNoWords, expectReaction, expectReminder, expectDb, check } from './dsl'
 import { reminderAsk, chatter, reminder } from './shapes'
 import { HOUSE } from './house'
 
@@ -129,6 +130,54 @@ describe('scenario: reminders', () => {
         const posted = r.turns.flatMap((t) => (t.kind === 'advance' ? t.entries : [])).filter((x) => x.kind === 'message' && /bins/.test(x.text ?? ''))
         e(posted).toHaveLength(1)
       }),
+    ],
+  })
+
+  scenario('editing a reminder request days later (past the 48h window) still replaces it — the old time never fires', {
+    people: HOUSE,
+    startAt: start,
+    // I1 beyond the window: the purge drops the TEXT after 48h but keeps the produced-map while the
+    // reminder is still to come, so the edit cancels + re-creates instead of adding a second reminder.
+    fixtures,
+    steps: [
+      say('Ryan', BINS, { mention: true }),
+      expectReminder({ content: /bins/, at: '2026-10-02 20:00', status: 'scheduled', count: 1 }),
+      advance({ days: 3 }), // → Thu 1 Oct 10:00; the window purge ran on the way (the message is 72h old)
+      expectDb(async (db) => {
+        const res = (await db.execute(sql`SELECT text_redacted FROM baumy_messages WHERE author_kind = 'member'`)) as unknown as { rows?: { text_redacted: string }[] }
+        const rows = Array.isArray(res) ? (res as { text_redacted: string }[]) : (res.rows ?? [])
+        return rows.length === 1 && !/bins/.test(rows[0].text_redacted)
+      }, 'past 48h only the edit map is left — not the words'),
+      say('Ryan', 'remind us to take the bins out saturday 8pm', { mention: true, edit: true }),
+      expectNoWords(),
+      expectReminder({ at: '2026-10-02 20:00', status: 'cancelled', count: 1 }),
+      expectReminder({ content: /bins/, at: '2026-10-03 20:00', status: 'scheduled', count: 1 }),
+      advance({ days: 2, hours: 11 }), // → Sat 3 Oct 21:00
+      check('exactly one bins reminder was ever posted — at the corrected time', (r, e) => {
+        const posted = r.turns.flatMap((t) => (t.kind === 'advance' ? t.entries : [])).filter((x) => x.kind === 'message' && /bins/.test(x.text ?? ''))
+        e(posted).toHaveLength(1)
+      }),
+    ],
+  })
+
+  scenario('editing a reminder request while Baumy is PAUSED keeps the reminder — it still fires after /resume', {
+    people: HOUSE,
+    startAt: start,
+    // While paused the edited text cannot re-create a reminder, so the edit must not cancel the original
+    // (it used to be deleted silently — the planner is quiet for an edit and for a paused house).
+    fixtures,
+    steps: [
+      say('Ryan', BINS, { mention: true }),
+      expectReminder({ content: /bins/, at: '2026-10-02 20:00', status: 'scheduled', count: 1 }),
+      say('Charli', '/pause', { dm: true }),
+      say('Ryan', 'remind us to take the bins out friday 8pm please', { mention: true, edit: true }),
+      expectNoWords(),
+      expectReminder({ content: /bins/, at: '2026-10-02 20:00', status: 'scheduled', count: 1 }),
+      expectReminder({ status: 'cancelled', count: 0 }),
+      say('Charli', '/resume', { dm: true }),
+      advance({ days: 4, hours: 11 }), // → Fri 2 Oct 21:00
+      expectWords({ contains: /take the bins out/ }),
+      expectReminder({ content: /bins/, status: 'sent', count: 1 }),
     ],
   })
 })

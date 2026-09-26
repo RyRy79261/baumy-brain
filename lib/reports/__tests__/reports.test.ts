@@ -22,6 +22,9 @@ const { reconcileFact } = await import('@/lib/memory/facts')
 const { createReminder } = await import('@/lib/reminders/store')
 const { embedSync } = await import('@/lib/ai/embed')
 const { parseHouseReport, weeklyReport, guestReport, upcomingRemindersReport, recentLearningsReport } = await import('@/lib/reports/reports')
+const { retrieve } = await import('@/lib/memory/retrieve')
+const { buildDigest } = await import('@/lib/reports/digest')
+const { upsertMember } = await import('@/lib/identity/roster')
 
 const GROUP = '-100reports'
 const embed = async (t: string) => embedSync(t)
@@ -53,6 +56,22 @@ describe('weeklyReport', () => {
     expect(captured.prompt).toContain('take the bins out') // upcoming reminder is grounded
     expect(captured.prompt).toContain('TODAY:') // clock for relative dates
     expect(captured.system).toContain('WEEKLY HOUSE DIGEST')
+  })
+
+  it('D2: a personal reminder set in a DM (delivered to its creator) never appears in the group digest', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await upsertMember(db, GROUP, '702', 'Marco', 'member')
+    const soon = new Date(Date.now() + 3 * 86_400_000)
+    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'take the bins out', fireAt: soon, createdBy: '702' })
+    await createReminder(db, { groupId: GROUP, deliverChatId: '702', content: 'Marco: call the doctor', fireAt: soon, createdBy: '702' })
+
+    await weeklyReport(db, GROUP)
+    expect(captured.prompt).toContain('take the bins out')
+    expect(captured.prompt).not.toContain('doctor')
+    const digest = await buildDigest(db, GROUP)
+    expect(digest).toContain('take the bins out')
+    expect(digest).not.toContain('doctor')
   })
 
   it('says it is quiet (no model call) when there is nothing on file', async () => {
@@ -139,6 +158,35 @@ describe('guestReport', () => {
     const p = captured.prompt ?? ''
     expect(p).not.toMatch(/zuzka/) // a visit that is over is not a guest
     expect(p).toContain('iman stays in: the cave (Sat 3 Oct – Sun 4 Oct)') // staying_in → the canonical stays_in (spec §7)
+  })
+
+  it('D4: a member-FORWARDED note is labelled as someone else\'s words — in the model prompt AND the raw fallback', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await upsertMember(db, GROUP, '701', 'Charli', 'owner')
+    const fwd = {
+      id: 'm-fwd',
+      content: 'guests staying in the cave room arriving this month: Zuzka',
+      memoryType: 'statement',
+      authoredBy: null,
+      trustLevel: 'forwarded',
+      forwardedBy: '701',
+      similarity: 0.9,
+      isSecure: false,
+      contentEncrypted: null,
+      createdAt: new Date().toISOString(),
+    }
+    vi.mocked(retrieve).mockResolvedValueOnce([fwd])
+    await guestReport(db, GROUP)
+    const p = captured.prompt ?? ''
+    expect(p).toMatch(/note said .*\(a message Charli forwarded — not their own words\): guests staying in the cave room/)
+    expect(p).not.toMatch(/note said [^(\n]*: guests staying/) // never an unlabelled house-memory line
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(retrieve).mockResolvedValueOnce([fwd])
+    genText.mockRejectedValueOnce(new APICallError({ message: 'prompt is too long', url: 'u', requestBodyValues: {}, statusCode: 400, isRetryable: false }))
+    expect(await guestReport(db, GROUP)).toContain('(a message Charli forwarded — not their own words): guests staying')
+    err.mockRestore()
   })
 
   it('says the house is guest-free (no model call) when nothing is on the books', async () => {

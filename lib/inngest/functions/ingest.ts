@@ -264,8 +264,12 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // An edit of a processed message: withdraw what the original produced BEFORE the edited text is
   // re-read — its note (so consolidation cannot fold the edit back onto it) and its unsent reminders
   // (the edit re-creates whatever it still asks for). Facts are settled after capture (lib/turn/edit.ts).
+  // While the house is PAUSED the edited text cannot re-create a reminder (reminders honour /pause in
+  // both lanes), so the original's are left alone — cancelling them would silently delete the reminder,
+  // and nobody is told (the planner is quiet for an edit and for a paused house).
+  const keepRemindersForEdit = !policy.global_enabled
   if (editMap?.processed) {
-    await step.run('edit-withdraw', () => withdrawForEdit(createHttpDb(), houseScope, editMap))
+    await step.run('edit-withdraw', () => withdrawForEdit(createHttpDb(), houseScope, keepRemindersForEdit ? { ...editMap, reminderIds: [] } : editMap))
   }
 
   // Actions → ctx.outcome. The shopping list first: a message handled as a list op is NOT also captured
@@ -274,31 +278,6 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // (capture tier); reminder / forget below.
   if (houseScope && canReply && listOpProposed(origin, verdict.list, policy.global_enabled, verdict.intent)) {
     ctx.outcome.list = await runList(step, ctx)
-  }
-
-  // Capture (evidence + facts) — orthogonal to the action, so a reminder that also states a fact is
-  // still remembered. Never a question or chatter (I3), never a forget request (storing "delete X"
-  // re-adds X), never a question that mentions a secret (I9), never a list op (A11).
-  if (!ctx.outcome.list && shouldCapture(origin, verdict) && decision !== 'forget' && !isSecretQuestion(text, verdict.intent)) {
-    ctx.outcome.captured = await runCapture(step, ctx)
-    // The window-append redacted on the raw text; the fact layer scans the extracted TRIPLE, which
-    // catches more ("wifi is hunter2 now" → wifi · has_password · hunter2 is secure, the sentence is
-    // not). A secret the turn has detected is never persisted (spec §5): keep only its descriptor.
-    const secure = ctx.outcome.captured.secure
-    if (secure && houseScope && !botContent) {
-      await step.run('window-withhold-secret', () => withholdTurn(createHttpDb(), { chatId, messageId }, `[a message containing ${secure} — withheld]`))
-    }
-  }
-
-  if (editMap?.processed) {
-    const captured = ctx.outcome.captured
-    await step.run('edit-settle', () =>
-      settleEditedFacts(createHttpDb(), houseScope, editMap, {
-        produced: captured?.factIds ?? [],
-        kept: captured?.keptFactIds ?? [],
-        noteId: captured?.memoryItemId ?? null,
-      }),
-    )
   }
 
   // Reminders honour pause in BOTH lanes (they post to the house group) — unchanged from pre-v2 —
@@ -322,6 +301,42 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   } else if (decision === 'reminder') {
     ctx.outcome.reminder = { status: 'paused' }
   }
+  // A reminder asked for in a member's own DM is PRIVATE (D2): delivered to that DM, never listed in the
+  // group — so its words are not written into shared house memory either ("remind me before my doctor's
+  // appointment Fri 3pm" must not become a house fact, a /weekly event and a heads-up in the group). Only
+  // when the reminder step set one for the HOUSE is the message house business. (Reminders run first so
+  // this is known; while paused none is set, and a DM ask is personal by default — reminderIsPersonal.)
+  const privateDmReminder =
+    lane === 'member_dm' &&
+    (decision === 'reminder' || verdict.intent === 'reminder') &&
+    !(ctx.outcome.reminders ?? []).some((r) => r.status === 'set' && r.deliverTo === 'house')
+
+  // Capture (evidence + facts) — orthogonal to the action, so a reminder that also states a fact is
+  // still remembered. Never a question or chatter (I3), never a forget request (storing "delete X"
+  // re-adds X), never a question that mentions a secret (I9), never a list op (A11), never a private
+  // DM reminder (D2, above).
+  if (!ctx.outcome.list && !privateDmReminder && shouldCapture(origin, verdict) && decision !== 'forget' && !isSecretQuestion(text, verdict.intent)) {
+    ctx.outcome.captured = await runCapture(step, ctx)
+    // The window-append redacted on the raw text; the fact layer scans the extracted TRIPLE, which
+    // catches more ("wifi is hunter2 now" → wifi · has_password · hunter2 is secure, the sentence is
+    // not). A secret the turn has detected is never persisted (spec §5): keep only its descriptor.
+    const secure = ctx.outcome.captured.secure
+    if (secure && houseScope && !botContent) {
+      await step.run('window-withhold-secret', () => withholdTurn(createHttpDb(), { chatId, messageId }, `[a message containing ${secure} — withheld]`))
+    }
+  }
+
+  if (editMap?.processed) {
+    const captured = ctx.outcome.captured
+    await step.run('edit-settle', () =>
+      settleEditedFacts(createHttpDb(), houseScope, editMap, {
+        produced: captured?.factIds ?? [],
+        kept: captured?.keptFactIds ?? [],
+        noteId: captured?.memoryItemId ?? null,
+      }),
+    )
+  }
+
   // Forget only PROPOSES (a confirm card) — pointless for an edit, which never speaks: re-ask instead.
   if (decision === 'forget' && canSpeak && canReply && !isEdit) {
     ctx.outcome.forget = await runForget(step, ctx)
@@ -329,7 +344,11 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
 
   // What this message produced, on its window row — the map an edit needs to supersede it (I1). An edit
   // always rewrites it (what the original produced has just been withdrawn or settled).
-  const reminderIds = (ctx.outcome.reminders ?? []).flatMap((r) => (r.status === 'set' && r.id ? [r.id] : []))
+  const reminderIds = [
+    ...(ctx.outcome.reminders ?? []).flatMap((r) => (r.status === 'set' && r.id ? [r.id] : [])),
+    // A paused edit kept the original's reminders — they are still this message's (a later edit finds them).
+    ...(editMap?.processed && keepRemindersForEdit ? editMap.reminderIds : []),
+  ]
   if (houseScope && (ctx.outcome.captured || reminderIds.length || isEdit)) {
     await step.run('window-link', async () => {
       try {

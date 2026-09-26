@@ -70,6 +70,24 @@ describe('hygiene sweep', () => {
     expect((await live(db)).filter((f) => f.subjectEntityId === m).map((f) => f.id)).toEqual([self])
   })
 
+  it('D: the name-derived possessor edge never beats a stated owner, whichever was recorded first', async () => {
+    const db = await fresh()
+    await upsertMember(db, GROUP, '1', 'Charli', 'member')
+    await upsertMember(db, GROUP, '2', 'Marco', 'member')
+    const a = await entity(db, "marco's room", 'place')
+    const edgeA = await rawFact(db, a, 'belongs_to', 'marco', { trustLevel: 'system', authoredBy: null })
+    const statedA = await rawFact(db, a, 'belongs_to', 'charli', { authoredBy: '1' })
+    const b = await entity(db, "ryan's bike")
+    const statedB = await rawFact(db, b, 'belongs_to', 'marco', { authoredBy: '2' })
+    const edgeB = await rawFact(db, b, 'belongs_to', 'ryan', { trustLevel: 'system', authoredBy: null })
+    await runHygieneSweep(db, GROUP, NOW)
+    expect((await live(db)).map((f) => f.id).sort()).toEqual([statedA, statedB].sort())
+    for (const id of [edgeA, edgeB]) {
+      const [row] = await db.select().from(facts).where(eq(facts.id, id))
+      expect(row).toMatchObject({ isCurrent: false, conflictsWithFactId: null }) // superseded, not a conflict
+    }
+  })
+
   it('D: a multi-valued predicate keeps both guests, dropping only an exact duplicate', async () => {
     const db = await fresh()
     const h = await entity(db, 'house', 'place')

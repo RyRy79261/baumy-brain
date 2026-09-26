@@ -2,7 +2,7 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { entities, facts, members, memoryItems } from '@/db/schema'
 import { liveFact } from '@/lib/memory/current'
-import { cardinalityOf, normalizePredicate } from '@/lib/memory/predicates'
+import { cardinalityOf, isStructuralEdge, normalizePredicate } from '@/lib/memory/predicates'
 import { normalizeEntityName, possessiveParts } from '@/lib/memory/facts'
 import { PROFILE_PREDICATE } from '@/lib/memory/reflect'
 import { writeAudit } from '@/lib/audit'
@@ -265,9 +265,17 @@ async function resolveContradictions(db: Database, groupId: string, now: Date): 
       continue
     }
     // Replay the rows in the order they were said, through the trust gate.
+    // The name-derived possessor edge is a default, not a statement (isStructuralEdge): a stated owner
+    // replaces it whichever came first, and it never replaces a stated one.
     let winner = group[0]
     for (const next of group.slice(1)) {
+      if (isStructuralEdge(next) && !isStructuralEdge(winner)) {
+        await db.update(facts).set({ isCurrent: false, validTo: now, invalidatedAt: now, supersededBy: winner.id }).where(eq(facts.id, next.id))
+        resolved++
+        continue
+      }
       const may =
+        isStructuralEdge(winner) ||
         rank(next.trustLevel) >= rank(winner.trustLevel) ||
         (winner.trustLevel !== 'system' && next.authoredBy != null && (next.authoredBy === winner.authoredBy || owners.has(next.authoredBy)))
       if (may) {

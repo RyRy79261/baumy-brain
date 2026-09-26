@@ -129,7 +129,8 @@ interface EntityFactRow {
 }
 
 // Every CURRENT fact about one entity — as the subject, or as the object of a relationship ("charli
-// sibling_of zuzka" is about Zuzka too). Group-scoped; the structural possessor edge is not a detail.
+// sibling_of zuzka" is about Zuzka too). Group-scoped; the structural possessor edge (name-derived,
+// `system`) is not a detail — a housemate's stated "X belongs to Y" (or a legacy owned_by) is.
 async function currentFactsOfEntity(db: Database, groupId: string, entityId: string): Promise<EntityFactRow[]> {
   return rowsOf(
     await db.execute(sql`
@@ -138,7 +139,7 @@ async function currentFactsOfEntity(db: Database, groupId: string, entityId: str
         FROM baumy_facts f
         LEFT JOIN baumy_entities se ON se.id = f.subject_entity_id
         LEFT JOIN baumy_entities oe ON oe.id = f.object_entity_id
-       WHERE f.group_id = ${groupId} AND f.is_current = true AND f.predicate <> ${POSSESSOR_PREDICATE}
+       WHERE f.group_id = ${groupId} AND f.is_current = true AND NOT (f.predicate = ${POSSESSOR_PREDICATE} AND f.trust_level = 'system')
          AND (f.subject_entity_id = ${entityId} OR f.object_entity_id = ${entityId})
        ORDER BY f.recorded_at DESC
        LIMIT ${MATCH_LIMIT}`),
@@ -159,11 +160,10 @@ async function currentFactsOfEntity(db: Database, groupId: string, entityId: str
 // matched by whole-word, case-insensitive substring on the values, and the messages the proposed facts
 // came from are included (a soft forget hides them too — A7).
 export async function findMemoryToForget(db: Database, groupId: string, spec: ForgetSpec): Promise<ForgetMatches> {
-  const scrub = new Set<string>()
-  for (const v of spec.values) {
-    const t = v.trim()
-    if (t.length >= 2) scrub.add(t)
-  }
+  // What the user literally NAMED — kept apart from `scrub`, which the subject+attribute lookup below
+  // widens with the matched facts' values.
+  const named = spec.values.map((v) => v.trim()).filter((t) => t.length >= 2)
+  const scrub = new Set<string>(named)
 
   const factIds = new Set<string>()
   const factList: ForgetFact[] = []
@@ -185,13 +185,15 @@ export async function findMemoryToForget(db: Database, groupId: string, spec: Fo
         propose(r)
         if (!r.isSecure && r.objectValue && r.objectValue.trim().length >= 2) scrub.add(r.objectValue)
       }
-    } else if (!spec.values.some((v) => v.trim().length >= 2)) {
+    } else if (!named.length) {
       for (const r of rows) propose(r)
     }
   }
   // A named value that is itself an entity ("forget Zuzka"): its current facts, subject or object side.
-  // Only the NAME is scrubbed from messages — the values of those facts are not the thing named.
-  for (const v of scrub) {
+  // Only the NAME is scrubbed from messages — the values of those facts are not the thing named. Only a
+  // LITERALLY named value expands: "forget where Zuzka is sleeping" matches stays_in = "cave", and
+  // expanding that value would propose every fact about the cave (other people's too).
+  for (const v of named) {
     const entId = await resolveSubjectEntity(db, groupId, v)
     if (entId) for (const r of await currentFactsOfEntity(db, groupId, entId)) propose(r)
   }

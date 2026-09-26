@@ -64,7 +64,8 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   grounds a reply, never writes a fact, never windowed. A message a housemate **forwarded** →
   `forwarded` (spec D4, phase 5): stored and **recallable, but only ever labelled** "forwarded by X"
   (`baumy_memory_items.forwarded_by`; `authored_by` stays NULL — the words are the landlord's, not
-  X's) in grounding, the window and `/weekly`; it **never writes a fact, never drives an action**
+  X's) in grounding, the window, `/weekly` and `/guests`; it **never reaches the web-search call** (the one
+  tool-enabled generation — `grounding.forWeb` leaves it out); it **never writes a fact, never drives an action**
   (reminder / list / forget / follow-up — `isRelayed()` in `lib/core/origin.ts`), is never privileged,
   never consolidates, never feeds reflect; in the group a kept one gets ✍, in a DM a deterministic ack
   (never the reply model). A forwarded bot post stays `quarantined`. Native group text is `untrusted`
@@ -113,7 +114,10 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   with no `forWhom`) → `deliver_chat_id = created_by` = that authenticated DM chat, delivered with a
   plain `sendToHouse` to it — never through the house path, retired (never re-routed) if its creator
   has left (`lib/reminders/store.ts` `reminderDestination`). Personal reminders never appear in the
-  group's `/reminders` or `/weekly` (`visibleReminders`). Digests / heads-ups → the house group only.
+  group's `/reminders` or `/weekly` (`visibleReminders`), and a reminder request asked in a DM that set
+  no HOUSE reminder is **not captured** into shared house memory either (no note, no facts — so no
+  `/weekly` event, recall or heads-up in the group; `privateDmReminder` in `ingest.ts`, which runs the
+  reminder step before capture). Digests / heads-ups → the house group only.
   Both lanes' reminders still honour `/pause`. The LLM never picks a recipient.
 - **Supergroup migration (alias seam, `docs/spec/telegram.md` D9):** the house `chat_id` changes on a
   group→supergroup upgrade, but `house_group_chat_id` is ALSO the memory `group_id` — so it is the
@@ -146,8 +150,10 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   forget-looking request (the classifier's `intent`, whatever the decision) and the forget card are
   withheld; and a confirmed forget — **soft or purge** — withholds the rows that produced the
   forgotten facts/notes (`withholdProducing`) and scrubs the value from every other row. A member's
-  display name is flattened and can never read as Baumy's own turn (`memberLabel`). **Nothing outlives 48h** (hourly `windowPurge` cron; every read also filters by 48h, clock
-  seam `now()`). The ledger (`baumy_telegram_updates.raw`) still never holds the body. Appended:
+  display name is flattened and can never read as Baumy's own turn (`memberLabel`). **No text outlives 48h** (hourly `windowPurge` cron; every read also filters by 48h, clock
+  seam `now()`); a row whose produced reminder series still has a scheduled occurrence survives the
+  purge as its produced-map only (text replaced by `EXPIRED_WINDOW_TEXT`), so an edit days later still
+  replaces the reminder (I1). The ledger (`baumy_telegram_updates.raw`) still never holds the body. Appended:
   every in-scope inbound message after lane resolution (never the `ignore` lane, never another bot's
   post; a member-forwarded message is labelled `forwarded`, attributed to the forwarder only as
   forwarder) and every Baumy send — at the **send seam** (`lib/telegram/client.ts`, scope resolved
@@ -165,7 +171,9 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   Any other lower-trust contradiction is stored as a **non-current conflict row**
   (`conflicts_with_fact_id`) and surfaced in `ctx.outcome.captured.conflicts` → the planner's
   `statement-conflict` row asks which is right. A conflict row never grounds anything; the hygiene
-  sweep retires it. A `system` (reflect) fact is never correctable by chat.
+  sweep retires it. A `system` (reflect) fact is never correctable by chat — except the structural
+  possessor edge ("marco's room —belongs_to→ marco", `isStructuralEdge`: `system`, no author), which is
+  a name-derived default, not a statement: any stated owner replaces it (reconcile and the hygiene replay).
 - **New housemates (K6):** an unknown PRIVATE sender is checked with `getChatMember(house live id,
   from.id)` (`lib/identity/verify.ts`) — an active member is upserted (role `member`, audited
   `member.verified`) and served as a member DM; anyone else stays `ignore`. Fail-closed (a transport
@@ -174,8 +182,10 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
 - **Edits (I1, `lib/turn/edit.ts`):** an `edited_message` (`isEdit`, same `message_id`) supersedes what
   the original produced via the window's produced-map — its note retired, facts it no longer states
   soft-retracted (`deleted_at`), unsent reminders (+ their series) cancelled and re-created from the
-  edited text — and **never gets words** (planner `quietForEdit`; reactions only). An edited slash
-  command is not re-run; an edit of a message with no window row is handled as new, silently.
+  edited text — and **never gets words** (planner `quietForEdit`; reactions only). A note another
+  window row also produced (a consolidated near-verbatim repeat) is not retired; while `/pause`d the
+  original's reminders are kept (the edit cannot re-create them). An edited slash command is not
+  re-run; an edit of a message with no window row is handled as new, silently.
 - **Fail closed** everywhere (roster, env, webhook secret).
 
 ## The turn & Baumy's voice (`lib/turn/*`, `docs/spec/chat-understanding-v2.md` §1–§4)
@@ -241,7 +251,7 @@ crown jewels. The pipeline:
   **Never merged:** a person by trigram, a **possessive** ("charli's bike" gets a `belongs_to` edge to
   charli at `system` trust instead — F1), or a qualified phrase into its head ("kitchen sink" never
   folds into "sink"); only a bare head resolves to the ONE qualified node ending in it ("the sink" →
-  "kitchen sink"). The speaker is ONE person node carrying their full + first name as aliases
+  "kitchen sink"), re-checked every time (never stored as an alias). The speaker is ONE person node carrying their full + first name as aliases
   (`ensureSpeakerEntity`, F6); notes are tagged by the entity id reconcile resolved (F15).
   Every fact carries **lineage** (`docs/spec/fact-lineage.md`): `source_memory_item_id` (the
   evidence note it came from — its origin, with `authored_by` = who) and `derived_from_fact_id`

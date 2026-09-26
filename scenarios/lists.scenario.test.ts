@@ -1,8 +1,9 @@
 import { describe } from 'vitest'
 import { and, eq, isNull } from 'drizzle-orm'
-import { listItems } from '@/db/schema'
-import { scenario, say, expectWords, expectNoWords, expectReaction, expectDb, expectPrompt } from './dsl'
-import { statement, question, request, chatter } from './shapes'
+import { listItems, memoryItems } from '@/db/schema'
+import { scenario, say, expectWords, expectNoWords, expectReaction, expectDb, expectPrompt, expectFact } from './dsl'
+import { memoryLines } from './fake-model'
+import { statement, question, request, chatter, fact } from './shapes'
 import { HOUSE } from './house'
 
 // The shared shopping list (docs/spec/shopping-list.md): group acks come from the STORE OUTCOME
@@ -61,6 +62,30 @@ describe('scenario: shopping list', () => {
       say('Marco', "add coffee — and when's the plumber coming?", { mention: true }),
       expectDb(async (db, r) => (await openItems(db, r.sb.houseChatId)).includes('coffee'), 'coffee is on the list'),
       expectPrompt('reply', /plumber/, 'the question half reached the reply model'),
+    ],
+  })
+
+  scenario('a statement triage wrongly flags as a list op is still remembered when the list step finds nothing (A11)', {
+    people: HOUSE,
+    startAt: '2026-09-24 19:00',
+    // The classifier's `list` flag only PROPOSES; the list extractor disposes. When it answers "none",
+    // the message was not a list op after all, and must be captured like any statement — only a list op
+    // that actually happened skips capture.
+    fixtures: {
+      triage: (t: string) => (/plumber comes/.test(t) ? statement({ worthRemembering: true, list: 'add' }) : /plumber/.test(t) ? question({ asksBaumy: true }) : chatter()),
+      list: () => ({ op: 'none' as const, items: [] }),
+      extract: (t: string) => (/plumber comes/.test(t) ? [fact({ subject: 'plumber', predicate: 'arrives_on', object: 'thursday' })] : []),
+    },
+    steps: [
+      say('Charli', 'the plumber comes thursday'),
+      expectPrompt('list', /plumber comes thursday/, 'the list step ran (the flag was set)'),
+      expectReaction('✍'),
+      expectDb(async (db, r) => (await openItems(db, r.sb.houseChatId)).length === 0, 'nothing went on the list'),
+      expectDb(async (db) => (await db.select().from(memoryItems)).some((m) => m.content === 'the plumber comes thursday'), 'the statement is a memory note'),
+      expectFact({ subject: /plumber/, predicate: 'arrives_on', object: 'thursday', current: true }),
+      say('Marco', 'when is the plumber coming?', { mention: true }),
+      expectPrompt('reply', (c) => memoryLines(c.prompt).some((l) => /thursday/.test(l)), 'it grounds the answer'),
+      expectWords({ judge: 'Says the plumber comes on Thursday (per Charli).' }),
     ],
   })
 })

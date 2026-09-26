@@ -153,6 +153,8 @@ describe('scenario: the fact model (phase 4)', () => {
 
   scenario('the same person corrects their own DM fact from the group — it takes (F5)', {
     people: HOUSE,
+    // Marco, not Charli: Charli is the house OWNER, and the owner exception would let her correction
+    // through on its own — this must pass through the same-author exception only.
     startAt: '2026-09-24 19:00',
     fixtures: {
       triage: (t) => (/zuzka/i.test(t) ? statement() : chatter()),
@@ -165,12 +167,12 @@ describe('scenario: the fact model (phase 4)', () => {
       reply: () => "Noted — Zuzka's in your room 😼",
     },
     steps: [
-      say('Charli', "Zuzka's staying in my room", { dm: true }),
-      expectFact({ subject: 'zuzka', object: "charli's room", by: 'Charli', trust: 'trusted', current: true }),
+      say('Marco', "Zuzka's staying in my room", { dm: true }),
+      expectFact({ subject: 'zuzka', object: "marco's room", by: 'Marco', trust: 'trusted', current: true }),
       advance({ hours: 20 }),
-      say('Charli', "change of plan, Zuzka's in the cave"),
-      expectFact({ subject: 'zuzka', predicate: 'stays_in', object: 'the cave', by: 'Charli', trust: 'untrusted', current: true }),
-      expectFact({ subject: 'zuzka', object: "charli's room", current: true, count: 0 }),
+      say('Marco', "change of plan, Zuzka's in the cave"),
+      expectFact({ subject: 'zuzka', predicate: 'stays_in', object: 'the cave', by: 'Marco', trust: 'untrusted', current: true }),
+      expectFact({ subject: 'zuzka', object: "marco's room", current: true, count: 0 }),
       expectReaction('✍'),
       expectNoWords(),
     ],

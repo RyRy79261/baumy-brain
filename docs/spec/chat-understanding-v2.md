@@ -344,8 +344,11 @@ context only — it never writes facts and is never shown to anyone.
 - Entity resolution: a trigram merge needs the LEAST of both `strict_word_similarity` directions
   ≥ 0.7 and the same word count; persons and possessives never trigram-merge; a single bare head
   resolves to the one non-possessive qualified node ending in it ("the sink" → "kitchen sink"), never
-  the reverse. A NEW possessive node gets `X —belongs_to→ owner` at `system` trust, no author (the owner
-  is a person when the name is a housemate's). Exact/alias lookups skip inactive (merged) nodes.
+  the reverse — re-checked on every resolution (the bare head is never stored as an alias, or it would
+  keep resolving to the first node once a second "… sink" exists). A NEW possessive node gets
+  `X —belongs_to→ owner` at `system` trust, no author (the owner is a person when the name is a
+  housemate's); that structural edge (`isStructuralEdge`) is a default, not a statement — any stated
+  owner supersedes it in reconcile and in the hygiene replay, and it never supersedes a stated one. Exact/alias lookups skip inactive (merged) nodes.
   `ensureSpeakerEntity` (run by capture for the authenticated author): the member-linked person node,
   else one claimed by full / unique first name, else a new one (canonical = first name unless another
   housemate shares it), with the full + first name as aliases unless another node owns that form.
@@ -429,21 +432,28 @@ context only — it never writes facts and is never shown to anyone.
   soft-retracts (`deleted_at`) anything only the original stated. The window row's produced-map is always
   rewritten. The planner never speaks in words for an edit (`quietForEdit`: 👍 for a re-set reminder, ✍ for
   something re-noted, else nothing); forget is not proposed on an edit; an edited slash command is dropped
-  (`edited-command`). An edit of a message with no window row (older than 48h, or before Baumy joined) is
-  handled as new, silently. Not done: an edit that deletes a correction does not resurrect the fact the
+  (`edited-command`). A note another window row also produced (a near-verbatim repeat consolidated onto
+  the first message's note) is not retired by editing either message — the other still says it. While
+  the house is `/pause`d the original's reminders are kept (the edited text cannot re-create one) and stay
+  in the produced-map. The 48h purge keeps a row whose reminder series still has a scheduled occurrence,
+  as its produced-map only (text → `EXPIRED_WINDOW_TEXT`), so an edit days later still cancels + re-creates
+  instead of adding a second reminder. An edit of a message with no window row (before Baumy joined, or
+  past 48h with nothing still scheduled) is handled as new, silently. Not done: an edit that deletes a correction does not resurrect the fact the
   original had superseded; list ops on an edit run again (idempotent adds/tick-offs) but the original's
   op is not undone.
 - **Captions (I4)** — `lib/telegram/content.ts` `messageContent`: `text ?? caption`, plus the media kind.
   Media with no caption → ingest drops it as `media` (after registering the sender). The media itself is
   never fetched. The sensitivity scan gained a generic "code/combo + 3+ digits" pattern ("boiler code is
-  4821" — descriptor "a numeric code"), so a caption like that is stored encrypted.
+  4821" — descriptor "a numeric code"), so a caption like that is stored encrypted; a code plainly not a
+  secret (zip / postal / area / country / error / status / promo … code) is excluded.
 - **Forwarded (I5, D4)** — `Trust` gains `'forwarded'` (member-forwarded; a forwarded bot post stays
   `quarantined`); `isRelayed()` = forwarded ∨ quarantined gates facts (reconcile rejects), actions (decide,
   list, reminder follow-up) and attribution (`authorId` null). Capture stores it as a `statement` note with
   `forwarded_by` (migration 0023) and no author, when `worthRemembering` (any intent — the words are
   someone else's). Retrieval returns it with `trustLevel`/`forwardedBy`; the MEMORY line reads
   `note · forwarded by Marco (someone else's words, not Marco's) · 28 Sep: "…"`; the reply prompt says how to
-  cite it; `/weekly` labels it; reflect and consolidation skip it. Triage gets `FORWARDED: yes — X forwarded
+  cite it; `/weekly` and `/guests` label it; the web-search call (the one tool-enabled generation) never
+  gets it (`forWeb` leaves it out); reflect and consolidation skip it. Triage gets `FORWARDED: yes — X forwarded
   someone else's message`. Planner: group → ✍ if kept; DM → a deterministic ack (`forwardAck`), never the
   reply model. The replied-to text of a forwarded message is still withheld (§4).
 - **Reminders (A4, A5, D2)** — `reminderIsPersonal`: the model's per-entry `forWhom` when given, else a
@@ -453,8 +463,11 @@ context only — it never writes facts and is never shown to anyone.
   creator is an active member, else the row is cancelled, never re-routed); the digest batches per
   destination. `/reminders` in the group and `/weekly` list only house reminders; a member's own DM
   `/reminders` also shows theirs ("just for you, here"). Reminders in both lanes still honour `/pause`.
-- **Forget (A7, A8)** — `findMemoryToForget`: a value that is an entity, or a subject with no detail,
-  proposes that entity's current facts (subject or object side); `attributeMatches` is loose (cue words,
+  A reminder request asked in a member DM that set no HOUSE reminder is not captured (no note, no facts):
+  its content stays as private as its delivery — ingest runs the reminder step before capture for this.
+- **Forget (A7, A8)** — `findMemoryToForget`: a LITERALLY named value that is an entity, or a subject with
+  no detail, proposes that entity's current facts (subject or object side — a value found through a
+  subject + detail match is not expanded; a stated `belongs_to` is a detail, the structural edge is not); `attributeMatches` is loose (cue words,
   predicate + synonym words, 4-letter stems, the value); the proposed facts' source notes join `noteIds`.
   Soft `forgetMemory` hides facts AND notes (`is_active=false`, plus the facts' source notes even for an
   older proposal); the card says "hide N message(s)"; the receipt "hid N message(s)". `notes_only` now only

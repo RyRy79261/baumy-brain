@@ -11,7 +11,9 @@ const PATTERNS: RegExp[] = [
   /\b\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}\b/, // 16-digit card number
   // Any other numeric code stated with its value — "the boiler code is 4821", "bike lock combo: 0912",
   // and the extracted triple "boiler code 4821". The door/gate pattern above only knows its own nouns.
-  /\b(code|combo|combination)\b[^.\d]{0,12}?\d{3,}/i,
+  // A code that is plainly NOT a secret ("zip code 90210", "area code 030", "error code 404") is left
+  // alone — encrypting it would leave only "a numeric code" to recall.
+  /(?<!\b(?:zip|post|postal|area|country|dialling|dialing|error|status|exit|dress|promo|discount|voucher|coupon|tracking|reference|colou?r|tax)[\s-]*)\b(code|combo|combination)\b[^.\d]{0,12}?\d{3,}/i,
 ]
 
 // Non-secret descriptors, parallel to PATTERNS. Stored as the memory item's

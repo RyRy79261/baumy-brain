@@ -8,7 +8,7 @@ import { PROFILE_PREDICATE } from '@/lib/memory/reflect'
 import { now as clockNow } from '@/lib/core/clock'
 import { liveFact } from '@/lib/memory/current'
 import { DEFAULT_EVENT_HOURS } from '@/lib/core/when'
-import { cardinalityOf, normalizePredicate, POSSESSOR_PREDICATE } from '@/lib/memory/predicates'
+import { cardinalityOf, isStructuralEdge, normalizePredicate, POSSESSOR_PREDICATE } from '@/lib/memory/predicates'
 import { cuedPredicates, lookupText, matchEntities, hasName, type EntityMatch, type LookupSpeaker } from '@/lib/memory/lookup'
 import { isRelayed, type Trust } from '@/lib/core/origin'
 
@@ -86,7 +86,7 @@ async function pickMergeCandidate(
   groupId: string,
   kind: string,
   name: string,
-): Promise<{ id: string; kind: string } | null> {
+): Promise<{ id: string; kind: string; viaHead?: true } | null> {
   if (kind === 'person' || possessiveParts(name)) return null
   const words = name.split(' ').length
   const res = await db.execute(sql`
@@ -110,7 +110,7 @@ async function pickMergeCandidate(
         AND right(canonical_name, ${name.length + 1}) = ${` ${name}`}
       LIMIT 3`),
   ).filter((r) => !possessiveParts(String(r.name)))
-  return heads.length === 1 ? { id: String(heads[0].id), kind: String(heads[0].kind) } : null
+  return heads.length === 1 ? { id: String(heads[0].id), kind: String(heads[0].kind), viaHead: true } : null
 }
 
 // Promote a legacy untyped node to a specific kind once we learn it (person/place/…);
@@ -184,11 +184,16 @@ async function resolveEntityId(db: Database, groupId: string, name: string, kind
   if (merged) {
     await upgradeKind(db, merged.id, merged.kind, kind)
     // `name` is guaranteed absent from this entity's aliases (the exact-alias probe
-    // above scanned every entity), so a plain append never duplicates.
-    await db
-      .update(entities)
-      .set({ aliases: sql`array_append(coalesce(${entities.aliases}, '{}'::text[]), ${name})` })
-      .where(eq(entities.id, merged.id))
+    // above scanned every entity), so a plain append never duplicates. A bare head ("sink") is NOT
+    // recorded: it names "kitchen sink" only while that is the ONE "… sink" — as an alias, the probe
+    // above would keep resolving it there after a "bathroom sink" appears (and hygiene B would read it
+    // as proof of identity). It re-runs the uniqueness check each time instead.
+    if (!merged.viaHead) {
+      await db
+        .update(entities)
+        .set({ aliases: sql`array_append(coalesce(${entities.aliases}, '{}'::text[]), ${name})` })
+        .where(eq(entities.id, merged.id))
+    }
     return { id: merged.id, kind: merged.kind === 'thing' ? kind : merged.kind }
   }
 
@@ -204,7 +209,8 @@ async function resolveEntityId(db: Database, groupId: string, name: string, kind
 }
 
 // "charli's bike —belongs_to→ charli". Deterministic from the name, so 'system' trust and no author
-// (no housemate stated it). The owner is a person when the name is a housemate's, else a thing.
+// (no housemate stated it) — which also marks it as the replaceable default (isStructuralEdge): a stated
+// owner supersedes it. The owner is a person when the name is a housemate's, else a thing.
 async function recordPossessor(db: Database, groupId: string, possessedId: string, ownerRaw: string): Promise<void> {
   const owner = normalizeEntityName(ownerRaw)
   const isHousemate = rosterMatches(await activeMembers(db, groupId), owner).length === 1
@@ -325,8 +331,12 @@ interface Incumbent {
   recordedAt: Date | null
 }
 
-// May this write close / supersede that live incumbent? (the trust gate, F5)
-function mayOverride(input: ReconcileInput, existing: Incumbent): boolean {
+// May this write close / supersede that live incumbent? (the trust gate, F5) The name-derived possessor
+// edge is `system` only because no housemate said it — a default, not a statement — so any stated owner
+// (relayed content never gets here) replaces it; otherwise untrusted group text would mint a row the
+// gate treats as unbeatable, and every real correction of who owns "marco's room" would be a conflict.
+function mayOverride(input: ReconcileInput, existing: Incumbent, predicate: string): boolean {
+  if (isStructuralEdge({ predicate, trustLevel: existing.trustLevel, authoredBy: existing.authoredBy })) return true
   if (rank(input.trustLevel) >= rank(existing.trustLevel)) return true
   if (existing.trustLevel === 'system') return false
   if (input.authoredBy && existing.authoredBy && input.authoredBy === existing.authoredBy) return true
@@ -460,7 +470,7 @@ export async function reconcileFactDetailed(db: Database, input: ReconcileInput)
   // with that value → nothing to do.
   if (input.fact.removes) {
     if (!existing || !sameValue(existing)) return detail('noop', null)
-    if (!mayOverride(input, existing)) return storeConflict(existing, true)
+    if (!mayOverride(input, existing, predicate)) return storeConflict(existing, true)
     await db.update(facts).set({ isCurrent: false, validTo: now, invalidatedAt: now }).where(eq(facts.id, existing.id))
     return detail('removed', existing.id)
   }
@@ -521,14 +531,14 @@ export async function reconcileFactDetailed(db: Database, input: ReconcileInput)
     // date for an already-dated live fact is a reschedule → it supersedes below, like any change (T6:
     // a repeat with a new date is never a noop that throws the date away).
     if (!existing.eventAt) {
-      if (!mayOverride(input, existing)) return storeConflict(existing)
+      if (!mayOverride(input, existing, predicate)) return storeConflict(existing)
       await db.update(facts).set({ eventAt: incomingEvent, validTo: newValues.validTo }).where(eq(facts.id, existing.id))
       return detail('update', existing.id)
     }
   }
 
   // Contradiction: only a fact of >= trust (or the same author / the owner) may overwrite the incumbent.
-  if (!mayOverride(input, existing)) return storeConflict(existing)
+  if (!mayOverride(input, existing, predicate)) return storeConflict(existing)
 
   // Supersede atomically-enough WITHOUT a transaction (the http driver has none): CLOSE the
   // incumbent FIRST, then insert the new current row. If the run dies between these two

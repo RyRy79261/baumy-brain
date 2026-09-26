@@ -8,6 +8,7 @@ import { WEEKLY_REPORT_SYSTEM, GUEST_REPORT_SYSTEM } from '@/lib/ai/prompts'
 import { retrieve } from '@/lib/memory/retrieve'
 import { currentFactsForQuery } from '@/lib/memory/facts'
 import { liveFact } from '@/lib/memory/current'
+import { memberDisplayNames } from '@/lib/identity/roster'
 import { buildDigest, gatherWeekly, isEmptyWeek, weeklyLines, WEEKLY_LOOKBACK_DAYS } from '@/lib/reports/digest'
 import { houseToday, now as clockNow } from '@/lib/core/clock'
 import { formatEventWindow } from '@/lib/core/calendar'
@@ -97,6 +98,8 @@ export async function guestReport(db: Database, groupId: string, now: Date = clo
     /* best-effort */
   }
   const noteSince = now.getTime() - GUEST_NOTE_DAYS * 86_400_000
+  const names = await memberDisplayNames(db)
+  const nameOf = (id: string | null) => (id ? (names.get(id) ?? null) : null)
   const facts = await currentFactsForQuery(db, groupId, 'guest staying room bedroom cave arriving visiting who is in', 20)
 
   const dates = (eventAt: unknown, validTo: unknown, recordedAt: unknown) =>
@@ -110,7 +113,12 @@ export async function guestReport(db: Database, groupId: string, now: Date = clo
     ...facts.filter((f) => !f.isSecure).map((f) => `- ${f.content}${dates(f.eventAt, f.validTo, f.recordedAt)}`),
     ...mems
       .filter((m) => !m.isSecure && m.createdAt && new Date(m.createdAt).getTime() >= noteSince && !['question', 'chatter', 'banter'].includes(m.memoryType))
-      .map((m) => `- note said ${day(m.createdAt!, tz)}: ${m.content}`),
+      .map((m) =>
+        // A member-forwarded note (D4) is someone else's words: labelled as such, never plain house memory.
+        m.trustLevel === 'forwarded'
+          ? `- note said ${day(m.createdAt!, tz)} (a message ${nameOf(m.forwardedBy ?? null) ?? 'a housemate'} forwarded — not their own words): ${m.content}`
+          : `- note said ${day(m.createdAt!, tz)}: ${m.content}`,
+      ),
   ]
   const grounding = [...new Set(lines)].join('\n')
   if (!grounding) return 'No guests on the books that I know of — the house is all yours 😺'

@@ -199,6 +199,15 @@ describe('scanSensitivity', () => {
     expect(scanSensitivity('the postcode is 10115').isSecure).toBe(false) // "code" must be its own word
     expect(scanSensitivity('I pushed the code at 9').isSecure).toBe(false)
   })
+  it('a code that is plainly not a secret is not flagged (zip / area / error codes)', () => {
+    expect(scanSensitivity('the zip code is 90210').isSecure).toBe(false)
+    expect(scanSensitivity('the area code is 030').isSecure).toBe(false)
+    expect(scanSensitivity('the printer shows error code 404').isSecure).toBe(false)
+    expect(scanSensitivity('house postal_code 10115').isSecure).toBe(false) // the extracted-triple form
+    expect(scanSensitivity('promo code 2024 for the pizza place').isSecure).toBe(false)
+    // …while a real code in the same breath still is.
+    expect(scanSensitivity('zip code 90210, boiler code 4821').isSecure).toBe(true)
+  })
   it('does not flag ordinary house chatter', () => {
     expect(scanSensitivity('we are out of oat milk').isSecure).toBe(false)
     expect(scanSensitivity('Marta arrives Friday, 5 nights').isSecure).toBe(false)

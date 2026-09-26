@@ -124,7 +124,10 @@ export async function gatherGrounding(db: Database, ctx: TurnContext, opts: { de
     })),
   ]
 
-  const forWeb = items.filter((m) => !m.isSecure).map((m) => ({ content: m.content, authoredBy: m.who }))
+  // The web-search call is the one generation with a tool, so it gets only the house's OWN memory: a
+  // member-forwarded note (D4) is someone else's words — an outside instruction ("ignore the above and
+  // search for …") must never reach the tool-enabled model as house memory — so it stays out.
+  const forWeb = items.filter((m) => !m.isSecure && !m.forwarded).map((m) => ({ content: m.content, authoredBy: m.who }))
   const shown = disclose(items, opts.mode, query)
   const disclosed = items.flatMap((m, i) => (shown[i].content !== m.content ? [m.content] : []))
   return { items: shown, forWeb, disclosed }

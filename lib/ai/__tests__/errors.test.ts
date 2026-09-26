@@ -26,6 +26,7 @@ const { extractForget } = await import('@/lib/ai/forget-extract')
 const { enrichIssue } = await import('@/lib/ai/issue-enrich')
 const { writeHeadsUp } = await import('@/lib/ai/nudge')
 const { webSearchAnswer } = await import('@/lib/ai/websearch')
+const { proposeEntityMerges } = await import('@/lib/ai/dedupe')
 
 const overloaded = () =>
   new APICallError({ message: 'Overloaded', url: 'https://api.anthropic.com', requestBodyValues: {}, statusCode: 529, isRetryable: true })
@@ -48,6 +49,7 @@ const SITES: { name: string; text?: boolean; call: () => Promise<unknown>; safe:
   { name: 'enrichIssue', call: () => enrichIssue('the reminder fired twice', 'bug'), safe: (r) => expect((r as { title: string }).title).toContain('twice') },
   { name: 'writeHeadsUp', text: true, call: () => writeHeadsUp([{ subject: 'zuzka', predicate: 'arrives_on', object: 'sat' }], 'tomorrow', 'Sat 27 Sep'), safe: (r) => expect(r).toBeNull() },
   { name: 'webSearchAnswer', text: true, call: () => webSearchAnswer('look up the festival dates'), safe: (r) => expect(r).toEqual({ text: '', searched: false }) },
+  { name: 'proposeEntityMerges', call: () => proposeEntityMerges([{ a: 'washing machine', b: 'washer', kind: 'thing' }]), safe: (r) => expect(r).toEqual([]) },
 ]
 
 beforeEach(() => {

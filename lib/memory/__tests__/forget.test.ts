@@ -178,6 +178,31 @@ describe('forget — A7 soft hides the source note, A8 subject/attribute matchin
     expect(m.scrubValues).toEqual(["charli's room"])
   })
 
+  it('subject + attribute proposes ONLY the matched facts — the matched value (an entity) is not expanded', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, { groupId: GROUP, fact: { ...person('zuzka', 'stays_in', 'cave'), objectKind: 'place' }, authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'cave', subjectKind: 'place', predicate: 'status', object: 'damp' }, authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'cave', subjectKind: 'place', predicate: 'location', object: 'downstairs' }, authoredBy: null, trustLevel: 'untrusted' })
+    const m = await findMemoryToForget(db, GROUP, { values: [], subject: 'Zuzka', attribute: 'where she is sleeping' })
+    expect(m.facts.map((f) => f.label)).toEqual(['zuzka stays in: cave'])
+    // …while literally NAMING the entity still proposes its record.
+    const named = await findMemoryToForget(db, GROUP, { values: ['cave'], subject: '', attribute: '' })
+    expect(named.facts.map((f) => f.label).sort()).toEqual(['cave location: downstairs', 'cave status: damp', 'zuzka stays in: cave'])
+  })
+
+  it('a STATED ownership fact (belongs_to / legacy owned_by) is a forgettable detail; the structural edge is not', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    // "charli's bike" mints the structural edge (belongs_to charli, system); the ladder's owner is stated.
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: "charli's bike", predicate: 'location', object: 'the shed' }, authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'the ladder', predicate: 'owned_by', object: 'marco' }, authoredBy: null, trustLevel: 'untrusted' })
+    const ladder = await findMemoryToForget(db, GROUP, { values: [], subject: 'the ladder', attribute: 'the owner' })
+    expect(ladder.facts.map((f) => f.label)).toEqual(['ladder belongs to: marco'])
+    const bike = await findMemoryToForget(db, GROUP, { values: [], subject: "charli's bike", attribute: '' })
+    expect(bike.facts.map((f) => f.label)).toEqual(["charli's bike location: the shed"])
+  })
+
   it('a subject with no detail and no value → the whole current record', async () => {
     const { db } = await seed()
     await reconcileFact(db, { groupId: GROUP, fact: person('zuzka', 'arrives_on', 'friday'), authoredBy: null, trustLevel: 'untrusted' })

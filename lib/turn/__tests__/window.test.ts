@@ -1,17 +1,19 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
-import { houseConfig } from '@/db/schema'
+import { houseConfig, reminders } from '@/db/schema'
 import { withSimulatedTime } from '@/lib/core/clock'
 import { redactValues } from '@/lib/memory/forget'
+import { createReminder } from '@/lib/reminders/store'
 import {
   redactForWindow,
   appendInbound,
   appendBaumySend,
   recentTurns,
   purgeWindow,
+  EXPIRED_WINDOW_TEXT,
   linkProduced,
   withholdTurn,
   scrubWindow,
@@ -151,6 +153,36 @@ describe('purge + maintenance', () => {
     await appendInbound(db, row({ messageId: 2, text: 'fresh', sentAt: at(-47 * 60) }))
     expect(await purgeWindow(db, T0)).toBe(1)
     expect((await allRows()).map((r) => r.text_redacted)).toEqual(['fresh'])
+  })
+
+  it('I1: a row past 48h whose reminder (or a later occurrence of its series) is still to come keeps its edit map — never its text', async () => {
+    const soon = await createReminder(db, { groupId: G, deliverChatId: G, content: 'bins', fireAt: at(3 * 24 * 60), createdBy: MARCO })
+    const sent = await createReminder(db, { groupId: G, deliverChatId: G, content: 'water plants', fireAt: at(-60), createdBy: MARCO })
+    await db.update(reminders).set({ status: 'sent' }).where(eq(reminders.id, sent))
+    const [next] = await db
+      .insert(reminders)
+      .values({ groupId: G, deliverChatId: G, content: 'water plants', anchorKind: 'absolute', fireAt: at(6 * 24 * 60), status: 'scheduled', previousReminderId: sent })
+      .returning({ id: reminders.id })
+    const done = await createReminder(db, { groupId: G, deliverChatId: G, content: 'old news', fireAt: at(-120), createdBy: MARCO })
+    await db.update(reminders).set({ status: 'sent' }).where(eq(reminders.id, done))
+    await appendInbound(db, row({ messageId: 1, text: 'remind us bins in 5 days', sentAt: at(-50 * 60) }))
+    await appendInbound(db, row({ messageId: 2, text: 'remind us to water the plants every week', sentAt: at(-50 * 60) }))
+    await appendInbound(db, row({ messageId: 3, text: 'remind us of old news', sentAt: at(-50 * 60) }))
+    await linkProduced(db, { chatId: G, messageId: 1 }, { reminderIds: [soon] })
+    await linkProduced(db, { chatId: G, messageId: 2 }, { reminderIds: [sent] })
+    await linkProduced(db, { chatId: G, messageId: 3 }, { reminderIds: [done] })
+
+    expect(await purgeWindow(db, T0)).toBe(1) // only the row whose reminder is over
+    const left = await allRows()
+    expect(left.map((r) => [r.message_id, r.text_redacted])).toEqual([
+      ['1', EXPIRED_WINDOW_TEXT],
+      ['2', EXPIRED_WINDOW_TEXT],
+    ])
+    expect(await recentTurns(db, { groupId: G, chatId: G, threadId: null, at: T0 })).toEqual([]) // never read as context
+    // Once nothing it set is still to come, it goes too.
+    await db.update(reminders).set({ status: 'cancelled' }).where(eq(reminders.id, next.id))
+    expect(await purgeWindow(db, T0)).toBe(1)
+    expect((await allRows()).map((r) => r.message_id)).toEqual(['1'])
   })
 
   it('linkProduced records what a message produced; withholdTurn replaces its text', async () => {
