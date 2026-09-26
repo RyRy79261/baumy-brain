@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, or, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { entities, facts, memoryItems, memoryEmbeddings } from '@/db/schema'
 import { normalizeEntityName } from '@/lib/memory/facts'
-import { scrubWindow } from '@/lib/turn/window'
+import { scrubWindow, withholdProducing } from '@/lib/turn/window'
 import { now as clockNow } from '@/lib/core/clock'
 
 // Deletion on request (owner feature). The UNIT of forgetting is a concrete VALUE STRING
@@ -42,6 +42,9 @@ export interface ForgetMatches {
 }
 
 const MATCH_LIMIT = 20
+
+/** What the conversation window keeps of a message whose facts / notes were forgotten. */
+export const FORGOTTEN_WINDOW_TEXT = '[a message about something since forgotten — withheld]'
 
 function rowsOf(res: unknown): Record<string, unknown>[] {
   return Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
@@ -187,7 +190,8 @@ export async function findMemoryToForget(db: Database, groupId: string, spec: Fo
 // another house's rows even with a spoofed id. Facts: soft = hide (bitemporal close +
 // deleted_at); purge = also redact the value + secret. Source messages are NEVER deleted —
 // purge surgically scrubs the value strings out and drops their embeddings so the re-embed
-// sweep re-vectorises the redacted text. Aliases equal to a value are dropped on purge.
+// sweep re-vectorises the redacted text. Aliases equal to a value are dropped on purge. Either mode
+// also clears the 48h conversation window of what was forgotten.
 export async function forgetMemory(
   db: Database,
   groupId: string,
@@ -227,10 +231,14 @@ export async function forgetMemory(
     messagesScrubbed = scrubbedIds.length
   }
 
-  // The 48h conversation window (lib/turn/window.ts) holds recent chat text too: a purge scrubs the
-  // value out of it as well, rather than leaving it quotable until the window expires. Not counted in
-  // messagesScrubbed (that receipt is about stored memory).
-  if (input.mode === 'purge' && input.scrubValues.length) await scrubWindow(db, groupId, input.scrubValues, redactValues)
+  // The 48h conversation window (lib/turn/window.ts) holds recent chat text too, and the reply model
+  // reads it as RECENT CHAT — so a forget of EITHER mode reaches it, or "is Zuzka coming?" is answered
+  // yes from the very line that was just forgotten. The message that produced a forgotten fact / note
+  // is withheld whole (its other words may still state it); the value is scrubbed from any other line.
+  // Soft vs purge is about STORED memory (reversible hide vs redaction); the window is 48h context, so
+  // there is nothing to restore it for. Not counted in messagesScrubbed (that receipt is about memory).
+  await withholdProducing(db, groupId, { factIds: input.factIds, memoryItemIds: input.noteIds }, FORGOTTEN_WINDOW_TEXT)
+  if (input.scrubValues.length) await scrubWindow(db, groupId, input.scrubValues, redactValues)
 
   // Drop the value as an entity alias (purge only) — keeps the entity + its other aliases.
   // Independent of message scrubbing (a value can be an alias with no message holding it).

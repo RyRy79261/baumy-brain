@@ -141,6 +141,13 @@
       "when": 1790420232981,
       "tag": "0019_panoramic_vertigo",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1790425623296,
+      "tag": "0020_close_legacy_dated_facts",
+      "breakpoints": true
     }
   ]
 }

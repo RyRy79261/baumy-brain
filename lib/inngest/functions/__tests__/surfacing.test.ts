@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { reminders } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { reconcileFact } from '@/lib/memory/facts'
+import { createReminder } from '@/lib/reminders/store'
 import type { HeadsUpFact, HeadsUpLead } from '@/lib/ai/nudge'
 
 const GROUP = '-100surf'
@@ -169,6 +170,23 @@ describe('event-surfacing scan — dated facts become event-anchored reminders',
     expect(rows.map((r) => r.fireAt.toISOString())).toEqual(['2026-10-02T18:00:00.000Z', '2026-10-03T06:00:00.000Z']) // Fri 20:00, Sat 08:00
     expect(rows[0].content).toContain('tomorrow')
     expect(rows[1].content).toMatch(/tonight|today/)
+  })
+
+  it('a stage row left at a PRE-SLOT offset (deployed before stages were slot-pinned) is not doubled', async () => {
+    // Event Thu 8 Oct 10:00. Before the change, its stages were ev − 7d (Thu 1 Oct 10:00) and ev − 24h
+    // (Wed 7 Oct 10:00). A per-minute de-dupe never matched the new slots (Thu 1 Oct 08:00, Wed 7 Oct
+    // 20:00) and added twins: two "next week" lines on Thu 1 Oct (08:00 + the old row at 20:00).
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const eventAt = new Date('2026-10-08T08:00:00Z')
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'plumber', predicate: 'visits_on', object: 'Thu 8 Oct 10:00' }, authoredBy: null, trustLevel: 'untrusted', eventAt })
+    const [fact] = (await db.execute(sql`SELECT id FROM baumy_facts WHERE group_id = ${GROUP}`)).rows as { id: string }[]
+    for (const fireAt of [new Date('2026-10-01T08:00:00Z'), new Date('2026-10-07T08:00:00Z')])
+      await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'old stage', fireAt, anchorKind: 'event_offset', eventFactId: fact.id, createdBy: null })
+    const res = await runEventSurfacingScan(db, GROUP, new Date('2026-10-01T05:45:00Z'), TZ) // Thu 1 Oct 07:45
+    expect(res.created).toBe(1) // only the morning-of stage is new
+    const rows = (await eventReminders(db)).sort((a, b) => a.fireAt.getTime() - b.fireAt.getTime())
+    expect(rows.map((r) => r.fireAt.toISOString())).toEqual(['2026-10-01T08:00:00.000Z', '2026-10-07T08:00:00.000Z', '2026-10-08T06:00:00.000Z'])
   })
 
   it('an all-day event today still gets its morning nudge from the 07:45 scan', async () => {

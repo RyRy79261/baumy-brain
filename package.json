@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:time-shift": "vitest run -c vitest.time-shift.config.ts",
     "test:scenarios": "vitest run scenarios",
     "test:scenarios:live": "SCENARIOS_LIVE=1 vitest run scenarios",
     "db:generate": "drizzle-kit generate",

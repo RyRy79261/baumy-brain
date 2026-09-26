@@ -6,6 +6,7 @@ import { extractFacts } from '@/lib/ai/extract'
 import { memberDisplayNames } from '@/lib/identity/roster'
 import { eventWindowFromModel, eventWindowFromPhrase, type EventWindow } from '@/lib/core/when'
 import { formatEventWindow } from '@/lib/core/calendar'
+import { scanSensitivity } from '@/lib/core/sensitivity'
 import { summarizeFact, type FactSummary, type TurnContext, type TurnOutcome } from './context'
 import type { TurnStep } from './step'
 
@@ -43,10 +44,15 @@ export async function runCapture(step: TurnStep, ctx: TurnContext): Promise<NonN
     const factIds: string[] = []
     const learned: FactSummary[] = []
     const rejected: FactSummary[] = []
+    let secure: string | null = null
     // The speaker's name lets first-person references resolve ("my room" → their room).
     const speaker = ctx.authorId ? ((await memberDisplayNames(db)).get(ctx.authorId) ?? null) : null
     const { facts } = await extractFacts(ctx.text, speaker, { at: ctx.sentAt, tz: ctx.tz })
     for (const f of facts) {
+      // The same scan reconcile runs on the triple (the secret marker usually lives in the subject /
+      // predicate): the message carried a secret even when its raw text did not scan.
+      const sens = scanSensitivity(`${f.subject} ${f.predicate} ${f.object}`)
+      if (sens.isSecure) secure ??= sens.descriptor
       const window = eventWindow(f, ctx)
       // trust = the lane's: a member DM is 'trusted' and MAY supersede a group 'untrusted' fact,
       // never a 'system' reflect fact. memoryItemId links the fact back to THIS note (lineage).
@@ -67,8 +73,8 @@ export async function runCapture(step: TurnStep, ctx: TurnContext): Promise<NonN
     }
     // Tag this note with the person it's about (memory v2 §3) — attributed, never scored.
     await tagMemoryAboutPerson(db, ctx.houseScope, memoryItemId, facts)
-    return { factIds, learned, rejected }
-  })) as { factIds: string[]; learned: FactSummary[]; rejected: FactSummary[] }
+    return { factIds, learned, rejected, secure }
+  })) as { factIds: string[]; learned: FactSummary[]; rejected: FactSummary[]; secure: string | null }
 
   return { memoryItemId, ...facts }
 }

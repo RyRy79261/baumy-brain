@@ -122,6 +122,15 @@ describe('validating what the MODEL resolved (spec §6)', () => {
     expect(local(w.validTo)).toBe('Sun 2026-10-04 04:00')
   })
 
+  it('a date-only start is all-day even when the model omits (or contradicts) the allDay flag', () => {
+    // Read as a timed event at local midnight, it expired at 06:00 on the day itself.
+    const w = eventWindowFromModel({ start: '2026-10-03' }, TZ, now)!
+    expect(local(w.eventAt)).toBe('Sat 2026-10-03 00:00')
+    expect(local(w.validTo)).toBe('Sat 2026-10-03 23:59')
+    expect(local(eventWindowFromModel({ start: '2026-10-03', allDay: false }, TZ, now)!.validTo)).toBe('Sat 2026-10-03 23:59')
+    expect(local(eventWindowFromModel({ start: '2026-10-03', end: '2026-10-04' }, TZ, now)!.validTo)).toBe('Sun 2026-10-04 23:59')
+  })
+
   it('rejects the unparseable and the absurd; drops an end before the start', () => {
     expect(eventWindowFromModel({ start: 'next saturday', allDay: true }, TZ, now)).toBeNull()
     expect(eventWindowFromModel({ start: '2031-01-01', allDay: true }, TZ, now)).toBeNull() // > 2 years out

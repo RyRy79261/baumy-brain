@@ -32,7 +32,9 @@ export interface GroundingItem {
   saidAt: Date | null
   /** For a dated happening: when it happens (fact event_at) … */
   eventAt?: Date | null
-  /** … and when it is over (fact valid_to) — a multi-day stay renders as a range. */
+  /** … and when it is over (fact valid_to) — a multi-day stay renders as a range. An explicit null
+   *  with an eventAt is a dated CHANGE OF STATE (facts.ts: "fixed yesterday") — it happened then and
+   *  still holds, so it renders "since <day>", never "(past)". */
   validTo?: Date | null
   content: string
   isSecure: boolean
@@ -56,17 +58,28 @@ export function memoryLine(m: GroundingItem, tz: string, nowAt: Date): string {
   }
   if (m.saidAt) parts.push(`said ${day(m.saidAt, tz, now)}`)
   if (m.eventAt) {
-    const over = (m.validTo ?? m.eventAt).getTime() < (m.validTo ? nowAt.getTime() : now.startOf('day').toMillis())
-    parts.push(`event ${formatEventWindow(m.eventAt, m.validTo, tz, { year: DateTime.fromJSDate(m.eventAt).setZone(tz).year !== now.year })}${over ? ' (past)' : ''}`)
+    const year = { year: DateTime.fromJSDate(m.eventAt).setZone(tz).year !== now.year }
+    if (m.validTo === null) parts.push(`since ${formatEventWindow(m.eventAt, null, tz, year)}`)
+    else {
+      const over = (m.validTo ?? m.eventAt).getTime() < (m.validTo ? nowAt.getTime() : now.startOf('day').toMillis())
+      parts.push(`event ${formatEventWindow(m.eventAt, m.validTo, tz, year)}${over ? ' (past)' : ''}`)
+    }
   }
   return `  - ${parts.join(' · ')}: ${m.content}`
 }
 
 // A secret typed into the message itself stays out of any reply that is not a direct answer: the
-// ack of "the wifi password is hunter2" says it noted the wifi password, never the value (C15).
-function messageFor(ctx: TurnContext, mode: ReplyMode): string {
+// ack of "the wifi password is hunter2" says it noted the wifi password, never the value (C15). The
+// raw text may not scan ("wifi is hunter2 now") while the fact extracted from it does — capture's
+// `secure` descriptor covers that case.
+function messageSecret(ctx: TurnContext): string | null {
   const sens = scanSensitivity(ctx.text)
-  return sens.isSecure && mode !== 'answer' ? `[a message setting ${sens.descriptor} — value withheld]` : ctx.text
+  return sens.isSecure ? sens.descriptor : (ctx.outcome.captured?.secure ?? null)
+}
+
+function messageFor(ctx: TurnContext, mode: ReplyMode): string {
+  const secret = messageSecret(ctx)
+  return secret && mode !== 'answer' ? `[a message setting ${secret} — value withheld]` : ctx.text
 }
 
 export function renderReplyPrompt(ctx: TurnContext, mode: ReplyMode, grounding: GroundingItem[]): string {
@@ -80,7 +93,7 @@ export function renderReplyPrompt(ctx: TurnContext, mode: ReplyMode, grounding: 
   // shown at all) is a quoted one-line data section after it, so it can never forge a CONTEXT line.
   const replyTo = ctx.replyTo ? describeReplyTo(ctx.replyTo) : null
   if (replyTo) lines.push(`  REPLYING TO: ${replyTo.context}`)
-  const withholdObjects = mode !== 'answer' && scanSensitivity(ctx.text).isSecure
+  const withholdObjects = mode !== 'answer' && messageSecret(ctx) != null
   lines.push(`  THIS TURN: ${describeOutcome(ctx.outcome, ctx.tz, { withholdObjects })}`)
   if (replyTo?.quoted) lines.push(replyTo.quoted)
   // The last turns of this chat (spec §5) — Baumy's own previous replies included, so a follow-up

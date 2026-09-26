@@ -103,8 +103,17 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
         return
       }
       // An answer that disclosed a secure value may carry it in words no pattern recognises ("it's
-      // hunter2") — the conversation window stores a placeholder, never the value (spec §5).
-      await say(text, grounding.disclosed.length ? `[Baumy's answer — it gave ${grounding.disclosed.join(', ')}; withheld]` : undefined)
+      // hunter2") — the conversation window stores a placeholder, never the value (spec §5). The same
+      // for Baumy's words on a turn that STORED a secret: the ack of "wifi is hunter2 now" may echo it.
+      const secureNoted = ctx.outcome.captured?.secure
+      await say(
+        text,
+        grounding.disclosed.length
+          ? `[Baumy's answer — it gave ${grounding.disclosed.join(', ')}; withheld]`
+          : secureNoted
+            ? `[Baumy's reply about ${secureNoted} — withheld]`
+            : undefined,
+      )
       await (plan.alsoReact ? reactToMessage(ctx.chatId, ctx.messageId, plan.alsoReact) : clear())
     },
     clear,

@@ -163,6 +163,11 @@ describe('renderReplyPrompt — spec §4 turn prompt', () => {
     expect(memoryLine(stay('2026-09-18T22:00:00Z', '2026-09-20T21:59:59.999Z'), TZ, NOW)).toContain('event Sat 19 Sep – Sun 20 Sep (past)')
   })
 
+  it('a dated change of state (valid_to NULL) reads "since <day>" — it still holds, it is not "(past)"', () => {
+    const fixed = { ...fact('kitchen sink status: fixed', 'Marco', '2026-09-26T08:00:00Z', '2026-09-24T22:00:00Z'), validTo: null }
+    expect(memoryLine(fixed, TZ, NOW)).toBe('  - fact · Marco · said 26 Sep · since Fri 25 Sep: kitchen sink status: fixed')
+  })
+
   it('C15: a secret typed into the message is withheld from any mode but answer', () => {
     const ctx = turn({ text: 'the wifi password is hunter2' })
     expect(renderReplyPrompt(ctx, 'ack', [])).not.toContain('hunter2')

@@ -62,7 +62,16 @@ export type ForgetOutcome =
   | { proposed: false; reason: 'not_forget' | 'notes_only' | 'vague' | 'nothing' }
 
 export interface TurnOutcome {
-  captured?: { memoryItemId: string; factIds: string[]; learned: FactSummary[]; rejected: FactSummary[] }
+  captured?: {
+    memoryItemId: string
+    factIds: string[]
+    learned: FactSummary[]
+    rejected: FactSummary[]
+    /** A fact extracted from this message scans secure on its TRIPLE (stored encrypted) — its non-secret
+     *  descriptor ("the wifi password"). The raw text may not scan ("wifi is hunter2 now"), so the turn
+     *  withholds the window row and Baumy's words for it on THIS signal too (spec §5). */
+    secure?: string | null
+  }
   /** The reminder outcome the planner reads — with several (A6), the first failure, else the first set
    *  (lib/turn/actions.ts primaryReminder). */
   reminder?: ReminderOutcome

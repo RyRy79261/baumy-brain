@@ -1,7 +1,7 @@
 import { describe } from 'vitest'
 import { sql } from 'drizzle-orm'
 import type { Database } from '@/db/client'
-import { scenario, say, advance, expectPrompt, expectNoPrompt, expectWords, expectReminder, expectDb, check } from './dsl'
+import { scenario, say, advance, expectPrompt, expectNoPrompt, expectWords, expectReminder, expectDb, expectFact, check } from './dsl'
 import { memoryLines } from './fake-model'
 import { statement, question, chatter, reminderAsk, fact, reminder } from './shapes'
 import { HOUSE } from './house'
@@ -167,6 +167,63 @@ describe('scenario: the time model (phase 3)', () => {
         const words = r.turns.at(-1)!.entries.map((x) => x.text ?? '').join('\n')
         e(words).not.toContain('tomorrow')
       }),
+    ],
+  })
+
+  scenario('a date-only "when" without the allDay flag is the whole day: current all day, and the morning heads-up still goes out', {
+    people: HOUSE,
+    startAt: '2026-09-28 12:00', // Monday
+    fixtures: {
+      triage: (t) => (/when does zuzka/i.test(t) ? question({ asksBaumy: true }) : /arrives/.test(t) ? statement() : chatter()),
+      // The model resolved the day but left the optional allDay flag out — a valid output.
+      extract: (t) =>
+        /arrives/.test(t) ? [fact({ subject: 'zuzka', subjectKind: 'person', predicate: 'arrives_on', object: 'Sat 3 Oct', when: { start: '2026-10-03' } })] : [],
+      headsup: (c) => `Zuzka arrives ${c.prompt.match(/^WHEN: (.+?) \(/m)?.[1] ?? '?'} 🧳`,
+      reply: (t) => (/when does zuzka/i.test(t) ? 'Today — Sat 3 Oct 🧳' : 'Noted 😼'),
+    },
+    steps: [
+      say('Charli', 'Zuzka arrives on saturday'),
+      expectDb(async (db) => (await localOf(db, 'valid_to', 'arrives_on')) === 'Sat 2026-10-03 23:59', 'the arrival lasts the whole Saturday (not until 06:00)'),
+      advance({ days: 4, hours: 8, minutes: 5 }), // → Fri 2 Oct 20:05
+      expectWords({ contains: '🗓️ Zuzka arrives tomorrow' }),
+      advance({ hours: 12 }), // → Sat 3 Oct 08:05
+      expectWords({ contains: '🗓️ Zuzka arrives today' }),
+      advance({ hours: 6 }), // → Sat 14:05
+      say('Marco', 'when does Zuzka arrive?', { mention: true }),
+      expectPrompt('reply', (c) => memoryLines(c.prompt).some((l) => /- fact/.test(l) && /zuzka arrives on/i.test(l)), 'the arrival is still a CURRENT fact on the day itself'),
+      expectWords({ judge: 'Says Zuzka arrives today (Saturday 3 October). Must not say it does not know.' }),
+    ],
+  })
+
+  scenario('a past-dated change of state takes effect: "the plumber fixed the sink yesterday" over "the sink is broken"', {
+    people: HOUSE,
+    startAt: '2026-09-20 10:00', // Sunday
+    fixtures: {
+      triage: (t) => (/is the sink/i.test(t) ? question({ asksBaumy: true }) : /sink/.test(t) ? statement() : chatter()),
+      extract: (t) =>
+        /is broken/.test(t)
+          ? [fact({ subject: 'kitchen sink', predicate: 'status', object: 'broken' })]
+          : /fixed the sink yesterday/.test(t)
+            ? [fact({ subject: 'kitchen sink', predicate: 'status', object: 'fixed', when: { start: '2026-09-25', allDay: true }, whenText: 'yesterday' })]
+            : [],
+      reply: (t) => (/is the sink/i.test(t) ? 'Yes — Marco said the plumber fixed it yesterday (Fri 25 Sep) 🔧' : 'Noted 😼'),
+    },
+    steps: [
+      say('Charli', 'the kitchen sink is broken'),
+      advance({ days: 6 }), // → Sat 26 Sep
+      say('Marco', 'the plumber fixed the sink yesterday'),
+      expectFact({ subject: /sink/, object: 'fixed', current: true }),
+      expectFact({ subject: /sink/, object: 'broken', current: true, count: 0 }),
+      say('Ryan', 'is the kitchen sink fixed?', { mention: true }),
+      expectPrompt(
+        'reply',
+        (c) => {
+          const facts = memoryLines(c.prompt).filter((l) => /- fact/.test(l)).map((l) => l.split(' (follows from')[0])
+          return facts.some((l) => /since Fri 25 Sep: kitchen sink status: fixed$/.test(l)) && !facts.some((l) => /status: broken$/.test(l))
+        },
+        'MEMORY grounds the NEW state (since Fri 25 Sep), not the old one',
+      ),
+      expectWords({ judge: 'Says yes, the sink has been fixed (the plumber fixed it yesterday). Must not say it is still broken.' }),
     ],
   })
 

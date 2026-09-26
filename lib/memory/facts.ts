@@ -255,12 +255,22 @@ export async function reconcileFactDetailed(
   const norm = (v: string | null) => (v ?? '').trim().toLowerCase()
   const sameMoment = (a: Date | null | undefined, b: Date | null | undefined) => !!a && !!b && Math.abs(new Date(a).getTime() - new Date(b).getTime()) < 60_000
   const incomingEvent = input.eventAt ?? null
-  // Something that is ALREADY OVER when it is said ("Zuzka stayed in the cave last weekend") is history:
-  // it is recorded, but it never supersedes (or re-dates) whatever is live now — a past visit must not
-  // close an upcoming one.
+  // Something that is ALREADY OVER when it is said is dated in the past. What that means depends on the
+  // live incumbent:
+  //   • none, or a live DATED one (an upcoming / ongoing occurrence) — history: it is recorded, but it
+  //     never supersedes (or re-dates) whatever is live now. "Zuzka stayed in the cave last weekend" must
+  //     not close her upcoming visit, nor report her as staying now.
+  //   • a live UNDATED one with a different value — a CHANGE OF STATE that happened then: "the plumber
+  //     fixed the sink yesterday" over "the sink is broken", "I moved into the blue room on Monday" over
+  //     the old room. It supersedes (trust-gated, below) and the new row stays live — event_at records
+  //     when it changed, valid_to stays NULL (it holds until something supersedes it). Filing it as
+  //     expired history left the old value grounding every answer while the ack said the new one.
   const incomingOver = newValues.validTo != null && newValues.validTo.getTime() <= now.getTime()
+  const sameAsLive = !!existing && !isSecure && !existing.isSecure && norm(existing.objectValue) === norm(objectValue)
+  const stateChange = incomingOver && !!existing && !existing.eventAt && !sameAsLive
+  if (stateChange) newValues.validTo = null
 
-  if (!existing || incomingOver) {
+  if (!existing || (incomingOver && !stateChange)) {
     // A restatement of an occurrence that is already over and already on record ("Zuzka stayed in
     // Charli's room last weekend", said after the fact) is not new — same value AND same moment.
     if (incomingEvent && !isSecure) {

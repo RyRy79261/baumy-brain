@@ -9,7 +9,7 @@ import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { purgeWindow } from '@/lib/turn/window'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
-import { and, asc, eq, gt, lte, ne } from 'drizzle-orm'
+import { and, asc, eq, gt, lte, ne, notInArray } from 'drizzle-orm'
 import { houseConfig, reminders } from '@/db/schema'
 import { withSimulatedTime } from '@/lib/core/clock'
 import { captureOutbound, type OutboundMessage } from '@/lib/telegram/outbox'
@@ -305,6 +305,9 @@ export async function advanceTo(sb: Sandbox, to: Date): Promise<AdvanceResult> {
   // Explicit reminders fire at THEIR OWN instant — production's armed sleepUntil path (reminderDeliver),
   // with the digest as the backstop. Delivered one at a time in fire order, each before any cron due at
   // the same minute; a recurring occurrence's successor (created on delivery) is picked up in turn.
+  // A reminder held by /pause stays 'scheduled' (production leaves it for the digest after /resume) —
+  // skipped for the rest of this advance so the loop cannot spin on it.
+  const held = new Set<string>()
   const deliverExplicitUntil = async (limit: Date) => {
     for (;;) {
       const [next] = await sb.db
@@ -317,13 +320,20 @@ export async function advanceTo(sb: Sandbox, to: Date): Promise<AdvanceResult> {
             ne(reminders.anchorKind, 'event_offset'),
             gt(reminders.fireAt, from),
             lte(reminders.fireAt, limit),
+            held.size ? notInArray(reminders.id, [...held]) : undefined,
           ),
         )
         .orderBy(asc(reminders.fireAt))
         .limit(1)
       if (!next) return
       const at = new Date(next.fireAt)
-      const { sent } = await captureOutbound(async () => withSimulatedTime(at, () => deliverReminderNow(sb.db, next.id, at, sb.tz)))
+      let status = ''
+      const { sent } = await captureOutbound(async () =>
+        withSimulatedTime(at, async () => {
+          status = (await deliverReminderNow(sb.db, next.id, at, sb.tz)).status
+        }),
+      )
+      if (status === 'paused') held.add(next.id)
       const said = sent.map((m) => ({ ...m, cause: 'reminder' }))
       sb.transcript.push(...said)
       fired.push({ job: 'reminder', at, said })

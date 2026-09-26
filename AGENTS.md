@@ -129,9 +129,13 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   `baumy_messages`, spec `chat-understanding-v2.md` §5/D1 — this replaced the old "never persist the
   message body" rule). **A secret is never persisted**: text is redacted with `scanSensitivity`
   BEFORE insert (a secure message is kept only as its descriptor, whole — never span-edited), a
-  reply that disclosed a decrypted secret is windowed as a placeholder (`grounding.disclosed`), a
-  forget request / forget card is withheld, and a confirmed purge scrubs the value from the window
-  too. **Nothing outlives 48h** (hourly `windowPurge` cron; every read also filters by 48h, clock
+  reply that disclosed a decrypted secret is windowed as a placeholder (`grounding.disclosed`); a
+  message whose EXTRACTED fact scans secure on its triple ("wifi is hunter2 now" — the sentence does
+  not scan) is withheld after capture (`captured.secure`), and so are Baumy's words for that turn; a
+  forget-looking request (the classifier's `intent`, whatever the decision) and the forget card are
+  withheld; and a confirmed forget — **soft or purge** — withholds the rows that produced the
+  forgotten facts/notes (`withholdProducing`) and scrubs the value from every other row. A member's
+  display name is flattened and can never read as Baumy's own turn (`memberLabel`). **Nothing outlives 48h** (hourly `windowPurge` cron; every read also filters by 48h, clock
   seam `now()`). The ledger (`baumy_telegram_updates.raw`) still never holds the body. Appended:
   every in-scope inbound message after lane resolution (never the `ignore` lane, never another bot's
   post; a member-forwarded message is labelled `forwarded`, attributed to the forwarder only as
@@ -214,6 +218,11 @@ crown jewels. The pipeline:
   heads-up — an event that is over is history (the entity timeline shows it "(past, date)"), never
   "current". Pass `now` from the clock seam, never Postgres `now()`. The same triple with a new date
   is a new occurrence (expired incumbent) or a reschedule (live one) — never a noop that drops the date.
+  Something already over when said is history if the live incumbent is itself dated (a past visit
+  never closes an upcoming one), but a past-dated CHANGE of an undated state ("fixed yesterday" over
+  "broken") supersedes it, trust-gated, and stays live (`event_at` = when, `valid_to` NULL). A model
+  `when` with a date-only start is all-day whatever its flag. Legacy dated rows (pre-time-model,
+  `valid_to` NULL) were closed by migration 0020.
   All time reads in `lib/**` go through `lib/core/clock.ts` `now()` (auth excepted, on purpose).
 - **Graph traversal** (`graph.ts`, `docs/spec/fact-graph-traversal.md`): the facts form a property
   graph (relationship edges = a fact row with `object_entity_id` set). `connectedEdges` walks it
@@ -267,7 +276,10 @@ crown jewels. The pipeline:
 - LLM and Telegram calls are **mocked**; the deterministic `embedSync` stand-in is the test
   embedder so recall tests stay offline + repeatable.
 - Keep the suite **offline and deterministic** (vitest timeouts + worker caps are set for the
-  growing PGlite suite — don't remove them).
+  growing PGlite suite — don't remove them). **Deterministic includes the calendar**: a test that
+  stores a dated fact / reminder must read it at a pinned instant (`withSimulatedTime`), never on the
+  wall clock. `pnpm test:time-shift` (optionally `TIME_SHIFT_TO=<iso>`) runs the suite with `Date`
+  moved forward — run it whenever a change touches what "current" / "due" / "stale" means.
 - Add a test for every security-relevant change (the poisoning/authz/exactly-once paths).
 - **Scenarios** (`scenarios/`, `docs/spec/chat-understanding-v2.md` §9): declarative multi-turn house
   conversations through the REAL pipeline (sandbox harness), with a scripted model injected via the
@@ -305,6 +317,10 @@ crown jewels. The pipeline:
   the group as if it were today's news (`docs/spec/reminders.md` §Staleness). A reminder time that is
   already past at creation is never written (it would fire instantly) — it is a clarifying question.
   A personal ("remind me") reminder is prefixed with the AUTHENTICATED sender's first name (A4).
+  **`/pause` holds delivery on both paths** (the digest, and `deliverReminderNow` for the armed
+  sleepUntil path): the row stays scheduled, nothing posts, and a recurring series does not grow —
+  after `/resume` the digest delivers it inside the grace window or retires it and continues the
+  series. A heads-up model error never holds back an explicit line in the same digest.
 - Proactive event heads-ups (`docs/spec/event-surfacing.md`): the **line is written by the model**
   (`lib/ai/nudge.ts`), never templated from `{subject, predicate}` columns — that printed row
   fragments ("Heads-up — Mad profile, today") into the house group. Code still picks what is eligible
@@ -313,7 +329,8 @@ crown jewels. The pipeline:
   before, 20:00 the evening before, 08:00 on the day; the scan runs at 07:45), and the line is
   **re-written at DELIVERY** from the event's facts as they are then, with the lead measured from the
   delivery instant (`headsUpAtDelivery` — one line per event per digest; an event that moved, ended or
-  started is dropped). Dates on stored facts are read with `parseEventWindow`/`parseEventDate` (the
+  started is dropped). The scan de-dupes per (event, stage) — `nudgeStageOf`, nearest slot — never per
+  exact minute (a row at a pre-slot offset would otherwise get a twin). Dates on stored facts are read with `parseEventWindow`/`parseEventDate` (the
   capture resolver + precision guards: coverage + known-day, a past marker read literally), never a
   bare chrono call over arbitrary values.
 

@@ -603,6 +603,30 @@ describe('the conversation window (phase 2, spec §5 — C5)', () => {
     expect(r.textRedacted).not.toContain('0176')
   })
 
+  it('a forget-looking message is withheld even when no forget is proposed (low confidence, undirected)', async () => {
+    // Below the forget threshold decide() falls through — no card — but the text still names the value.
+    classifyMock.mockResolvedValue(V({ intent: 'forget', confidence: 0.3 }))
+    const res = await run(ev({ text: 'forget my number 0176 5550123' }))
+    expect(res.decision).not.toBe('forget')
+    expect(sendConfirmCard).not.toHaveBeenCalled()
+    const [r] = await windowRows()
+    expect(r.textRedacted).toBe('[asked Baumy to forget something — withheld]')
+  })
+
+  it('a secret caught only by the fact layer (the triple scans, the sentence does not) is withheld — the message AND the ack', async () => {
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
+    extractFactsMock.mockResolvedValue({ facts: [{ subject: 'wifi', subjectKind: 'thing', predicate: 'has_password', object: 'hunter2', objectKind: 'value', whenText: '' }] })
+    answerMock.mockResolvedValue({ text: 'Noted — wifi is hunter2', answered: true, usedTier: 'reply' })
+    await run(ev({ text: '@baumy_bot wifi is hunter2 now' }))
+    const [inbound] = await windowRows()
+    expect(inbound.textRedacted).toBe('[a message containing the wifi password — withheld]')
+    expect(lastAnswer().ctx.outcome.captured?.secure).toBe('the wifi password')
+    // Baumy's words are windowed at the send seam — the executor hands it the placeholder.
+    const sent = sendToHouse.mock.calls.at(-1)!
+    expect(sent[1]).toBe('Noted — wifi is hunter2')
+    expect((sent[2] as { windowText?: string }).windowText).toBe("[Baumy's reply about the wifi password — withheld]")
+  })
+
   it('records what the message produced (the edit map, I1) — its evidence note and facts', async () => {
     classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
     extractFactsMock.mockResolvedValue({ facts: [{ subject: 'boiler', subjectKind: 'thing', predicate: 'serviced_on', object: 'tuesday', objectKind: 'value', whenText: '' }] })

@@ -72,14 +72,21 @@ export const reminderArm = inngest.createFunction(
 // next" is an idempotent insert keyed on previous_reminder_id, and a crash right before it is healed by
 // the digest's repairRecurringSeries. The staleness window applies here too: a run that wakes more than
 // STALE_AFTER_HOURS late retires the reminder instead of posting old news (and keeps its series going).
+//
+// /pause holds it (AGENTS.md: "house + reminders still honor it"): while the owner has paused Baumy
+// nothing posts, and — since a recurring series only grows on a send — an open-ended "every day" series
+// set by one message does not keep running through the kill switch. The row is left SCHEDULED, exactly
+// as the paused digest leaves its rows: after /resume the digest delivers it if it is still inside the
+// grace window, or retires it and schedules the series' next occurrence (expireStaleScheduled).
 export async function deliverReminderNow(
   db: ReturnType<typeof createHttpDb>,
   reminderId: string,
   at: Date,
   tz: string,
-): Promise<{ status: 'sent' | 'skipped' | 'expired'; nextId?: string | null }> {
+): Promise<{ status: 'sent' | 'skipped' | 'expired' | 'paused'; nextId?: string | null }> {
   const row = await loadSeriesRow(db, reminderId)
   if (!row) return { status: 'skipped' }
+  if (!(await loadResponsePolicy(db)).global_enabled) return { status: 'paused' }
   if (new Date(row.fireAt).getTime() < staleBefore(at).getTime()) {
     await expireStaleScheduled(db, staleBefore(at), { now: at, tz })
     return { status: 'expired' }
@@ -174,17 +181,18 @@ export async function deliverDueReminders(
     if (claimed.length === 0) continue
     // Event heads-ups are WRITTEN NOW, for this delivery instant (T11): the lead is the real one, a
     // moved/ended/forgotten event is dropped, and one event never posts two stages in one digest (the
-    // latest-scheduled stage wins; the others are retired with it). A transient model error releases
-    // the whole batch so the next slot retries.
+    // latest-scheduled stage wins; the others are retired with it). Explicit reminders need no model:
+    // a transient model error releases ONLY the heads-ups (the next slot / step retry writes them) and
+    // the explicit lines still go out in this digest — a model outage never holds back "⏰ call the
+    // landlord". The error is rethrown once the explicit ones are sent + marked, so Inngest retries.
     const lines = new Map<string, string>() // reminder id → posted text
+    for (const r of claimed) if (r.anchorKind !== 'event_offset') lines.set(r.id, r.content)
+    const headsUps = claimed.filter((r) => r.anchorKind === 'event_offset').sort((a, b) => new Date(b.fireAt).getTime() - new Date(a.fireAt).getTime())
     const dropped: string[] = []
+    let headsUpError: unknown = null
     try {
       const events = new Map<string, DueRow>()
-      for (const r of [...claimed].sort((a, b) => new Date(b.fireAt).getTime() - new Date(a.fireAt).getTime())) {
-        if (r.anchorKind !== 'event_offset') {
-          lines.set(r.id, r.content)
-          continue
-        }
+      for (const r of headsUps) {
         const h = await headsUpAtDelivery(db, r.eventFactId ?? null, now, tz)
         if (h.line === null || (h.key && events.has(h.key))) {
           if (h.line === null) console.warn(`reminder-digest: heads-up ${r.id} dropped at delivery (${h.reason})`)
@@ -195,12 +203,19 @@ export async function deliverDueReminders(
         lines.set(r.id, h.line)
       }
     } catch (e) {
-      for (const r of claimed) await releaseReminder(db, r.id)
-      throw e
+      headsUpError = e
+      for (const r of headsUps) {
+        lines.delete(r.id)
+        await releaseReminder(db, r.id)
+      }
+      dropped.length = 0
     }
     for (const id of dropped) await cancelReminder(db, id)
     const toSend = claimed.filter((r) => lines.has(r.id)).sort((a, b) => new Date(a.fireAt).getTime() - new Date(b.fireAt).getTime())
-    if (toSend.length === 0) continue
+    if (toSend.length === 0) {
+      if (headsUpError) throw headsUpError
+      continue
+    }
     const body = toSend.map((r) => reminderBody(r.anchorKind, lines.get(r.id)!)).join('\n')
     try {
       await sendToHouseResilient(db, body)
@@ -219,6 +234,7 @@ export async function deliverDueReminders(
     }
     sent += toSend.length
     messages += 1
+    if (headsUpError) throw headsUpError
   }
   return { sent, messages, expired }
 }

@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { and, eq } from 'drizzle-orm'
 import { startPgHarness, dockerAvailable, type PgHarness } from './pg-harness'
 import { entities } from '@/db/schema'
@@ -7,7 +9,7 @@ import { retrieve } from '@/lib/memory/retrieve'
 import { reconcileFact, currentFactsForQuery, upcomingDatedFacts, eventGroupFacts } from '@/lib/memory/facts'
 import { resolveSeedEntities, connectedEdges, gatherGraphContext } from '@/lib/memory/graph'
 import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/forget'
-import { appendInbound, recentTurns, scrubWindow, purgeWindow } from '@/lib/turn/window'
+import { appendInbound, recentTurns, scrubWindow, purgeWindow, linkProduced, withholdProducing } from '@/lib/turn/window'
 import { createReminder, claimReminder, markSent, releaseReminder, scheduleNextOccurrence, loadSeriesRow, repairRecurringSeries, orphanedEventReminders } from '@/lib/reminders/store'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
@@ -316,11 +318,15 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect(secret.rows[0].n).toBe(0)
     expect(await scrubWindow(h.db, GROUP, ['0176 5550123'], redactValues)).toBe(1)
     expect(await purgeWindow(h.db, t0)).toBe(1)
+    // A forget (soft or purge) withholds the row that PRODUCED a forgotten fact (jsonb membership).
+    const fid = '00000000-0000-0000-0000-0000000000e2'
+    await linkProduced(h.db, { chatId: GROUP, messageId: 3 }, { factIds: [fid] })
+    expect(await withholdProducing(h.db, GROUP, { factIds: [fid], memoryItemIds: [] }, '[forgotten]')).toBe(1)
     const left = await h.pool.query('SELECT text_redacted FROM baumy_messages WHERE group_id = $1 ORDER BY seq', [GROUP])
     expect(left.rows.map((r: { text_redacted: string }) => r.text_redacted)).toEqual([
       '[a message containing the wifi password — withheld]',
       'call Robert on [redacted] tonight',
-      'in the topic',
+      '[forgotten]',
     ])
   })
 
@@ -361,5 +367,29 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect(await repairRecurringSeries(h.db, new Date('2026-10-03T06:00:00Z'), 'Europe/Berlin')).toBe(0)
     const series = await h.pool.query('SELECT fire_at FROM baumy_reminders WHERE previous_reminder_id = $1', [id])
     expect(series.rows.map((x: { fire_at: Date }) => x.fire_at.toISOString())).toEqual(['2026-10-09T18:00:00.000Z'])
+  })
+
+  it('migration 0020: a LEGACY live dated fact (event_at set, valid_to NULL) is closed and stops being current (T2)', async () => {
+    const G = '-100e2e-legacy'
+    await ensureRegistered(h.db, G, null)
+    const stay = { subject: 'zuzka', subjectKind: 'person' as const, predicate: 'staying_in', object: "charli's room", objectKind: 'place' as const }
+    const party = { subject: 'marco', subjectKind: 'person' as const, predicate: 'hosts_party', object: 'Sat 14 Mar 21:00' }
+    const march = new Date('2026-03-10T10:00:00Z')
+    await withSimulatedTime(march, () => reconcileFact(h.db, { groupId: G, fact: stay, authoredBy: null, trustLevel: 'untrusted', eventAt: new Date('2026-03-13T23:00:00Z') }))
+    await withSimulatedTime(march, () => reconcileFact(h.db, { groupId: G, fact: party, authoredBy: null, trustLevel: 'untrusted', eventAt: new Date('2026-03-14T20:00:00Z') }))
+    // The pre-time-model shape: dated, but valid_to only ever written on close.
+    await h.pool.query('UPDATE baumy_facts SET valid_to = NULL WHERE group_id = $1', [G])
+    const sept = new Date('2026-09-26T10:00:00Z')
+    expect(await withSimulatedTime(sept, () => currentFactsForQuery(h.db, G, 'zuzka staying'))).toHaveLength(1) // the bug
+
+    await h.pool.query(readFileSync(join(process.cwd(), 'db/migrations/0020_close_legacy_dated_facts.sql'), 'utf8'))
+    const rows = await h.pool.query('SELECT predicate, valid_to FROM baumy_facts WHERE group_id = $1 ORDER BY predicate', [G])
+    expect(rows.rows.map((r: { predicate: string; valid_to: Date }) => [r.predicate, r.valid_to.toISOString()])).toEqual([
+      ['hosts_party', '2026-03-15T02:00:00.000Z'], // timed: start + 6h
+      ['staying_in', '2026-03-14T22:59:59.999Z'], // all-day (local midnight start): the end of that Berlin day
+    ])
+    expect(await withSimulatedTime(sept, () => currentFactsForQuery(h.db, G, 'zuzka staying'))).toHaveLength(0)
+    // During the stay it was (and still would be) current.
+    expect(await withSimulatedTime(new Date('2026-03-14T12:00:00Z'), () => currentFactsForQuery(h.db, G, 'zuzka staying'))).toHaveLength(1)
   })
 })

@@ -22,6 +22,10 @@ const { memoryItems } = await import('@/db/schema')
 const { encryptSecret } = await import('@/lib/core/crypto')
 
 const G = '-100ground'
+// Every read of a DATED fact runs at a pinned instant (the question's own time): "current" is judged
+// against the clock (liveFact), so a read on the wall clock would expire the Sun 27 Sep event below
+// the day after the suite was written — a time bomb, not a test.
+const ASKED = new Date('2026-09-26T19:40:00Z')
 const CHARLI = '701'
 const MARCO = '702'
 type Db = Awaited<ReturnType<typeof makeTestDb>>
@@ -40,7 +44,7 @@ const ctxFor = (text: string, authorId = MARCO) =>
     anonymous: false,
     authorId,
     trust: 'untrusted',
-    sentAt: new Date('2026-09-26T19:40:00Z'),
+    sentAt: ASKED,
     tz: 'Europe/Berlin',
     threadId: null,
     isConsole: false,
@@ -74,11 +78,11 @@ describe('reconcileFactDetailed / exclusion seams', () => {
     const r = await withSimulatedTime(at, () =>
       reconcileFactDetailed(db, { groupId: G, fact: { subject: 'zuzka', predicate: 'stays_in', object: "charli's room" }, authoredBy: CHARLI, trustLevel: 'untrusted', eventAt: new Date('2026-09-27T08:00:00Z') }),
     )
-    const [hit] = await currentFactsForQuery(db, G, 'is zuzka here')
+    const [hit] = await withSimulatedTime(ASKED, () => currentFactsForQuery(db, G, 'is zuzka here'))
     expect(hit.id).toBe(r.factId)
     expect(hit.recordedAt?.toISOString()).toBe(at.toISOString())
     expect(hit.eventAt?.toISOString()).toBe('2026-09-27T08:00:00.000Z')
-    expect(await currentFactsForQuery(db, G, 'is zuzka here', 5, [r.factId!])).toEqual([])
+    expect(await withSimulatedTime(ASKED, () => currentFactsForQuery(db, G, 'is zuzka here', 5, [r.factId!]))).toEqual([])
   })
 
   it('retrieve leaves out excluded memory ids', async () => {
@@ -114,8 +118,10 @@ describe('gatherGrounding — the MEMORY block', () => {
   })
 
   it('without a capture this turn, the same fact DOES ground a later question — dated and attributed', async () => {
-    await reconcileFactDetailed(db, { groupId: G, fact: { subject: 'zuzka', predicate: 'stays_in', object: "charli's room" }, authoredBy: CHARLI, trustLevel: 'untrusted', eventAt: new Date('2026-09-27T08:00:00Z') })
-    const g = await gatherGrounding(db, ctxFor('where is zuzka staying?'), { deep: false, mode: 'answer' })
+    await withSimulatedTime(new Date('2026-09-20T10:00:00Z'), () =>
+      reconcileFactDetailed(db, { groupId: G, fact: { subject: 'zuzka', predicate: 'stays_in', object: "charli's room" }, authoredBy: CHARLI, trustLevel: 'untrusted', eventAt: new Date('2026-09-27T08:00:00Z') }),
+    )
+    const g = await withSimulatedTime(ASKED, () => gatherGrounding(db, ctxFor('where is zuzka staying?'), { deep: false, mode: 'answer' }))
     const fact = g.items.find((i) => i.kind === 'fact')!
     expect(fact).toMatchObject({ who: 'Charli', content: "zuzka stays in: charli's room" })
     expect(fact.saidAt).toBeInstanceOf(Date)

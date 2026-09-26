@@ -338,6 +338,24 @@ describe('the time model — expiry and new occurrences', () => {
     expect((await rowsOf(db)).every((f) => f.isCurrent)).toBe(true)
   })
 
+  it('a past-dated CHANGE of an undated state supersedes it and stays live ("fixed yesterday" over "broken")', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await withSimulatedTime(new Date('2026-09-20T10:00:00Z'), () => reconcileFact(db, { groupId: GROUP, fact: F('kitchen sink', 'status', 'broken'), authoredBy: null, trustLevel: 'untrusted' }))
+    const at = new Date('2026-09-26T10:00:00Z')
+    const yesterday = { eventAt: new Date('2026-09-24T22:00:00Z'), validTo: new Date('2026-09-25T21:59:59.999Z') } // Fri 25 Sep, all day
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: F('kitchen sink', 'status', 'fixed'), authoredBy: null, trustLevel: 'untrusted', ...yesterday }))).toBe('update')
+    const hits = await withSimulatedTime(at, () => currentFactsForQuery(db, GROUP, 'is the kitchen sink fixed'))
+    expect(hits.map((h) => h.content)).toEqual([expect.stringContaining('fixed')])
+    const live = (await rowsOf(db)).filter((f) => f.isCurrent)
+    expect(live).toHaveLength(1)
+    expect(live[0]).toMatchObject({ objectValue: 'fixed', validTo: null }) // holds until superseded …
+    expect(live[0].eventAt?.toISOString()).toBe(yesterday.eventAt.toISOString()) // … and keeps WHEN it changed
+    // Still trust-gated: a lower-trust past-dated change cannot overwrite a trusted state.
+    await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: F('boiler', 'status', 'working'), authoredBy: null, trustLevel: 'trusted' }))
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: F('boiler', 'status', 'broken'), authoredBy: null, trustLevel: 'untrusted', ...yesterday }))).toBe('rejected')
+  })
+
   it('a dated fact given no end still expires (the timed default: start + 6h)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)

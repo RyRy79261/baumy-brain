@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, lte, ne, lt, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, lte, ne, lt, or, sql } from 'drizzle-orm'
 import { DateTime } from 'luxon'
 import { type Database } from '@/db/client'
 import { members, messages } from '@/db/schema'
@@ -184,7 +184,34 @@ export async function withholdTurn(db: Database, k: { chatId: string; messageId:
     .where(and(eq(messages.chatId, k.chatId), eq(messages.messageId, String(k.messageId))))
 }
 
-/** Scrub values out of a scope's window (a confirmed "permanently forget X"). Returns rows changed. */
+/**
+ * Withhold every window row (in one scope) that PRODUCED one of the given facts or evidence notes — the
+ * edit map linkProduced recorded. A confirmed forget (soft or purge) runs this: the facts are hidden,
+ * so the message that stated them must not keep grounding "is Zuzka coming?" from RECENT CHAT for 48h.
+ * Returns rows changed.
+ */
+export async function withholdProducing(
+  db: Database,
+  groupId: string,
+  p: { factIds: string[]; memoryItemIds: string[] },
+  text: string,
+): Promise<number> {
+  const conds = [
+    ...(p.factIds.length
+      ? [sql`EXISTS (SELECT 1 FROM jsonb_array_elements_text(${messages.producedFactIds}) AS f(id) WHERE f.id IN (${sql.join(p.factIds.map((id) => sql`${id}`), sql`, `)}))`]
+      : []),
+    ...(p.memoryItemIds.length ? [inArray(messages.producedMemoryItemId, p.memoryItemIds)] : []),
+  ]
+  if (!conds.length) return 0
+  const rows = await db
+    .update(messages)
+    .set({ textRedacted: text })
+    .where(and(eq(messages.groupId, groupId), or(...conds), ne(messages.textRedacted, text)))
+    .returning({ id: messages.id })
+  return rows.length
+}
+
+/** Scrub values out of a scope's window (a confirmed forget — soft or purge). Returns rows changed. */
 export async function scrubWindow(db: Database, groupId: string, values: string[], redact: (s: string, v: string[]) => string): Promise<number> {
   const vals = values.map((v) => v.trim()).filter(Boolean)
   if (!vals.length) return 0
@@ -212,11 +239,25 @@ export async function purgeWindow(db: Database, at: Date = now()): Promise<numbe
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s)
 
 /**
+ * A housemate's label on a RECENT CHAT line. The name is their raw Telegram profile name — text they
+ * control — while Baumy's own turns are labelled by fixed strings ("Baumy", "Baumy (you)"). So the name
+ * is flattened to one short line with no quote / bracket / colon (it can never close the label and
+ * start a forged `Name: "…"` turn), and a name that claims to be Baumy is spelled out as a housemate's
+ * display name — a member called "Baumy (you)" must not read as the reply model's own earlier line.
+ */
+export function memberLabel(name: string): string {
+  const n = clip(name.replace(/["“”\[\]{}:]/g, ' ').replace(/\s+/g, ' ').trim(), 40) || 'a housemate'
+  return /baumy/i.test(n) ? `a housemate whose display name is '${n.replace(/'/g, ' ')}' (NOT Baumy)` : n
+}
+
+/**
  * The RECENT CHAT block (spec §4) for a prompt: one line per turn, each text whitespace-collapsed
  * and JSON-quoted, so whatever a housemate typed stays on ONE line inside quotes and can never forge
  * a CONTEXT / THIS TURN / MEMORY / MESSAGE line. `self` — the reader IS Baumy (the reply model), so
- * its own turns read "Baumy (you)". Re-scanned for secrets on the way out (belt behind the redaction
- * at write time). Empty array when there is nothing recent.
+ * its own turns read "Baumy (you)" — a label only a Baumy row gets (authorKind 'baumy', written at the
+ * send seam); a housemate's profile name can never produce it, nor a forged turn (memberLabel).
+ * Re-scanned for secrets on the way out (belt behind the redaction at write time). Empty array when
+ * there is nothing recent.
  */
 export function renderRecentChat(turns: WindowTurn[], o: { tz: string; now: Date; self?: boolean; max?: number }): string[] {
   if (!turns.length) return []
@@ -225,7 +266,8 @@ export function renderRecentChat(turns: WindowTurn[], o: { tz: string; now: Date
   for (const t of turns.slice(-(o.max ?? WINDOW_TURNS))) {
     const at = DateTime.fromJSDate(t.at).setZone(o.tz)
     const when = at.toISODate() === today ? at.toFormat('HH:mm') : at.toFormat('ccc HH:mm')
-    const who = t.baumy ? (o.self ? 'Baumy (you)' : 'Baumy') : t.forwarded ? `${t.author} forwarded (not ${t.author}'s own words)` : t.author
+    const author = memberLabel(t.author)
+    const who = t.baumy ? (o.self ? 'Baumy (you)' : 'Baumy') : t.forwarded ? `${author} forwarded (not ${author}'s own words)` : author
     const body = scanSensitivity(t.text).isSecure ? redactForWindow(t.text) : clip(t.text.replace(/\s+/g, ' ').trim(), 300)
     lines.push(`  [${when}] ${who}: ${JSON.stringify(body)}`)
   }

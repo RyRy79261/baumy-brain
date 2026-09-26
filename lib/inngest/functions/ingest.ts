@@ -215,8 +215,10 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   ctx.verdict = verdict
   const decision = decide(origin, verdict, directed.value)
   // A forget request is never captured (storing "delete X" re-adds X) — nor kept verbatim in the
-  // conversation window: only that something was asked to be forgotten.
-  if (decision === 'forget' && houseScope && !botContent) {
+  // conversation window: only that something was asked to be forgotten. Keyed on the classifier's
+  // INTENT, not the decision: a forget-looking message below the confidence bar (or in a lane that may
+  // not propose one) is still "forget my number 0176…" and must not be quoted back for 48h.
+  if (verdict.intent === 'forget' && houseScope && !botContent) {
     await step.run('window-withhold', () => withholdTurn(createHttpDb(), { chatId, messageId }, '[asked Baumy to forget something — withheld]'))
   }
 
@@ -232,6 +234,13 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // re-adds X), never a question that mentions a secret (I9).
   if (shouldCapture(origin, verdict) && decision !== 'forget' && !isSecretQuestion(text, verdict.intent)) {
     ctx.outcome.captured = await runCapture(step, ctx)
+    // The window-append redacted on the raw text; the fact layer scans the extracted TRIPLE, which
+    // catches more ("wifi is hunter2 now" → wifi · has_password · hunter2 is secure, the sentence is
+    // not). A secret the turn has detected is never persisted (spec §5): keep only its descriptor.
+    const secure = ctx.outcome.captured.secure
+    if (secure && houseScope && !botContent) {
+      await step.run('window-withhold-secret', () => withholdTurn(createHttpDb(), { chatId, messageId }, `[a message containing ${secure} — withheld]`))
+    }
   }
 
   // Actions → ctx.outcome. Each auto-commits (list, reminder) or only proposes (forget).

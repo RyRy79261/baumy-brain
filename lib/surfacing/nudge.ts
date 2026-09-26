@@ -27,18 +27,36 @@ export const isAllDayStart = (eventAt: Date, tz: string): boolean => {
   return d.hour === 0 && d.minute === 0
 }
 
-export function computeNudgeStages(eventAt: Date, now: Date, tz = 'Europe/Berlin'): { stage: NudgeStage; fireAt: Date }[] {
+const stageSlots = (eventAt: Date, tz: string): { stage: NudgeStage; fireAt: DateTime }[] => {
   const evDay = DateTime.fromJSDate(eventAt).setZone(tz).startOf('day')
-  const candidates: { stage: NudgeStage; fireAt: DateTime }[] = [
+  return [
     { stage: 'week', fireAt: evDay.minus({ days: 7 }).set({ hour: DIGEST_MORNING_HOUR }) },
     { stage: 'day', fireAt: evDay.minus({ days: 1 }).set({ hour: DIGEST_EVENING_HOUR }) },
     { stage: 'morning', fireAt: evDay.set({ hour: DIGEST_MORNING_HOUR }) },
   ]
+}
+
+export function computeNudgeStages(eventAt: Date, now: Date, tz = 'Europe/Berlin'): { stage: NudgeStage; fireAt: Date }[] {
+  const evDay = DateTime.fromJSDate(eventAt).setZone(tz).startOf('day')
+  const candidates = stageSlots(eventAt, tz)
   const nowMs = now.getTime()
   const cutoff = isAllDayStart(eventAt, tz) ? evDay.endOf('day').toMillis() : eventAt.getTime()
   return candidates
     .filter((c) => c.fireAt.toMillis() > nowMs && c.fireAt.toMillis() < cutoff)
     .map((c) => ({ stage: c.stage, fireAt: c.fireAt.toJSDate() }))
+}
+
+// Which stage an EXISTING heads-up row is — the slot nearest its fire time. The scan de-dupes per
+// (event, stage) with this, not per exact minute: a row scheduled under the old offsets (event − 7d at
+// the event's own clock time, event − 24h) sits hours off the new digest slots, and a minute match
+// would add a second stage row beside it — two "next week" lines on one day, in different digests.
+// Nearest-slot maps an old −7d to 'week' and an old −24h to 'day' (always ≤ 20h from the evening
+// slot, ≥ 4h further from the morning one); a slot-pinned row maps to itself.
+export function nudgeStageOf(fireAt: Date, eventAt: Date, tz = 'Europe/Berlin'): NudgeStage {
+  const t = fireAt.getTime()
+  let best = stageSlots(eventAt, tz)[0]
+  for (const c of stageSlots(eventAt, tz)) if (Math.abs(c.fireAt.toMillis() - t) < Math.abs(best.fireAt.toMillis() - t)) best = c
+  return best.stage
 }
 
 // How far off the event is FROM THE MOMENT THE LINE IS POSTED, in calendar days of the house tz — never

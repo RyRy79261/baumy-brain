@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeNudgeStages, groupEvents, leadAt, leadFor, whenLabel } from '@/lib/surfacing/nudge'
+import { computeNudgeStages, groupEvents, leadAt, leadFor, nudgeStageOf, whenLabel } from '@/lib/surfacing/nudge'
 import { sanitiseHeadsUp } from '@/lib/ai/nudge'
 
 const tz = 'Europe/Berlin'
@@ -47,6 +47,18 @@ describe('computeNudgeStages — lead-time policy, pinned to digest slots (T11)'
     const now = new Date('2026-07-10T09:00:00Z')
     const event = new Date('2026-07-05T09:00:00Z')
     expect(computeNudgeStages(event, now, tz)).toEqual([])
+  })
+})
+
+describe('nudgeStageOf — which stage an existing row is (the scan de-dupes per event × stage)', () => {
+  it('a slot-pinned row is its own stage; a pre-slot offset (ev − 7d, ev − 24h) maps to week / day', () => {
+    const ev = new Date('2026-10-08T08:00:00Z') // Thu 8 Oct 10:00
+    for (const s of computeNudgeStages(ev, new Date('2026-09-30T00:00:00Z'), tz)) expect(nudgeStageOf(s.fireAt, ev, tz)).toBe(s.stage)
+    expect(nudgeStageOf(new Date(ev.getTime() - 7 * 86_400_000), ev, tz)).toBe('week')
+    expect(nudgeStageOf(new Date(ev.getTime() - 86_400_000), ev, tz)).toBe('day')
+    // Even for a late-night event the old ev − 24h (Wed 23:30) is the evening slot, not the morning one.
+    const late = new Date('2026-10-08T21:30:00Z') // Thu 23:30
+    expect(nudgeStageOf(new Date(late.getTime() - 86_400_000), late, tz)).toBe('day')
   })
 })
 

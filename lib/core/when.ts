@@ -302,13 +302,16 @@ export interface EventWindow {
  * A fact's `when {start, end?, allDay}` as the extractor returned it → event_at + valid_to (spec §6):
  * valid_to = end ?? (allDay ? end of that day : start + 6h). Null when the start is unparseable or more
  * than MAX_YEARS_OUT away. An end before the start is a misread and is dropped (the default applies).
+ * A start with no time part is all-day WHATEVER the (optional) flag says — mirroring fireAtFromModel.
+ * Read as a timed event at local midnight it would expire at 06:00 on the day itself: "when does Zuzka
+ * arrive?" asked that morning would find nothing, and the morning-of heads-up would be dropped.
  */
 export function eventWindowFromModel(when: { start: string; end?: string | null; allDay?: boolean } | null | undefined, tz: string, now: Date): EventWindow | null {
   if (!when) return null
   const nowDt = DateTime.fromJSDate(now).setZone(tz)
   const startRaw = parseLocalIso(when.start, tz)
   if (!startRaw || !withinRange(startRaw, nowDt)) return null
-  const allDay = when.allDay === true
+  const allDay = when.allDay === true || !/T\d/.test(when.start)
   const start = allDay ? startRaw.startOf('day') : startRaw
   const endRaw = parseLocalIso(when.end ?? null, tz)
   let end: DateTime | null = endRaw ? (allDay || !/T/.test(when.end ?? '') ? endRaw.endOf('day') : endRaw) : null

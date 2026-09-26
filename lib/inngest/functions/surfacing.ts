@@ -7,7 +7,7 @@ import { houseTz } from '@/lib/env'
 import { upcomingDatedFacts, eventGroupFacts, type DatedFact } from '@/lib/memory/facts'
 import { memberDisplayNames } from '@/lib/identity/roster'
 import { createReminder, remindersForEventFacts } from '@/lib/reminders/store'
-import { computeNudgeStages, groupEvents, leadAt, whenLabel } from '@/lib/surfacing/nudge'
+import { computeNudgeStages, groupEvents, leadAt, nudgeStageOf, whenLabel } from '@/lib/surfacing/nudge'
 import { writeHeadsUp, type HeadsUpFact } from '@/lib/ai/nudge'
 import { now as clockNow } from '@/lib/core/clock'
 
@@ -37,16 +37,18 @@ export async function runEventSurfacingScan(
   for (const ev of groupEvents(dated, tz)) {
     const stages = computeNudgeStages(ev.eventAt, now, tz)
     if (stages.length === 0) continue
-    // De-dupe by fire-minute across EVERY fact in the group (any status), so a stage is never
-    // scheduled twice, a sibling fact cannot re-open one, and a sent/cancelled one is not recreated.
+    // De-dupe per STAGE across EVERY fact in the group (any status), so a stage is never scheduled
+    // twice, a sibling fact cannot re-open one, a sent/cancelled one is not recreated — and a row left
+    // at a pre-slot offset (scheduled before stages were pinned to digest slots) still counts as its
+    // stage instead of getting a slot-pinned twin (nudgeStageOf).
     const existing = await remindersForEventFacts(
       db,
       ev.facts.map((f) => f.id),
     )
-    const seen = new Set(existing.map((r) => Math.floor(r.fireAt.getTime() / 60_000)))
+    const seen = new Set(existing.map((r) => nudgeStageOf(r.fireAt, ev.eventAt, tz)))
     const knowledge = toKnowledge(ev.facts, names)
     for (const s of stages) {
-      if (seen.has(Math.floor(s.fireAt.getTime() / 60_000))) continue
+      if (seen.has(s.stage)) continue
       // The PREVIEW line, phrased for the moment the stage is due (the digest slot). It is the SKIP
       // gate and what /reminders shows; the posted line is written again at delivery (headsUpAtDelivery).
       const lead = leadAt(ev.eventAt, s.fireAt, tz)
@@ -67,7 +69,7 @@ export async function runEventSurfacingScan(
         eventFactId: ev.anchor.id,
         createdBy: null, // system-generated
       })
-      seen.add(Math.floor(s.fireAt.getTime() / 60_000))
+      seen.add(s.stage)
       created++
     }
   }
@@ -122,7 +124,7 @@ export const eventSurfacingScan = inngest.createFunction(
       const houseChatId = await getHouseChatId(db)
       if (!houseChatId) return { created: 0, reason: 'no-house' as const }
       // Pause silences PROACTIVE output — the same gate that stops the ingest reminder step
-      // creating reminders while paused. (Explicit reminders already scheduled still deliver.)
+      // creating reminders while paused (and holds explicit ones at delivery — deliverReminderNow).
       const policy = await loadResponsePolicy(db)
       if (!policy.global_enabled) return { created: 0, reason: 'paused' as const }
       return runEventSurfacingScan(db, houseChatId, clockNow(), houseTz())

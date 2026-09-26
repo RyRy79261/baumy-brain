@@ -79,10 +79,11 @@ are inside the 06:00–02:00 waking window, so the digest never sends at 3am.
   captured from the authenticated inbound `message_thread_id`, never chosen by the model
   (docs/spec/telegram.md D9b).
 - **Honors `/pause`.** The digest is proactive output, so it skips when `global_enabled` is false
-  (like the surfacing/consolidation crons).
+  (like the surfacing/consolidation crons). The sleepUntil path (`deliverReminderNow`) holds too: the
+  row stays scheduled and nothing posts — so a recurring series cannot keep running through the kill
+  switch — and after `/resume` the digest delivers it inside the grace window or retires it.
 
 ## Deliberately deferred
 
 - **Coalescing across the day into a single "here's everything" summary** beyond the per-slot batch.
 - **`reminder_frequency` beyond once/twice** (e.g. 3×/day) — the slot logic generalizes, not wired.
-- **The sleepUntil path honoring `/pause`** — a pre-existing behavior, untouched here.

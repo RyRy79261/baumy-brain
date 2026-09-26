@@ -268,8 +268,13 @@ context only — it never writes facts and is never shown to anyone.
   dated incumbent given a different date is a reschedule (supersede, trust-gated); an undated live
   incumbent is dated in place; restating an occurrence that is already on record (same value + moment)
   is a noop; something already over when it is said ("stayed last weekend") is recorded as history and
-  never supersedes or re-dates the live row. The invariant is "one LIVE row per (group, subject,
-  predicate)".
+  never supersedes or re-dates a live DATED row — but over a live UNDATED row with a different value it
+  is a change of state ("the plumber fixed the sink yesterday" over "broken"): it supersedes, trust-
+  gated, and stays live with `event_at` = when it changed and `valid_to` NULL (the reply shows "since Fri
+  25 Sep"). A model `when` whose start has no time part is all-day whatever its optional `allDay` flag
+  says (else it expired at 06:00 on the day). Rows dated before `valid_to` existed were closed by
+  migration 0020 (all-day → end of that Berlin day, timed → +6h). The invariant is "one LIVE row per
+  (group, subject, predicate)".
 - Reminders: the extractor returns `reminders: [{content, fireAt, whenText, recurrence, forWhom}]`
   (several per message — A6). Per entry, code: the model's `fireAt` if valid, else the phrase; nothing
   → `needs_time`, unreadable → `unparsed`; already past → a recurring one moves to its next occurrence,
@@ -285,14 +290,19 @@ context only — it never writes facts and is never shown to anyone.
   mark-sent → `scheduleNextOccurrence` (INSERT … ON CONFLICT DO NOTHING on that column); the digest's
   `repairRecurringSeries` heals a crash after mark-sent; `expireStaleScheduled` schedules a retired
   recurring occurrence's successor BEFORE retiring it. The explicit path (`deliverReminderNow`, also
-  what the sandbox drives at each reminder's own instant) applies the staleness window too.
+  what the sandbox drives at each reminder's own instant) applies the staleness window too, and
+  `/pause`: a paused house posts nothing on either path and a series does not grow; the held row stays
+  scheduled for the digest after `/resume` (delivered inside the grace window, or retired with its
+  successor scheduled).
 - Heads-ups: stages are digest slots (08:00 −7 days, 20:00 the evening before, 08:00 on the day; an
   all-day event keeps its morning nudge); the scan runs at 07:45 and reads from the start of the house
   day. The scan still writes a preview line (the SKIP gate, what `/reminders` shows); the digest
   re-writes it at delivery (`headsUpAtDelivery`) from the event's live facts with `leadAt(event,
   deliveryInstant)` — "today"/"tonight"/"tomorrow"/"on Saturday (in 3 days)"/"next week" — posts one
   line per event, drops a stage whose event moved, ended, started or was SKIPped, and stores the posted
-  line back on the row.
+  line back on the row. A transient model error releases only the heads-ups; explicit reminders in the
+  same digest still go out. The scan de-dupes per (event, stage) — an existing row counts as the
+  nearest slot's stage (`nudgeStageOf`), so a row at a pre-slot offset never gets a slot-pinned twin.
 - Reports: `/weekly` (`lib/reports/digest.ts` `gatherWeekly`) = statement/fact notes from the last 7
   days (dated + attributed), explicit reminders in the next 14 days (day + time + repeat), and dated
   events from the facts (the event's own date; event heads-up rows are not listed). The deterministic

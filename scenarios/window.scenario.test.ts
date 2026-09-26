@@ -112,6 +112,7 @@ describe('scenario: the conversation window (phase 2)', () => {
       say('Charli', 'anything new?', { mention: true }),
       expectPrompt('reply', (c) => !/move out/.test(c.prompt), 'the private DM is not in the group’s context'),
       expectPrompt('triage', (c) => !/move out/.test(c.prompt), 'nor in triage’s'),
+      expectWords({ judge: 'Does not mention Marco moving out (or anything he said privately).' }),
     ],
   })
 
@@ -129,6 +130,34 @@ describe('scenario: the conversation window (phase 2)', () => {
         (c) => recentChat(c.prompt).some((l) => l.includes("Marco forwarded (not Marco's own words)") && l.includes('rent goes up')),
         'the forward is labelled in RECENT CHAT',
       ),
+      expectWords({
+        judge: "Treats the rent increase as the landlord's message that Marco forwarded, not as Marco's own claim, and does not confirm it as fact.",
+      }),
+    ],
+  })
+
+  scenario('a secret the fact layer catches is withheld even when the sentence itself does not scan — message AND Baumy’s ack', {
+    people: HOUSE,
+    startAt: '2026-09-28 18:00',
+    fixtures: {
+      triage: (t) => (/anything new/i.test(t) ? question({ asksBaumy: true }) : /wifi/i.test(t) ? statement() : chatter()),
+      // "wifi is hunter2 now" names no "password" — the TRIPLE does, so the fact is stored encrypted.
+      extract: (t) => (/wifi is/i.test(t) ? [fact({ subject: 'wifi', predicate: 'has_password', object: 'hunter2' })] : []),
+      // The scripted ack echoes the value — the window must still not keep it.
+      reply: (t) => (/anything new/i.test(t) ? 'The wifi changed earlier 🐈' : 'Noted — wifi is hunter2 😼'),
+    },
+    steps: [
+      say('Charli', 'wifi is hunter2 now', { mention: true }),
+      expectPrompt('reply', (c) => !c.prompt.includes('hunter2') && /MESSAGE from Charli: \[a message setting the wifi password/.test(c.prompt), 'the ack model is not handed the value either'),
+      expectWords({ judge: 'Acknowledges that the new wifi password was noted WITHOUT repeating the password itself.' }),
+      expectDb(async (db) => {
+        const texts = await windowTexts(db)
+        return texts.length === 2 && !texts.some((t) => t.includes('hunter2')) && texts.every((t) => t.includes('withheld'))
+      }, 'neither Charli’s line nor Baumy’s ack keeps the value — only descriptors'),
+      say('Marco', 'anything new?', { mention: true }),
+      expectPrompt('reply', (c) => !recentChat(c.prompt).some((l) => l.includes('hunter2')), 'RECENT CHAT never carries it'),
+      expectPrompt('reply', (c) => recentChat(c.prompt).some((l) => l.includes('wifi password') && l.includes('withheld')), 'only its descriptor'),
+      expectWords({ judge: 'Does not state the wifi password (hunter2).' }),
     ],
   })
 })

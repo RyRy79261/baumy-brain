@@ -6,6 +6,8 @@ import { ensureRegistered } from '@/lib/memory/write'
 import { createReminder } from '@/lib/reminders/store'
 import { reconcileFact } from '@/lib/memory/facts'
 import type { HeadsUpFact } from '@/lib/ai/nudge'
+import { withSimulatedTime } from '@/lib/core/clock'
+import { setGlobalEnabled } from '@/lib/policy'
 
 const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
 vi.mock('@/lib/telegram/client', () => ({ sendToHouse: (...a: unknown[]) => sendToHouse(...a) }))
@@ -31,26 +33,31 @@ describe('reminder digest — batched, exactly-once delivery', () => {
   })
 
   it('batches all due reminders into ONE message (explicit + event heads-up) and marks them sent', async () => {
+    // A FIXED instant (Sat 26 Sep 20:00 Berlin, the evening slot) — an event "3h from the wall clock"
+    // fell on the next calendar day for anyone running the suite after 21:00, and read "tomorrow".
+    const now = new Date('2026-09-26T18:00:00Z')
+    const ago = (m: number) => new Date(now.getTime() - m * 60_000)
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
-    const bins = await reconcileFact(db, {
-      groupId: GROUP,
-      fact: { subject: 'bins', predicate: 'go_out', object: 'tonight' },
-      authoredBy: null,
-      trustLevel: 'untrusted',
-      eventAt: new Date(Date.now() + 3 * 3_600_000),
-    })
+    const bins = await withSimulatedTime(now, () =>
+      reconcileFact(db, {
+        groupId: GROUP,
+        fact: { subject: 'bins', predicate: 'go_out', object: 'tonight' },
+        authoredBy: null,
+        trustLevel: 'untrusted',
+        eventAt: new Date(now.getTime() + 3_600_000), // 21:00
+      }),
+    )
     expect(bins).toBe('add')
     const factId = await firstFactId(db)
-    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'call the landlord', fireAt: minsAgo(30), createdBy: null })
-    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'bins out tonight', fireAt: minsAgo(10), anchorKind: 'event_offset', eventFactId: factId, createdBy: null })
+    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'call the landlord', fireAt: ago(30), createdBy: null })
+    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'bins out tonight', fireAt: ago(10), anchorKind: 'event_offset', eventFactId: factId, createdBy: null })
 
-    const res = await deliverDueReminders(db, new Date())
+    const res = await withSimulatedTime(now, () => deliverDueReminders(db, now, TZ))
     expect(res).toEqual({ sent: 2, messages: 1, expired: 0 }) // two reminders → ONE message
     expect(sendToHouse).toHaveBeenCalledTimes(1)
     const body = String(sendToHouse.mock.calls[0][1])
-    expect(body).toContain('⏰ call the landlord') // explicit → ⏰
-    expect(body).toMatch(/🗓️ bins tonight — (today|tonight)/) // event heads-up → 🗓️, written for NOW
+    expect(body).toBe('⏰ call the landlord\n🗓️ bins tonight — tonight (Sat 26 Sep, 21:00)') // explicit → ⏰; heads-up → 🗓️, written for NOW
     const rows = await db.select().from(reminders).where(eq(reminders.groupId, GROUP))
     expect(rows.every((r) => r.status === 'sent')).toBe(true)
   })
@@ -160,6 +167,23 @@ describe('event heads-ups are written at DELIVERY, with the real lead (T11)', ()
     expect(writeHeadsUp).not.toHaveBeenCalled()
   })
 
+  it('a transient model error holds back only the heads-ups — the explicit reminder in the same digest still goes out', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const factId = await party(db)
+    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'party', fireAt: new Date('2026-10-02T18:00:00Z'), anchorKind: 'event_offset', eventFactId: factId, createdBy: null })
+    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'call the landlord', fireAt: new Date('2026-10-02T17:30:00Z'), createdBy: null })
+    writeHeadsUp.mockRejectedValueOnce(new Error('Overloaded'))
+    await expect(deliverDueReminders(db, new Date('2026-10-02T18:00:00Z'), TZ)).rejects.toThrow('Overloaded') // rethrown → Inngest retries
+    expect(sendToHouse).toHaveBeenCalledTimes(1)
+    expect(String(sendToHouse.mock.calls[0][1])).toBe('⏰ call the landlord')
+    const rows = await db.select().from(reminders).where(eq(reminders.groupId, GROUP))
+    expect(Object.fromEntries(rows.map((r) => [r.content, r.status]))).toEqual({ 'call the landlord': 'sent', party: 'scheduled' })
+    // The retry writes the heads-up; the explicit one is not posted again.
+    expect((await deliverDueReminders(db, new Date('2026-10-02T18:00:00Z'), TZ)).sent).toBe(1)
+    expect(String(sendToHouse.mock.calls[1][1])).toMatch(/^🗓️ marco/)
+  })
+
   it('a transient model error releases the batch (retried next slot, never lost)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
@@ -204,6 +228,38 @@ describe('recurring reminders — delivery schedules the next occurrence, exactl
     const rows = await all(db)
     expect(rows).toHaveLength(2)
     expect(rows.find((r) => r.previousReminderId === id)!.fireAt.toISOString()).toBe('2026-10-09T18:00:00.000Z')
+  })
+
+  it('/pause holds a recurring series — nothing posts, no occurrence is added — and it resumes after /resume', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const daily = await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'water the plants', fireAt: new Date('2026-10-02T18:00:00Z'), createdBy: null, recurrence: 'FREQ=DAILY' })
+    await setGlobalEnabled(db, false)
+    expect(await deliverReminderNow(db, daily, new Date('2026-10-02T18:00:00Z'), TZ)).toEqual({ status: 'paused' })
+    // The daily re-arm fires it again while still paused: still nothing.
+    expect(await deliverReminderNow(db, daily, new Date('2026-10-03T06:00:00Z'), TZ)).toEqual({ status: 'paused' })
+    expect(sendToHouse).not.toHaveBeenCalled()
+    let rows = await all(db)
+    expect(rows).toHaveLength(1) // the series did not grow through the kill switch
+    expect(rows[0].status).toBe('scheduled') // held, not lost
+    // A week later the owner resumes: the digest retires the stale occurrence and the series goes on.
+    await setGlobalEnabled(db, true)
+    const res = await deliverDueReminders(db, new Date('2026-10-09T06:00:00Z'), TZ)
+    expect(res).toMatchObject({ sent: 0, expired: 1 })
+    expect(sendToHouse).not.toHaveBeenCalled() // a week-old "water the plants" is not posted as news
+    rows = await all(db)
+    expect(rows.find((r) => r.previousReminderId === daily)).toMatchObject({ status: 'scheduled', fireAt: new Date('2026-10-09T18:00:00Z') })
+  })
+
+  it('/pause holds a one-off too; after /resume inside the grace window it still goes out', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const id = await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'call the landlord', fireAt: new Date('2026-10-02T16:00:00Z'), createdBy: null })
+    await setGlobalEnabled(db, false)
+    expect((await deliverReminderNow(db, id, new Date('2026-10-02T16:00:00Z'), TZ)).status).toBe('paused')
+    expect(sendToHouse).not.toHaveBeenCalled()
+    await setGlobalEnabled(db, true)
+    expect((await deliverDueReminders(db, new Date('2026-10-02T18:00:00Z'), TZ)).sent).toBe(1)
   })
 
   it('the staleness window still applies — a missed occurrence is retired, and the series goes on', async () => {
