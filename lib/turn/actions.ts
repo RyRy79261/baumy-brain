@@ -2,16 +2,17 @@ import { DateTime } from 'luxon'
 import { createHttpDb } from '@/db/client'
 import { inngest } from '@/lib/inngest/client'
 import { extractListOp } from '@/lib/ai/list-extract'
-import { extractReminder } from '@/lib/ai/reminder-extract'
+import { extractReminder, type ExtractedReminder } from '@/lib/ai/reminder-extract'
 import { extractForget } from '@/lib/ai/forget-extract'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
-import { parseWhen, clampToWakingHours } from '@/lib/reminders/parse'
+import { clampToWakingHours } from '@/lib/reminders/parse'
+import { fireAtFromModel, reminderTimeFromPhrase, minutesApart } from '@/lib/core/when'
+import { normaliseRecurrence, recurrenceFromPhrase, nextOccurrence } from '@/lib/reminders/recurrence'
 import { createReminder } from '@/lib/reminders/store'
 import { saveReminderDraft } from '@/lib/reminders/draft'
 import { findMemoryToForget, type ForgetMode } from '@/lib/memory/forget'
 import { createPendingAction } from '@/lib/confirm/store'
 import { memberDisplayNames } from '@/lib/identity/roster'
-import { now } from '@/lib/core/clock'
 import type { ForgetOutcome, ListOutcome, ReminderOutcome, TurnContext } from './context'
 import type { TurnStep } from './step'
 
@@ -54,66 +55,124 @@ export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOut
 
 // ── Reminders ────────────────────────────────────────────────────────────────────────────────────
 // AUTO-COMMIT the ACTION (no click-to-confirm — a reminder only posts TEXT to the fixed house group).
-// Only reached for a DIRECTED ask (decide() — A9). Every way it can fail is an explicit status the
-// planner turns into a clarifying question (A2): no time given → needs_time, a time that can't be
-// read → unparsed, a time already gone → past. The time-resolution overhaul is phase 3 (§6); this
-// only makes the outcome honest. Undefined = the extractor says it isn't a reminder at all.
-type ReminderStepResult =
-  | { status: 'set'; id: string; fireAt: string; content: string }
+// Only reached for a DIRECTED ask (decide() — A9). The extractor PROPOSES one or more reminders (A6),
+// each with a fireAt it resolved against the calendar table, a repeat rule and who it is for; this code
+// DISPOSES (spec §6): every way one can fail is an explicit status the planner turns into a clarifying
+// question (A2) — no time given → needs_time, a time that can't be read → unparsed, a time already gone
+// → past. Undefined = the extractor says it isn't a reminder at all.
+type OneReminder =
+  | { status: 'set'; id: string; fireAt: string; content: string; recurrence: string | null }
   | { status: 'needs_time' | 'past' | 'unparsed'; content: string }
-  | { status: 'none' }
 
 // `draft` = an earlier request from this sender in this chat that is still waiting for its time
 // (lib/reminders/draft.ts): "at 8pm" in reply to "when should I remind you?" completes it — the
-// extractor is shown the open request and Baumy's question. Every failure (needs_time / unparsed /
-// past) stores a fresh draft, so the clarifying question Baumy asks can actually be answered.
+// extractor is shown the open request and Baumy's question. A failure (needs_time / unparsed / past)
+// stores a fresh draft, so the clarifying question Baumy asks can actually be answered.
 export async function runReminder(
   step: TurnStep,
   ctx: TurnContext,
   deliverChatId: string,
   draft: { content: string } | null = null,
-): Promise<ReminderOutcome | undefined> {
-  const r = (await step.run('reminder', async (): Promise<ReminderStepResult> => {
+): Promise<ReminderOutcome[] | undefined> {
+  const results = (await step.run('reminder', async (): Promise<OneReminder[]> => {
     const db = createHttpDb()
     const speaker = ctx.authorId ? ((await memberDisplayNames(db)).get(ctx.authorId) ?? ctx.sender.name) : null
     const baumyAsked = ctx.replyTo?.author === 'baumy' ? ctx.replyTo.text : null
-    const ex = await extractReminder(ctx.text, speaker, draft ? { pending: draft.content, baumyAsked } : null)
-    // A follow-up that only supplies the time ("8pm") completes the open request's content.
-    const content = ex.content.trim() || draft?.content.trim() || ''
-    const isReminder = ex.isReminder || (draft != null && ex.whenText.trim() !== '')
-    if (!isReminder || !content) return { status: 'none' } // empty content would post a bare "⏰"
-    // Remember the open request (scope = house, keyed on chat + requester) so the answer to the
-    // clarifying question can complete it. An anonymous admin has no requester to key it on.
-    const failed = async (status: 'needs_time' | 'past' | 'unparsed'): Promise<ReminderStepResult> => {
-      if (ctx.authorId) await saveReminderDraft(db, { groupId: ctx.houseScope, chatId: ctx.chatId, requestedBy: ctx.authorId }, content)
-      return { status, content }
+    const ex = await extractReminder(ctx.text, speaker, draft ? { pending: draft.content, baumyAsked } : null, { at: ctx.sentAt, tz: ctx.tz })
+    const out: OneReminder[] = []
+    let draftSaved = false
+    for (const r of ex.reminders) {
+      // A follow-up that only supplies the time ("8pm") completes the open request's content.
+      const content = r.content.trim() || draft?.content.trim() || ''
+      if (!content) continue // empty content would post a bare "⏰"
+      const resolved = resolveReminderTime(r, ctx)
+      if (resolved.status !== 'ok') {
+        // Remember the open request (scope = house, keyed on chat + requester) so the answer to the
+        // clarifying question can complete it. One draft per turn; an anonymous admin has no requester.
+        if (ctx.authorId && !draftSaved) {
+          await saveReminderDraft(db, { groupId: ctx.houseScope, chatId: ctx.chatId, requestedBy: ctx.authorId }, content)
+          draftSaved = true
+        }
+        out.push({ status: resolved.status, content })
+        continue
+      }
+      // A personal reminder names who asked (A4): "⏰ Charli: call the plumber", never a nameless line
+      // three housemates each assume is someone else's job. The name is the AUTHENTICATED sender's.
+      const forSpeaker = r.forWhom ? r.forWhom === 'speaker' : /\bremind me\b/i.test(ctx.text)
+      const named = forSpeaker && ctx.authorId ? nameRequester(content, ctx.sender.firstName) : content
+      const id = await createReminder(db, {
+        groupId: ctx.houseScope, // scope = the house (a DM-set reminder belongs to the house, not a silo)
+        deliverChatId, // fixed destination, resolved in code (never LLM)
+        content: named,
+        fireAt: resolved.fireAt,
+        createdBy: ctx.authorId,
+        recurrence: resolved.recurrence,
+      })
+      // Best-effort arm; the sweeper backstops delivery, so a hand-off failure here never retries
+      // the step into a duplicate reminder.
+      try {
+        await inngest.send({ id: `reminder-arm:${id}`, name: 'reminder/arm.due', data: { reminderId: id } })
+      } catch {
+        /* sweeper still delivers */
+      }
+      out.push({ status: 'set', id, fireAt: resolved.fireAt.toISOString(), content: named, recurrence: resolved.recurrence })
     }
-    if (!ex.whenText.trim()) return failed('needs_time')
-    const at = DateTime.fromJSDate(now())
-    const parsed = parseWhen(ex.whenText, ctx.tz, at) // resolve "9am" in the house timezone
-    if (!parsed) return failed('unparsed')
-    if (parsed.fireAt.getTime() <= at.toMillis()) return failed('past')
-    // Fire near the requested time, but never in the 02:00–06:00 dead zone (no 3am pings).
-    const fireAt = clampToWakingHours(parsed.fireAt, ctx.tz)
-    const id = await createReminder(db, {
-      groupId: ctx.houseScope, // scope = the house (a DM-set reminder belongs to the house, not a silo)
-      deliverChatId, // fixed destination, resolved in code (never LLM)
-      content,
-      fireAt,
-      createdBy: ctx.authorId,
-    })
-    // Best-effort arm; the sweeper backstops delivery, so a hand-off failure here never retries
-    // the step into a duplicate reminder.
-    try {
-      await inngest.send({ id: `reminder-arm:${id}`, name: 'reminder/arm.due', data: { reminderId: id } })
-    } catch {
-      /* sweeper still delivers */
-    }
-    return { status: 'set', id, fireAt: fireAt.toISOString(), content }
-  })) as ReminderStepResult
-  if (r.status === 'none') return undefined
+    return out
+  })) as OneReminder[]
+  if (results.length === 0) return undefined
   // Step results are JSON-memoized — rehydrate the Date.
-  return r.status === 'set' ? { status: 'set', id: r.id, fireAt: new Date(r.fireAt), content: r.content, deliverTo: 'house' } : r
+  return results.map((r) =>
+    r.status === 'set'
+      ? { status: 'set', id: r.id, fireAt: new Date(r.fireAt), content: r.content, deliverTo: 'house', ...(r.recurrence ? { recurrence: r.recurrence } : {}) }
+      : r,
+  )
+}
+
+/** The outcome the planner reads when a message produced several: the first failure (it needs the
+ *  clarifying question), else the first reminder set. THIS TURN still lists every one. */
+export function primaryReminder(all: ReminderOutcome[]): ReminderOutcome {
+  return all.find((r) => r.status !== 'set') ?? all[0]
+}
+
+type Resolved = { status: 'ok'; fireAt: Date; recurrence: string | null } | { status: 'needs_time' | 'past' | 'unparsed' }
+
+// The time a proposed reminder fires, DISPOSED by code (spec §6):
+//   • the model's fireAt (local ISO against the calendar table) when it parses and is < 2 years out;
+//   • else chrono on the verbatim phrase with the fixed defaults (lib/core/when.ts) — the fallback;
+//   • both present and >1 min apart → the model's wins (it saw the calendar), the disagreement is
+//     logged, and the confirm line shows the resolved day + time so a misread is visible (§3);
+//   • nothing at all → needs_time; something unreadable → unparsed;
+//   • already past → a recurring reminder moves to its next occurrence; a one-off whose time of day
+//     was only a default (a bare "today", "tonight" at 23:30) asks for a time (needs_time); any other
+//     past time (a lead time that already went — "a week before friday" on Wednesday) → past. A past
+//     row is never created: it would be delivered instantly (T4/T10).
+//   • never the 02:00–06:00 dead zone.
+function resolveReminderTime(r: ExtractedReminder, ctx: TurnContext): Resolved {
+  const at = ctx.sentAt
+  const tz = ctx.tz
+  const fromModel = fireAtFromModel(r.fireAt, tz, at)
+  const fromPhrase = reminderTimeFromPhrase(r.whenText, tz, at)
+  if (fromModel && fromPhrase && minutesApart(fromModel, fromPhrase.fireAt) > 1)
+    console.warn(`[baumy/reminder] time cross-check: model ${r.fireAt} vs "${r.whenText}" → ${fromPhrase.fireAt.toISOString()} (keeping the model's)`)
+  let fireAt = fromModel ?? fromPhrase?.fireAt ?? null
+  if (!fireAt) return { status: r.fireAt?.trim() || r.whenText?.trim() ? 'unparsed' : 'needs_time' }
+  const timeDefaulted = fromModel ? !/T\d/.test(r.fireAt ?? '') : fromPhrase!.timeDefaulted
+  const recurrence = normaliseRecurrence(r.recurrence?.trim() || recurrenceFromPhrase(r.whenText), fireAt, tz)
+  if (fireAt.getTime() <= at.getTime()) {
+    const sameDay = DateTime.fromJSDate(fireAt).setZone(tz).hasSame(DateTime.fromJSDate(at).setZone(tz), 'day')
+    if (recurrence) fireAt = nextOccurrence(recurrence, fireAt, at, tz)
+    else return { status: timeDefaulted && sameDay ? 'needs_time' : 'past' }
+    if (!fireAt) return { status: 'unparsed' }
+  }
+  return { status: 'ok', fireAt: clampToWakingHours(fireAt, tz), recurrence }
+}
+
+/** "Charli: call the plumber" — unless the content already opens with their name. */
+export function nameRequester(content: string, firstName: string | null | undefined): string {
+  const name = firstName?.trim()
+  if (!name) return content
+  const opens = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+  return opens.test(content.trim()) ? content : `${name}: ${content}`
 }
 
 // ── Forget (deletion on request) ─────────────────────────────────────────────────────────────────

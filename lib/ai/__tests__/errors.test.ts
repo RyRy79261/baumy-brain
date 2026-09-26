@@ -42,7 +42,7 @@ const malformed = () =>
 const SITES: { name: string; text?: boolean; call: () => Promise<unknown>; safe: (r: unknown) => void }[] = [
   { name: 'classify', call: () => classify('remind us to put the bins out friday 8pm'), safe: (r) => expect((r as { intent: string }).intent).toBe('chatter') },
   { name: 'extractFacts', call: () => extractFacts('Zuzka is staying in my room this weekend', 'Charli'), safe: (r) => expect(r).toEqual({ facts: [] }) },
-  { name: 'extractReminder', call: () => extractReminder('remind us friday'), safe: (r) => expect((r as { isReminder: boolean }).isReminder).toBe(false) },
+  { name: 'extractReminder', call: () => extractReminder('remind us friday'), safe: (r) => expect((r as { reminders: unknown[] }).reminders).toEqual([]) },
   { name: 'extractListOp', call: () => extractListOp('buy oat milk'), safe: (r) => expect((r as { op: string }).op).toBe('none') },
   { name: 'extractForget', call: () => extractForget('forget the door code', 'Charli'), safe: (r) => expect((r as { isForget: boolean }).isForget).toBe(false) },
   { name: 'enrichIssue', call: () => enrichIssue('the reminder fired twice', 'bug'), safe: (r) => expect((r as { title: string }).title).toContain('twice') },

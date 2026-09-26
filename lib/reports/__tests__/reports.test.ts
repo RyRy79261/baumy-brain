@@ -17,6 +17,7 @@ process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 6).toString('base64')
 
 const { makeTestDb } = await import('@/lib/memory/__tests__/pglite')
 const { ensureRegistered, captureMemory } = await import('@/lib/memory/write')
+const { withSimulatedTime } = await import('@/lib/core/clock')
 const { reconcileFact } = await import('@/lib/memory/facts')
 const { createReminder } = await import('@/lib/reminders/store')
 const { embedSync } = await import('@/lib/ai/embed')
@@ -42,7 +43,8 @@ describe('weeklyReport', () => {
   it('grounds the digest in recent notes + upcoming reminders + today', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
-    await captureMemory({ groupId: GROUP, content: 'we threw a big party on saturday', memoryType: 'chatter', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    // (A statement: since phase 3 /weekly is house NEWS only — never chatter or a question — T5.)
+    await captureMemory({ groupId: GROUP, content: 'we threw a big party on saturday', memoryType: 'statement', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
     await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'take the bins out', fireAt: new Date(Date.now() + 3 * 86_400_000), createdBy: null })
 
     const out = await weeklyReport(db, GROUP)
@@ -60,6 +62,41 @@ describe('weeklyReport', () => {
   })
 })
 
+describe('weeklyReport — the last 7 days, every line dated (T5)', () => {
+  it('keeps only statement/fact notes from the last week, dates each, and dates what is coming up', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const now = new Date('2026-09-26T10:00:00Z') // Sat 26 Sep, 12:00 Berlin
+    await withSimulatedTime(new Date('2026-06-01T10:00:00Z'), async () => {
+      await captureMemory({ groupId: GROUP, content: 'the party is tomorrow night', memoryType: 'statement', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    })
+    await withSimulatedTime(new Date('2026-09-24T09:00:00Z'), async () => {
+      await captureMemory({ groupId: GROUP, content: 'the boiler got serviced', memoryType: 'statement', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+      await captureMemory({ groupId: GROUP, content: 'is the party still on?', memoryType: 'question', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+      await captureMemory({ groupId: GROUP, content: 'lol same', memoryType: 'chatter', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+      await reconcileFact(db, {
+        groupId: GROUP,
+        fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'arrives_on', object: 'Fri 2 Oct evening' },
+        authoredBy: null,
+        trustLevel: 'untrusted',
+        eventAt: new Date('2026-10-02T17:00:00Z'),
+        validTo: new Date('2026-10-02T23:00:00Z'),
+      })
+    })
+    await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'Charli: take the bins out', fireAt: new Date('2026-09-29T18:00:00Z'), createdBy: null, recurrence: 'FREQ=WEEKLY;BYDAY=TU' })
+
+    await weeklyReport(db, GROUP, now)
+    const p = captured.prompt ?? ''
+    expect(p).toContain('- noted Thu 24 Sep: the boiler got serviced') // dated when it was SAID
+    expect(p).not.toContain('the party is tomorrow night') // months old → not this week's news
+    expect(p).not.toContain('is the party still on?') // a question is not news
+    expect(p).not.toContain('lol same') // chatter is not news
+    expect(p).toContain('- event Fri 2 Oct 19:00: zuzka arrives on: Fri 2 Oct evening') // the EVENT's date
+    expect(p).toContain('- reminder Tue 29 Sep 20:00: Charli: take the bins out (repeats every Tuesday)')
+    expect(p).toContain('TODAY: Saturday, 26 September 2026')
+  })
+})
+
 describe('guestReport', () => {
   it('grounds on stay/room facts (who is in which room)', async () => {
     const db = await makeTestDb()
@@ -71,6 +108,37 @@ describe('guestReport', () => {
     expect(captured.prompt).toContain('zuzana')
     expect(captured.prompt).toContain('the cave')
     expect(captured.system).toContain('UPCOMING GUESTS')
+  })
+
+  it('T2: an expired stay is left out; a current one carries its date range', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    // March: Zuzka stayed in Charli's room (Sat 14 – Sun 15 Mar) — long over by September.
+    await withSimulatedTime(new Date('2026-03-12T18:00:00Z'), () =>
+      reconcileFact(db, {
+        groupId: GROUP,
+        fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'staying_in', object: "charli's room", objectKind: 'place' },
+        authoredBy: null,
+        trustLevel: 'untrusted',
+        eventAt: new Date('2026-03-13T23:00:00Z'),
+        validTo: new Date('2026-03-15T22:59:59.999Z'),
+      }),
+    )
+    // September: Iman is staying in the cave this weekend (Sat 3 – Sun 4 Oct).
+    await withSimulatedTime(new Date('2026-09-28T18:00:00Z'), () =>
+      reconcileFact(db, {
+        groupId: GROUP,
+        fact: { subject: 'iman', subjectKind: 'person', predicate: 'staying_in', object: 'the cave', objectKind: 'place' },
+        authoredBy: null,
+        trustLevel: 'untrusted',
+        eventAt: new Date('2026-10-02T22:00:00Z'),
+        validTo: new Date('2026-10-04T21:59:59.999Z'),
+      }),
+    )
+    await guestReport(db, GROUP, new Date('2026-09-29T10:00:00Z'))
+    const p = captured.prompt ?? ''
+    expect(p).not.toMatch(/zuzka/) // a visit that is over is not a guest
+    expect(p).toContain('iman staying in: the cave (Sat 3 Oct – Sun 4 Oct)')
   })
 
   it('says the house is guest-free (no model call) when nothing is on the books', async () => {

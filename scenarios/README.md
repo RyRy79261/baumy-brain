@@ -96,7 +96,13 @@ converts them to the schemas the code validates today.
 
 - When a phase changes a schema, update `shapes.ts`. No scenario should need to change.
 - Since phase 1 the classifier schema IS the spec §2 shape, so the triage adapter is the identity;
-  facts and reminders still convert (their spec §6 shapes land in phase 3).
+  since phase 3 facts and reminders are the spec §6 shapes too. A fact's `when` may be the resolved
+  `{ start, end?, allDay }` (local ISO) or just the verbatim phrase (`when: 'this weekend'` — the model
+  resolved nothing, so the code's chrono fallback reads it). A reminder fixture returns one
+  `reminder({ content, when, fireAt?, recurrence?, forWhom? })`, an array of them (A6), or null; without
+  `fireAt` the fallback reads `when`.
+- Explicit reminders fire at their own instant in `advance()` (the production sleepUntil path — job
+  `reminder`), before any cron due at the same minute; the digest stays the backstop.
 - The scripted reply echoes the MODE when a fixture doesn't script it (`(scripted ack)`), and in
   MODE answer admits a miss when MEMORY is empty — so a scenario can see which mode was used.
 

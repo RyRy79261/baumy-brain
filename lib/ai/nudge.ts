@@ -16,8 +16,9 @@ export interface HeadsUpFact {
   authoredBy?: string | null
 }
 
-// How far off the event is — the model is told, so it can phrase it naturally.
-export type HeadsUpLead = 'next week' | 'tomorrow' | 'today'
+// How far off the event is FROM THE MOMENT THE LINE IS POSTED ('today', 'tomorrow', 'on Saturday (in 3
+// days)', 'next week' — lib/surfacing/nudge.ts leadAt). The model is told, so it can phrase it naturally.
+export type HeadsUpLead = string
 
 // Longest line we will post. A model that runs on is a bug, not something to truncate mid-word:
 // over this we drop the nudge entirely (the scan retries it on the next run).

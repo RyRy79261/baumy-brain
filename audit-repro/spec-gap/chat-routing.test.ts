@@ -6,7 +6,7 @@ import type { ClassifierVerdict } from '@/lib/ai/classify'
 const dbh: { db: any } = { db: null }
 const classifyMock = vi.fn<(t: string) => Promise<ClassifierVerdict>>()
 const extractFactsMock = vi.fn<(t: string, s?: string | null) => Promise<{ facts: unknown[] }>>()
-const extractReminderMock = vi.fn<(t: string) => Promise<{ isReminder: boolean; whenText: string; content: string }>>()
+const extractReminderMock = vi.fn<(t: string) => Promise<{ reminders: { content: string; whenText?: string; fireAt?: string }[] }>>()
 const answerMock = vi.fn<(...a: unknown[]) => Promise<{ text: string; answered: boolean }>>()
 
 vi.mock('@/db/client', async (o) => ({ ...(await o<typeof import('@/db/client')>()), createHttpDb: () => dbh.db }))
@@ -40,7 +40,7 @@ describe('spec-gap: deterministic chat routing', () => {
     for (const m of [classifyMock, extractFactsMock, extractReminderMock, answerMock]) m.mockReset()
     classifyMock.mockResolvedValue(BASE)
     extractFactsMock.mockResolvedValue({ facts: [] })
-    extractReminderMock.mockResolvedValue({ isReminder: false, whenText: '', content: '' })
+    extractReminderMock.mockResolvedValue({ reminders: [] })
     answerMock.mockResolvedValue({ text: 'ok!', answered: true })
     process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 13).toString('base64')
     delete process.env.BAUMY_HOUSE_CHAT_ID

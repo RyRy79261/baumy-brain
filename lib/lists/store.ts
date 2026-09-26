@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { listItems } from '@/db/schema'
+import { now as clockNow } from '@/lib/core/clock'
 
 // A house list is a first-class, group-scoped, stateful table (docs/spec/shopping-list.md) —
 // distinct from fuzzy fact-memory. Every read/write here is keyed on `groupId` (= the house
@@ -100,7 +101,7 @@ export async function checkOffItems(
   const norms = [...wanted.keys()]
   const updated = await db
     .update(listItems)
-    .set({ checkedAt: new Date(), checkedBy: input.checkedBy })
+    .set({ checkedAt: clockNow(), checkedBy: input.checkedBy })
     .where(
       and(
         eq(listItems.groupId, input.groupId),

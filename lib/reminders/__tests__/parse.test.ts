@@ -52,9 +52,10 @@ describe('parseWhen — DST-correct NL time resolution', () => {
 
   it('honours the time of day instead of defaulting to 09:00', () => {
     const now = DateTime.fromObject({ year: 2026, month: 7, day: 20, hour: 12 }, { zone: TZ })
-    // "tomorrow evening" used to resolve to 09:00 — chrono knows it means 20:00, we now keep it.
+    // "tomorrow evening" used to resolve to 09:00 — the daypart table keeps it at 20:00.
     expect(hourIn(parseWhen('tomorrow evening', TZ, now)!.fireAt)).toBe(20)
-    expect(hourIn(parseWhen('friday morning', TZ, now)!.fireAt)).toBe(6)
+    // Intentional change (T10): "morning" is 09:00, not chrono's 06:00 at the edge of the waking window.
+    expect(hourIn(parseWhen('friday morning', TZ, now)!.fireAt)).toBe(9)
     expect(hourIn(parseWhen('next tuesday', TZ, now)!.fireAt)).toBe(9) // no time given → 09:00
   })
 })
@@ -76,8 +77,16 @@ describe('parseEventDate — precision-first re-reading of a STORED fact value',
 
   it('refuses a past-tense aside instead of rolling it into the future', () => {
     expect(parseEventDate('was supposed to leave on Sunday', TZ, recorded)).toBeNull()
-    // even the bare phrase reads literally against recorded_at (the Sunday BEFORE, i.e. past)
-    expect(parseEventDate('on Sunday', TZ, recorded)!.resolvedLocal).toContain('19 July 2026')
+    // Intentional change (T12): the backfill uses the SAME resolver as capture — a bare weekday is its
+    // next occurrence after recorded_at (the Sunday AFTER that Monday) …
+    expect(parseEventDate('on Sunday', TZ, recorded)!.resolvedLocal).toContain('26 July 2026')
+    // … and only an explicit past marker reads it as the one before.
+    expect(parseEventDate('last Sunday', TZ, recorded)!.resolvedLocal).toContain('19 July 2026')
+  })
+
+  it('T12: "monday morning" recorded on a Thursday is the Monday AFTER (a real future event, not skipped)', () => {
+    const thursday = DateTime.fromISO('2026-09-24T15:00:00', { zone: TZ })
+    expect(parseEventDate('monday morning', TZ, thursday)!.resolvedLocal).toContain('Monday 28 September 2026, 09:00')
   })
 
   it('refuses a long prose value outright, and a plain attribute', () => {

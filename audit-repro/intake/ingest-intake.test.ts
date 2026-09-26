@@ -16,7 +16,7 @@ import type { TelegramMessageData } from '@/lib/inngest/client'
 const dbh: { db: any } = { db: null }
 const classifyMock = vi.fn<(t: string) => Promise<ClassifierVerdict>>()
 const extractFactsMock = vi.fn(async (_t: string, _s?: string | null) => ({ facts: [] as any[] }))
-const extractReminderMock = vi.fn(async (_t: string) => ({ isReminder: false, whenText: '', content: '' }))
+const extractReminderMock = vi.fn(async (_t: string) => ({ reminders: [] as { content: string; whenText?: string }[] }))
 const answerMock = vi.fn(async (..._a: unknown[]) => ({ text: 'reply', answered: true }))
 const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
 const reactToMessage = vi.fn(async (..._a: unknown[]) => {})
@@ -89,7 +89,7 @@ describe('AUDIT intake/triage/capture', () => {
     await upsertMember(dbh.db, HOUSE, String(MARCO), 'Marco', 'member')
     for (const m of [classifyMock, extractFactsMock, extractReminderMock, answerMock, sendToHouse, reactToMessage]) m.mockClear()
     extractFactsMock.mockResolvedValue({ facts: [] })
-    extractReminderMock.mockResolvedValue({ isReminder: false, whenText: '', content: '' })
+    extractReminderMock.mockResolvedValue({ reminders: [] })
     answerMock.mockResolvedValue({ text: 'reply', answered: true })
   })
 
@@ -102,11 +102,11 @@ describe('AUDIT intake/triage/capture', () => {
   // and the wrong original stays active (no supersede, contrary to spec D18).
   it('D16: editing a message duplicates the reminder and leaves the uncorrected note active', async () => {
     classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'reminder', asksBaumy: true }))
-    extractReminderMock.mockResolvedValue({ isReminder: true, whenText: 'friday 9am', content: 'bins out' })
+    extractReminderMock.mockResolvedValue({ reminders: [{ content: 'bins out', whenText: 'friday 9am' }] })
     const first = ev({ text: '@baumybot remind us friday 9am bins out, cleaner comes monday' })
     await runIngest(first, step)
     // user fixes a typo in the same message → Telegram sends edited_message with a NEW update_id
-    extractReminderMock.mockResolvedValue({ isReminder: true, whenText: 'friday 9am', content: 'bins out' })
+    extractReminderMock.mockResolvedValue({ reminders: [{ content: 'bins out', whenText: 'friday 9am' }] })
     await runIngest({ data: { ...first.data, updateId: first.data.updateId + 500, text: '@baumybot remind us friday 9am bins out, cleaner comes tuesday' } }, step)
 
     const rem = await dbh.db.select().from(reminders)

@@ -1,5 +1,6 @@
 import { type Database } from '@/db/client'
 import { houseConfig } from '@/db/schema'
+import { now as clockNow } from '@/lib/core/clock'
 
 // Response policy (data decision 16): the owner-configurable, dashboard-reversible
 // control over when Baumy speaks. Stored as house_config.response_policy JSONB.
@@ -68,7 +69,7 @@ export async function setReplyFrequency(db: Database, level: ReplyFrequency): Pr
   await db
     .insert(houseConfig)
     .values({ id: true, responsePolicy: next })
-    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: new Date() } })
+    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: clockNow() } })
 }
 
 // Set how often the reminder/event digest fires (owner-only, via the dashboard). Upserts the singleton.
@@ -79,7 +80,7 @@ export async function setReminderFrequency(db: Database, level: ReminderFrequenc
   await db
     .insert(houseConfig)
     .values({ id: true, responsePolicy: next })
-    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: new Date() } })
+    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: clockNow() } })
 }
 
 // Owner kill-switch. Upserts so it works whether or not the singleton is seeded.
@@ -89,7 +90,7 @@ export async function setGlobalEnabled(db: Database, enabled: boolean): Promise<
   await db
     .insert(houseConfig)
     .values({ id: true, responsePolicy: next })
-    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: new Date() } })
+    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: clockNow() } })
 }
 
 // Replace the muted-topic list (owner-only, via the dashboard). Upserts the singleton.
@@ -99,7 +100,7 @@ export async function setMutedTopics(db: Database, topics: string[]): Promise<vo
   await db
     .insert(houseConfig)
     .values({ id: true, responsePolicy: next })
-    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: new Date() } })
+    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: clockNow() } })
 }
 
 export async function addMutedTopic(db: Database, topic: string): Promise<void> {

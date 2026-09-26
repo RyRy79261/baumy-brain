@@ -294,12 +294,16 @@ export const reminders = pgTable(
     fireAt: timestamp('fire_at', { withTimezone: true }).notNull(),
     eventFactId: uuid('event_fact_id').references(() => facts.id, { onDelete: 'cascade' }),
     leadInterval: interval('lead_interval'), // 'a week before'
-    recurrence: text('recurrence'),
+    recurrence: text('recurrence'), // RRULE-lite (lib/reminders/recurrence.ts) or NULL for a one-off
+    // The occurrence this row follows in a recurring series. UNIQUE: scheduling the next occurrence is
+    // an INSERT … ON CONFLICT DO NOTHING on this column, so a retried / repeated "create next" can
+    // never schedule a series twice (exactly-once, docs/spec/chat-understanding-v2.md §6).
+    previousReminderId: uuid('previous_reminder_id').references((): AnyPgColumn => reminders.id, { onDelete: 'set null' }),
     status: text('status').notNull().default('scheduled'), // scheduled|firing|sent|cancelled|failed
     createdBy: text('created_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('baumy_reminders_due_idx').on(t.status, t.fireAt)],
+  (t) => [index('baumy_reminders_due_idx').on(t.status, t.fireAt), uniqueIndex('baumy_reminders_previous_uq').on(t.previousReminderId)],
 )
 
 // User-definable recurring queries; digests are a built-in (is_system) instance.

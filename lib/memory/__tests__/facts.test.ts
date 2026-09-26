@@ -6,6 +6,7 @@ import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { embedSync } from '@/lib/ai/embed'
 import { reconcileFact, currentFactsForQuery, tagMemoryAboutPerson } from '@/lib/memory/facts'
+import { withSimulatedTime } from '@/lib/core/clock'
 
 const GROUP = '-100facts'
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 5).toString('base64')
@@ -258,5 +259,90 @@ describe('fact lineage (origin + familial timeline)', () => {
     const hits = await currentFactsForQuery(db, GROUP, 'what wifi channel are we on')
     const child = hits.find((h) => h.content.includes('channel'))
     expect(child?.priorContent ?? '').not.toContain('hunter2') // the secret parent is redacted from lineage
+  })
+})
+
+// Phase 3 (spec §6): a dated fact is CURRENT only until its event is over (T2), and a repeat of the
+// same triple with a new date is a new occurrence, never a noop that throws the date away (T6).
+describe('the time model — expiry and new occurrences', () => {
+  const zuzka = { subject: 'zuzka', subjectKind: 'person' as const, predicate: 'staying_in', object: "charli's room", objectKind: 'place' as const }
+  const march = { eventAt: new Date('2026-03-13T23:00:00Z'), validTo: new Date('2026-03-15T22:59:59.999Z') } // Sat 14 – Sun 15 Mar
+  const october = { eventAt: new Date('2026-10-02T22:00:00Z'), validTo: new Date('2026-10-04T21:59:59.999Z') } // Sat 3 – Sun 4 Oct
+  const rowsOf = (db: Awaited<ReturnType<typeof makeTestDb>>) => db.select().from(facts).where(eq(facts.groupId, GROUP))
+
+  it('T2: a stay that is over no longer grounds "who is staying" — but it is kept (still is_current history)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await withSimulatedTime(new Date('2026-03-12T18:00:00Z'), () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...march }))
+    // During the stay it is current …
+    const during = await withSimulatedTime(new Date('2026-03-14T12:00:00Z'), () => currentFactsForQuery(db, GROUP, 'is zuzka staying here?'))
+    expect(during).toHaveLength(1)
+    expect(during[0].validTo?.toISOString()).toBe(march.validTo.toISOString())
+    // … six months later it is not.
+    const later = await withSimulatedTime(new Date('2026-09-26T10:00:00Z'), () => currentFactsForQuery(db, GROUP, 'is zuzka staying here?'))
+    expect(later).toHaveLength(0)
+    const [row] = await rowsOf(db)
+    expect(row.isCurrent).toBe(true) // not superseded — it happened; it is just over
+  })
+
+  it('T6: the same triple with a new date after the old one is over → a NEW occurrence (history kept, lineage linked)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await withSimulatedTime(new Date('2026-03-12T18:00:00Z'), () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...march }))
+    const r = await withSimulatedTime(new Date('2026-09-28T18:00:00Z'), () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))
+    expect(r).toBe('add') // not 'noop' — the October visit is learned
+    const rows = await rowsOf(db)
+    expect(rows).toHaveLength(2)
+    const [old, fresh] = [...rows].sort((a, b) => a.eventAt!.getTime() - b.eventAt!.getTime())
+    expect(fresh.eventAt?.toISOString()).toBe(october.eventAt.toISOString())
+    expect(fresh.derivedFromFactId).toBe(old.id) // the previous visit is its timeline parent
+    const now = await withSimulatedTime(new Date('2026-09-29T10:00:00Z'), () => currentFactsForQuery(db, GROUP, 'zuzka'))
+    expect(now.map((h) => h.eventAt?.toISOString())).toEqual([october.eventAt.toISOString()])
+  })
+
+  it('T6: a new date for a still-upcoming occurrence is a reschedule (supersede); the same date again is a noop', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const at = new Date('2026-09-28T18:00:00Z')
+    await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))).toBe('noop')
+    const nextWeekend = { eventAt: new Date('2026-10-09T22:00:00Z'), validTo: new Date('2026-10-11T21:59:59.999Z') }
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...nextWeekend }))).toBe('update')
+    const live = (await rowsOf(db)).filter((f) => f.isCurrent)
+    expect(live.map((f) => f.eventAt?.toISOString())).toEqual([nextWeekend.eventAt.toISOString()])
+  })
+
+  it('an undated fact that gets its date later is dated in place; restating a past occurrence is a noop', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const at = new Date('2026-09-28T18:00:00Z')
+    await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted' }))
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))).toBe('update')
+    const rows = await rowsOf(db)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].validTo?.toISOString()).toBe(october.validTo.toISOString())
+    // Months later, someone says it again with the same (past) date — history, not a new visit.
+    expect(await withSimulatedTime(new Date('2026-12-01T10:00:00Z'), () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))).toBe('noop')
+    expect(await rowsOf(db)).toHaveLength(1)
+  })
+
+  it('something said AFTER it happened is history: it never closes the upcoming occurrence', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const at = new Date('2026-09-28T18:00:00Z')
+    await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...october }))
+    const lastWeekend = { eventAt: new Date('2026-09-25T22:00:00Z'), validTo: new Date('2026-09-27T21:59:59.999Z') }
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: zuzka, authoredBy: null, trustLevel: 'untrusted', ...lastWeekend }))).toBe('add')
+    const live = await withSimulatedTime(at, () => currentFactsForQuery(db, GROUP, 'zuzka'))
+    expect(live.map((h) => h.eventAt?.toISOString())).toEqual([october.eventAt.toISOString()]) // the October visit is untouched
+    expect((await rowsOf(db)).every((f) => f.isCurrent)).toBe(true)
+  })
+
+  it('a dated fact given no end still expires (the timed default: start + 6h)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, { groupId: GROUP, fact: F('plumber', 'visits_on', 'Thu 1 Oct 09:00'), authoredBy: null, trustLevel: 'untrusted', eventAt: new Date('2026-10-01T07:00:00Z') })
+    const [row] = await rowsOf(db)
+    expect(row.validTo?.toISOString()).toBe('2026-10-01T13:00:00.000Z')
   })
 })

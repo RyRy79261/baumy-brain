@@ -1,5 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
+import { liveFact } from '@/lib/memory/current'
+import { now as clockNow } from '@/lib/core/clock'
 import type { ReflectFact, ReflectNote } from '@/lib/ai/reflect'
 
 // The predicate under which a reflected profile is stored. A profile is just another
@@ -28,17 +30,20 @@ export async function pickPeopleToReflect(
   groupId: string,
   limit: number,
 ): Promise<Array<{ id: string; name: string }>> {
+  // "Current" = live: a stay that is over is not who someone IS (T2 — reflect used to bake a March
+  // visit into a system-trust profile no housemate message could supersede).
+  const at = clockNow()
   const res = await db.execute(sql`
     SELECT e.id, e.canonical_name AS name
     FROM baumy_entities e
     WHERE e.group_id = ${groupId} AND e.kind = 'person' AND e.is_active = true
       AND (
         SELECT count(*) FROM baumy_facts f
-        WHERE f.subject_entity_id = e.id AND f.is_current AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
+        WHERE f.subject_entity_id = e.id AND ${liveFact('f', at)} AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
       ) >= ${MIN_FACTS}
       AND (
         SELECT max(f.recorded_at) FROM baumy_facts f
-        WHERE f.subject_entity_id = e.id AND f.is_current AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
+        WHERE f.subject_entity_id = e.id AND ${liveFact('f', at)} AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
       ) > coalesce((
         SELECT max(f.recorded_at) FROM baumy_facts f
         WHERE f.subject_entity_id = e.id AND f.is_current AND f.predicate = ${PROFILE_PREDICATE}
@@ -61,7 +66,7 @@ export async function gatherPersonMaterial(
     SELECT f.predicate, f.object_value AS value
     FROM baumy_facts f
     WHERE f.group_id = ${groupId} AND f.subject_entity_id = ${personId}
-      AND f.is_current AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
+      AND ${liveFact('f')} AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
       AND f.object_value IS NOT NULL AND length(f.object_value) > 0
     ORDER BY f.recorded_at DESC
     LIMIT 40`)

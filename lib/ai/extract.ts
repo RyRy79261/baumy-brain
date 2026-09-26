@@ -3,6 +3,9 @@ import { z } from 'zod'
 import { resolveModel } from './registry'
 import { EXTRACT_FACTS_SYSTEM } from './prompts'
 import { isMalformedObjectError } from './errors'
+import { timeContext } from '@/lib/core/calendar'
+import { now as clockNow } from '@/lib/core/clock'
+import { houseTz } from '@/lib/env'
 
 // NO ceiling on how many facts one message can teach — if it states 50, we store 50.
 // A "full" page (>= PROBE_AGAIN new facts) might not be the whole story, so we PAGINATE:
@@ -31,10 +34,19 @@ export const extractedFacts = z.object({
       // the default and makes NO graph edge; a concrete entity kind makes the object
       // a real node + relationship EDGE (memory v2 §4). Precision-first.
       objectKind: z.enum(['person', 'place', 'org', 'event', 'thing', 'value']).optional(),
-      // The time phrase VERBATIM when this fact is about something HAPPENING at a specific
-      // time (a guest arriving/staying, a dated event, a deadline) — resolved to an absolute
-      // event_at at CAPTURE time (when "tomorrow" is still unambiguous) so a proactive heads-up
-      // can be scheduled. Empty/absent for timeless facts. See docs/spec/event-surfacing.md.
+      // WHEN the fact happens, resolved by the model against MESSAGE SENT + the calendar table (spec §6):
+      // local ISO start, an end for a period (a stay over the weekend), allDay when no time of day was
+      // said. Code validates it (lib/core/when.ts eventWindowFromModel) into event_at + valid_to — the
+      // anchor the heads-ups read, and the moment the fact stops being current (T2/T3/T8/T10).
+      when: z
+        .object({
+          start: z.string(),
+          end: z.string().optional(),
+          allDay: z.boolean().optional(),
+        })
+        .optional(),
+      // The time phrase VERBATIM — a cross-check, and the chrono FALLBACK when `when` is missing or
+      // does not validate. Empty/absent for timeless facts. See docs/spec/event-surfacing.md.
       whenText: z.string().optional(),
     }),
   ),
@@ -44,13 +56,15 @@ export type ExtractedFacts = z.infer<typeof extractedFacts>
 // Uses the SMARTER 'assess' tier (Sonnet), not the cheap classifier — fact
 // distillation + entity/pronoun resolution is the memory crown jewel and worth it;
 // capture runs in the background (Inngest), so the latency isn't user-facing. The
-// SPEAKER is passed so first-person references resolve to a concrete person.
+// SPEAKER is passed so first-person references resolve to a concrete person; the MESSAGE SENT line
+// and the calendar table (at = when the message was sent, in the house tz) so dates can be absolute.
 export async function extractFacts(
   text: string,
   speaker?: string | null,
+  time: { at?: Date; tz?: string } = {},
   model: LanguageModel = resolveModel('assess'),
 ): Promise<ExtractedFacts> {
-  const speakerLine = `SPEAKER: ${speaker ?? 'a housemate'}`
+  const speakerLine = `SPEAKER: ${speaker ?? 'a housemate'}\n${timeContext(time.at ?? clockNow(), time.tz ?? houseTz())}`
   const all: ExtractedFacts['facts'] = []
   const seen = new Set<string>()
   const keyOf = (f: ExtractedFacts['facts'][number]) =>

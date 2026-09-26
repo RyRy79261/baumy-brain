@@ -7,8 +7,6 @@ import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { houseConfig, reminders } from '@/db/schema'
 import { TRIAGE_SYSTEM, EXTRACT_FACTS_SYSTEM, EXTRACT_REMINDER_SYSTEM } from '@/lib/ai/prompts'
-import { parseWhen } from '@/lib/reminders/parse'
-import { reminderExtraction } from '@/lib/ai/reminder-extract'
 import { withSimulatedTime } from '@/lib/core/clock'
 import type { ClassifierVerdict } from '@/lib/ai/classify'
 import type { TelegramMessageData } from '@/lib/inngest/client'
@@ -20,7 +18,7 @@ const inngestSend = vi.fn(async (..._a: unknown[]) => ({}))
 const resilientSend = vi.fn(async (..._a: unknown[]) => {})
 const prompts: { system: string; prompt: string }[] = []
 let triage: ClassifierVerdict
-let reminderObj = { isReminder: true, whenText: '6pm', content: 'call the plumber' }
+let reminderObj: { reminders: { content: string; whenText?: string; fireAt?: string; forWhom?: 'speaker' | 'house' }[] } = { reminders: [] }
 
 vi.mock('ai', async (orig) => {
   const actual = await orig<typeof import('ai')>()
@@ -78,7 +76,6 @@ const REM: ClassifierVerdict = {
 }
 const run = (e: { data: TelegramMessageData }) => withSimulatedTime(NOW.toJSDate(), () => runIngest(e, step))
 const rows = async () => dbh.db.select().from(reminders)
-const local = (d: Date) => DateTime.fromJSDate(d).setZone(TZ).toFormat("ccc d LLL yyyy HH:mm")
 
 beforeEach(async () => {
   process.env.BAUMY_HOUSE_CHAT_ID = HOUSE
@@ -92,56 +89,21 @@ beforeEach(async () => {
   triage = REM
 })
 
-describe('E18 — reminder content loses WHO', () => {
-  // Phase 1 gives the extractor the SPEAKER (fixed part); naming the requester in the content is
-  // still left to the model's wording, never enforced by code (A4 → phase 5).
-  it('"remind me…" still posts whatever nameless content the extractor returns — code never attributes it', async () => {
-    reminderObj = { isReminder: true, whenText: '6pm', content: 'call the plumber' }
-    await run(ev({ text: '@baumy_bot remind me to call the plumber at 6pm' }))
-    const [r] = await rows()
-    expect(r.content).toBe('call the plumber')
-    // deliver it
-    await reminderDeliver({ event: { data: { reminderId: r.id } }, step: { run: step.run, sleepUntil: async () => {} } })
-    expect(resilientSend.mock.calls[0][1]).toBe('⏰ call the plumber') // whose job? nobody knows
-  })
+// (Phase 3 fixed and removed: E18/A4 nameless "remind me" content, T4 "friday around 10pm" / lead
+// times / "9/10", and A6 recurrence + several reminders per message — the correct behaviour is pinned
+// in lib/inngest/functions/__tests__/ingest-turn.test.ts, lib/reminders/__tests__/digest.test.ts,
+// lib/core/__tests__/when.test.ts and scenarios/time.scenario.test.ts.)
 
+describe('A5 — a personal DM reminder goes to the whole house (phase 5, D2)', () => {
   it('a PERSONAL reminder set privately in a DM is broadcast to the house group', async () => {
-    reminderObj = { isReminder: true, whenText: '9pm', content: 'take my antibiotics' }
+    reminderObj = { reminders: [{ content: 'take my antibiotics', whenText: '9pm', fireAt: '', forWhom: 'speaker' }] }
     await run(ev({ chatId: String(CHARLI), chatType: 'private', text: 'remind me to take my antibiotics at 9pm' }))
     const [r] = await rows()
     expect(r.deliverChatId).toBe(HOUSE) // not Charli's DM
-    await reminderDeliver({ event: { data: { reminderId: r.id } }, step: { run: step.run, sleepUntil: async () => {} } })
-    expect(resilientSend.mock.calls[0][1]).toBe('⏰ take my antibiotics') // "my" now means nobody, in front of everyone
-  })
-})
-
-describe('time phrases the extractor is TOLD to produce are mis-resolved', () => {
-  it('"Friday around 10pm" (EXTRACT_REMINDER_SYSTEM\'s own example) fires Friday 09:00 — time of day lost', async () => {
-    reminderObj = { isReminder: true, whenText: 'Friday around 10pm', content: 'Zuzka arrives, let her in' }
-    await run(ev({ text: '@baumy_bot remind us friday around 10pm to let Zuzka in' }))
-    const [r] = await rows()
-    expect(local(r.fireAt)).toBe('Fri 25 Sep 2026 09:00')
-  })
-  it('lead-time phrase "a week before friday" (reminder-extract.ts schema comment example) → a date in the PAST', () => {
-    const p = parseWhen('a week before friday', TZ, NOW)!
-    expect(local(p.fireAt)).toBe('Fri 18 Sep 2026 09:00')
-    expect(p.fireAt.getTime()).toBeLessThan(NOW.toMillis())
-  })
-  it('"9/10" in a Berlin house (9 October) is read US-style → 10 September 2027', () => {
-    expect(local(parseWhen('9/10', TZ, NOW)!.fireAt)).toBe('Fri 10 Sep 2027 09:00')
-  })
-})
-
-describe('recurrence + multiplicity', () => {
-  it('"every friday at 8pm" silently becomes ONE Friday; after delivery nothing re-arms', async () => {
-    reminderObj = { isReminder: true, whenText: 'every friday at 8pm', content: 'bins out' }
-    await run(ev({ text: '@baumy_bot remind us every friday at 8pm to put the bins out' }))
-    const all = await rows()
-    expect(all).toHaveLength(1)
-    await reminderDeliver({ event: { data: { reminderId: all[0].id } }, step: { run: step.run, sleepUntil: async () => {} } })
-    const after = await rows()
-    expect(after).toHaveLength(1)
-    expect(after[0].status).toBe('sent') // done forever; next Friday nothing
-    expect(Object.keys(reminderExtraction.shape)).toEqual(['isReminder', 'whenText', 'content']) // no recurrence, no array
+    await withSimulatedTime(r.fireAt, () =>
+      reminderDeliver({ event: { data: { reminderId: r.id } }, step: { run: step.run, sleepUntil: async () => {}, sendEvent: async () => {} } }),
+    )
+    // Since phase 3 it at least names her (A4) — but it still posts in front of everyone.
+    expect(resilientSend.mock.calls[0][1]).toBe('⏰ Charli: take my antibiotics')
   })
 })

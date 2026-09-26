@@ -84,7 +84,7 @@ export async function captureMemory(input: CaptureInput, deps?: Partial<MemoryDe
         .set({
           salience: sql`least(1.0, ${memoryItems.salience} + 0.1)`,
           accessCount: sql`${memoryItems.accessCount} + 1`,
-          lastAccessedAt: new Date(),
+          lastAccessedAt: clockNow(),
         })
         .where(eq(memoryItems.id, dupId))
       return dupId

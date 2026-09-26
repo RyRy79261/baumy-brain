@@ -204,11 +204,22 @@ crown jewels. The pipeline:
   same subject). This chains a progression across predicates + people ("you said Zuzka's coming"
   → "Marco said she arrived"); `currentFactsForQuery` surfaces the author + parent into the reply
   grounding (a **secret** parent is redacted). Both nullable, additive.
+- **Time** (`docs/spec/chat-understanding-v2.md` §6): the fact + reminder extractors get a `MESSAGE
+  SENT` line and a 21-day calendar table (`lib/core/calendar.ts`) and resolve times themselves (local
+  ISO); code validates (`lib/core/when.ts` — parseable, ≤2 years out, end ≥ start) and falls back to
+  chrono on the verbatim phrase with FIXED defaults (bare hour = next occurrence, dayparts, "this
+  weekend" on a weekend, "the 9th", late-night "tomorrow"). A dated fact stores `event_at` +
+  `valid_to` (its end). **"Current" = `is_current AND (valid_to IS NULL OR valid_to > now)`**
+  (`lib/memory/current.ts` `liveFact`) in EVERY read that grounds a reply / report / graph / reflect /
+  heads-up — an event that is over is history (the entity timeline shows it "(past, date)"), never
+  "current". Pass `now` from the clock seam, never Postgres `now()`. The same triple with a new date
+  is a new occurrence (expired incumbent) or a reschedule (live one) — never a noop that drops the date.
+  All time reads in `lib/**` go through `lib/core/clock.ts` `now()` (auth excepted, on purpose).
 - **Graph traversal** (`graph.ts`, `docs/spec/fact-graph-traversal.md`): the facts form a property
   graph (relationship edges = a fact row with `object_entity_id` set). `connectedEdges` walks it
   with a **bounded recursive CTE** (≤2 hops / node+edge caps, both directions) from a query's seed
   entities — the cross-subject hop ("Charl's sister → the cave"); `entityTimeline` walks one
-  subject's full progression (incl. superseded, tagged `(past)`). `gatherGraphContext` feeds both
+  subject's full progression (incl. superseded and expired, tagged `(past)`). `gatherGraphContext` feeds both
   into the **deep-tier** reply grounding (best-effort). Group-scoped, secret-excluded, current-only.
 - **Retrieve** (`retrieve.ts`): **hybrid RRF** — semantic (pgvector cosine) ⊕ lexical
   (`content_tsv` full-text), fused by Reciprocal Rank Fusion, then recency-composed. The **deep
@@ -283,18 +294,28 @@ crown jewels. The pipeline:
   Inngest functions. Scope (house vs DM vs ignore) is resolved downstream from `house_config`.
 - `.env*` files may be blocked by local permissions — edit `SETUP.md`/`.env.example` guidance
   instead of assuming you can read them.
-- Reminders are exactly-once: claim → send → mark-sent, with release-on-failure + a stale-firing
-  reaper. Don't reorder that. Exactly-once is a **ceiling, not a floor** — a reminder more than
+- Reminders are exactly-once: claim → send → mark-sent (→ create next, for a recurring one), with
+  release-on-failure + a stale-firing reaper. Don't reorder that. A recurring series is a chain of
+  one-off rows; "create next" is an insert on the UNIQUE `previous_reminder_id` (ON CONFLICT DO
+  NOTHING), and the digest's `repairRecurringSeries` heals a crash after mark-sent. Exactly-once is a
+  **ceiling, not a floor** — a reminder more than
   `STALE_AFTER_HOURS` (24h) past its moment is **cancelled, not delivered** (`expireStaleScheduled` +
-  the `dueScheduled` floor). Removing that grace window is how a months-old backlog gets flushed into
-  the group as if it were today's news (`docs/spec/reminders.md` §Staleness).
+  the `dueScheduled` floor; a retired recurring occurrence still schedules its next one). Removing that
+  grace window is how a months-old backlog gets flushed into
+  the group as if it were today's news (`docs/spec/reminders.md` §Staleness). A reminder time that is
+  already past at creation is never written (it would fire instantly) — it is a clarifying question.
+  A personal ("remind me") reminder is prefixed with the AUTHENTICATED sender's first name (A4).
 - Proactive event heads-ups (`docs/spec/event-surfacing.md`): the **line is written by the model**
   (`lib/ai/nudge.ts`), never templated from `{subject, predicate}` columns — that printed row
   fragments ("Heads-up — Mad profile, today") into the house group. Code still picks what is eligible
   (grouped **per event**, not per fact triple; profiles excluded; secrets excluded) and where it goes.
-  A `SKIP` from the model — or any error — schedules **nothing**. Dates on stored facts are read with
-  `parseEventDate` (precision-first: no forward-dating, coverage + known-day guards), never a bare
-  chrono call over arbitrary values.
+  A `SKIP` from the model — or any error — schedules **nothing**. Stages are digest slots (08:00 a week
+  before, 20:00 the evening before, 08:00 on the day; the scan runs at 07:45), and the line is
+  **re-written at DELIVERY** from the event's facts as they are then, with the lead measured from the
+  delivery instant (`headsUpAtDelivery` — one line per event per digest; an event that moved, ended or
+  started is dropped). Dates on stored facts are read with `parseEventWindow`/`parseEventDate` (the
+  capture resolver + precision guards: coverage + known-day, a past marker read literally), never a
+  bare chrono call over arbitrary values.
 
 ---
 

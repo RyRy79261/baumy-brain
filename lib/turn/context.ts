@@ -3,6 +3,7 @@ import type { Trust } from '@/lib/core/origin'
 import type { DirectedWhy } from '@/lib/pipeline/directed'
 import type { ClassifierVerdict } from '@/lib/ai/classify'
 import { scanSensitivity } from '@/lib/core/sensitivity'
+import { describeRecurrence } from '@/lib/reminders/recurrence'
 
 // The TURN (docs/spec/chat-understanding-v2.md §1): one inbound message and everything the system
 // KNOWS about it — who is speaking, where, why it is for Baumy, what it is replying to — built
@@ -62,7 +63,11 @@ export type ForgetOutcome =
 
 export interface TurnOutcome {
   captured?: { memoryItemId: string; factIds: string[]; learned: FactSummary[]; rejected: FactSummary[] }
+  /** The reminder outcome the planner reads — with several (A6), the first failure, else the first set
+   *  (lib/turn/actions.ts primaryReminder). */
   reminder?: ReminderOutcome
+  /** Every reminder the message asked for, in order (one message can set several — A6). */
+  reminders?: ReminderOutcome[]
   list?: ListOutcome
   forget?: ForgetOutcome
 }
@@ -215,13 +220,16 @@ export function describeOutcome(o: TurnOutcome, tz: string, opts: { withholdObje
   if (o.captured?.learned.length) parts.push(`noted — ${o.captured.learned.map(fact).join('; ')}`)
   else if (o.captured) parts.push('filed the message in memory (nothing new to add as a fact — possibly already known)')
   if (o.captured?.rejected.length) parts.push(`NOT stored (conflicts with something more trusted) — ${o.captured.rejected.map(fact).join('; ')}`)
-  const r = o.reminder
-  if (r?.status === 'set') parts.push(`reminder set ${fmtWhen(r.fireAt, tz)} — ${r.content}`)
-  else if (r?.status === 'needs_time') parts.push(`no reminder was created — it needs a time (about: ${r.content})`)
-  else if (r?.status === 'past') parts.push(`no reminder was created — that time is already past (about: ${r.content})`)
-  else if (r?.status === 'unparsed') parts.push(`no reminder was created — couldn't work out when (about: ${r.content})`)
-  else if (r?.status === 'paused')
-    parts.push('no reminder was created — Baumy is paused in the house group (an admin used /pause) and reminders post there, so none can be set until it is resumed')
+  for (const r of o.reminders ?? (o.reminder ? [o.reminder] : [])) {
+    if (r.status === 'set') {
+      const repeat = describeRecurrence(r.recurrence)
+      parts.push(`reminder set ${fmtWhen(r.fireAt, tz)}${repeat ? ` (repeats ${repeat})` : ''} — ${r.content}`)
+    } else if (r.status === 'needs_time') parts.push(`no reminder was created — it needs a time (about: ${r.content})`)
+    else if (r.status === 'past') parts.push(`no reminder was created — that time is already past (about: ${r.content})`)
+    else if (r.status === 'unparsed') parts.push(`no reminder was created — couldn't work out when (about: ${r.content})`)
+    else if (r.status === 'paused')
+      parts.push('no reminder was created — Baumy is paused in the house group (an admin used /pause) and reminders post there, so none can be set until it is resumed')
+  }
   const l = o.list
   if (l) {
     if (l.added.length) parts.push(`added to the shopping list: ${l.added.join(', ')}`)

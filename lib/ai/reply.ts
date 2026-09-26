@@ -7,6 +7,7 @@ import { isMalformedObjectError } from './errors'
 import { scanSensitivity } from '@/lib/core/sensitivity'
 import { describeOutcome, describeReplyTo, describeWhere, type TurnContext } from '@/lib/turn/context'
 import { renderRecentChat } from '@/lib/turn/window'
+import { formatEventWindow } from '@/lib/core/calendar'
 import type { ReplyMode } from '@/lib/turn/plan'
 
 // Grounded reply (docs/spec/chat-understanding-v2.md §4). Memory-only, ZERO tools (exfil-safe).
@@ -29,8 +30,10 @@ export interface GroundingItem {
   who: string | null
   /** When it was said (note created_at / fact recorded_at). */
   saidAt: Date | null
-  /** For a dated happening: when it happens (fact event_at). */
+  /** For a dated happening: when it happens (fact event_at) … */
   eventAt?: Date | null
+  /** … and when it is over (fact valid_to) — a multi-day stay renders as a range. */
+  validTo?: Date | null
   content: string
   isSecure: boolean
   /** AES-GCM blob for a secure value; decrypted upstream ONLY for a direct ask (C15). */
@@ -52,7 +55,10 @@ export function memoryLine(m: GroundingItem, tz: string, nowAt: Date): string {
     return `  - ${parts.join(' · ')}: "${m.content}"`
   }
   if (m.saidAt) parts.push(`said ${day(m.saidAt, tz, now)}`)
-  if (m.eventAt) parts.push(`event ${day(m.eventAt, tz, now, true)}${m.eventAt.getTime() < now.startOf('day').toMillis() ? ' (past)' : ''}`)
+  if (m.eventAt) {
+    const over = (m.validTo ?? m.eventAt).getTime() < (m.validTo ? nowAt.getTime() : now.startOf('day').toMillis())
+    parts.push(`event ${formatEventWindow(m.eventAt, m.validTo, tz, { year: DateTime.fromJSDate(m.eventAt).setZone(tz).year !== now.year })}${over ? ' (past)' : ''}`)
+  }
   return `  - ${parts.join(' · ')}: ${m.content}`
 }
 

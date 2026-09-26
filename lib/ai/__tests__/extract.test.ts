@@ -22,6 +22,23 @@ describe('extractFacts — speaker-aware (resolves first person)', () => {
     expect(captured.system).toContain('RESOLVE every first-person reference')
   })
 
+  it('T3: is told WHEN the message was sent + the calendar table, and asked for self-contained objects + a resolved `when`', async () => {
+    await extractFacts('Zuzka arrives tomorrow night', 'Charli', { at: new Date('2026-09-26T19:40:00Z'), tz: 'Europe/Berlin' })
+    expect(captured.prompt).toContain('MESSAGE SENT: Sat 26 Sep 2026 21:40 Europe/Berlin')
+    expect(captured.prompt).toContain('Sun 2026-09-27 (tomorrow)')
+    expect(captured.system).toContain('NO relative time words')
+    expect(captured.system).toMatch(/set `when`/)
+    expect(captured.system).not.toContain('Do NOT resolve it to a calendar date yourself')
+  })
+
+  it('the schema carries the resolved `when` range next to the verbatim phrase', async () => {
+    const { extractedFacts } = await import('@/lib/ai/extract')
+    const ok = extractedFacts.safeParse({
+      facts: [{ subject: 'zuzka', predicate: 'stays_in', object: "charli's room Sat 3–Sun 4 Oct", when: { start: '2026-10-03', end: '2026-10-04', allDay: true }, whenText: 'this weekend' }],
+    })
+    expect(ok.success).toBe(true)
+  })
+
   it('defaults the speaker label when unknown', async () => {
     await extractFacts('bins go out tuesday')
     expect(captured.prompt).toContain('SPEAKER: a housemate')

@@ -1,0 +1,3 @@
+ALTER TABLE "baumy_reminders" ADD COLUMN "previous_reminder_id" uuid;--> statement-breakpoint
+ALTER TABLE "baumy_reminders" ADD CONSTRAINT "baumy_reminders_previous_reminder_id_baumy_reminders_id_fk" FOREIGN KEY ("previous_reminder_id") REFERENCES "public"."baumy_reminders"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "baumy_reminders_previous_uq" ON "baumy_reminders" USING btree ("previous_reminder_id");

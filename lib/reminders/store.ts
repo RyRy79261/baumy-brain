@@ -1,6 +1,8 @@
-import { and, desc, eq, gte, inArray, lt, lte, sql } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, isNotNull, lt, lte, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { reminders } from '@/db/schema'
+import { now as clockNow } from '@/lib/core/clock'
+import { nextOccurrence } from '@/lib/reminders/recurrence'
 
 export interface CreateReminderInput {
   groupId: string
@@ -12,6 +14,8 @@ export interface CreateReminderInput {
   // The dated fact this reminder is anchored to (event-surfacing heads-ups); null for an
   // explicit "remind me" reminder. Lets the scan de-dupe stages per event (docs/spec/event-surfacing.md).
   eventFactId?: string | null
+  // RRULE-lite, already validated + normalised (lib/reminders/recurrence.ts); null = a one-off.
+  recurrence?: string | null
 }
 
 export async function createReminder(db: Database, input: CreateReminderInput): Promise<string> {
@@ -26,9 +30,91 @@ export async function createReminder(db: Database, input: CreateReminderInput): 
       status: 'scheduled',
       createdBy: input.createdBy,
       eventFactId: input.eventFactId ?? null,
+      recurrence: input.recurrence ?? null,
+      // Explicit, not the column default: a Postgres defaultNow() is blind to a simulated clock (T13).
+      createdAt: clockNow(),
     })
     .returning({ id: reminders.id })
   return r.id
+}
+
+// ── Recurring series (D3 / A6) ───────────────────────────────────────────────────────────────────
+// A recurring reminder is a chain of one-off rows: each occurrence is delivered by the SAME proven
+// claim → send → mark-sent machinery, and only then is the next occurrence created. Creating it is an
+// INSERT … ON CONFLICT DO NOTHING on the unique previous_reminder_id, so a retry (or the repair sweep
+// racing a delivery) can never schedule a series twice, and a crash between mark-sent and create-next
+// is healed by repairRecurringSeries on the next digest. Nothing is ever armed twice either: the
+// successor is armed by the daily arm cron / delivered by the digest like any other reminder.
+export interface SeriesRow {
+  id: string
+  groupId: string
+  deliverChatId: string
+  content: string
+  anchorKind: string
+  fireAt: Date
+  recurrence: string | null
+  createdBy: string | null
+}
+
+/** Schedule the occurrence after `row` (strictly after `after`). Returns the new id, or null when
+ *  the rule is invalid, or when a successor already exists (the exactly-once guard). */
+export async function scheduleNextOccurrence(db: Database, row: SeriesRow, after: Date, tz: string): Promise<string | null> {
+  if (!row.recurrence) return null
+  const next = nextOccurrence(row.recurrence, new Date(row.fireAt), after, tz)
+  if (!next) return null
+  const inserted = await db
+    .insert(reminders)
+    .values({
+      groupId: row.groupId,
+      deliverChatId: row.deliverChatId,
+      content: row.content,
+      anchorKind: row.anchorKind,
+      fireAt: next,
+      status: 'scheduled',
+      createdBy: row.createdBy,
+      recurrence: row.recurrence,
+      previousReminderId: row.id,
+      createdAt: clockNow(),
+    })
+    .onConflictDoNothing({ target: reminders.previousReminderId })
+    .returning({ id: reminders.id })
+  return inserted[0]?.id ?? null
+}
+
+const seriesColumns = {
+  id: reminders.id,
+  groupId: reminders.groupId,
+  deliverChatId: reminders.deliverChatId,
+  content: reminders.content,
+  anchorKind: reminders.anchorKind,
+  fireAt: reminders.fireAt,
+  recurrence: reminders.recurrence,
+  createdBy: reminders.createdBy,
+}
+
+/** One reminder row in the series shape (the delivery paths load it after a send). */
+export async function loadSeriesRow(db: Database, id: string): Promise<SeriesRow | null> {
+  const [r] = await db.select(seriesColumns).from(reminders).where(eq(reminders.id, id)).limit(1)
+  return r ?? null
+}
+
+// Heal a series whose "create next" never ran (the process died after mark-sent): every SENT recurring
+// occurrence of the last few weeks without a successor gets one. Bounded, idempotent (the unique
+// previous_reminder_id makes a concurrent delivery's insert and this one collapse into one row).
+const REPAIR_LOOKBACK_DAYS = 35
+export async function repairRecurringSeries(db: Database, now: Date, tz: string): Promise<number> {
+  const since = new Date(now.getTime() - REPAIR_LOOKBACK_DAYS * 86_400_000)
+  const res = await db.execute(sql`
+    SELECT r.id FROM baumy_reminders r
+    WHERE r.recurrence IS NOT NULL AND r.status = 'sent' AND r.fire_at >= ${since.toISOString()}
+      AND NOT EXISTS (SELECT 1 FROM baumy_reminders n WHERE n.previous_reminder_id = r.id)`)
+  const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
+  let created = 0
+  for (const { id } of rows) {
+    const row = await loadSeriesRow(db, String(id))
+    if (row && (await scheduleNextOccurrence(db, row, now, tz))) created++
+  }
+  return created
 }
 
 // All fire times already scheduled/sent/cancelled for a dated fact — the event-surfacing scan's
@@ -50,13 +136,14 @@ export async function remindersForEventFacts(db: Database, eventFactIds: string[
 // contradicted — "Iman's coming" → "Iman cancelled") — the integrity gap: surfacing only ever
 // CREATES reminders, so a stale one would still deliver. The consolidation pass cancels these.
 // Group-scoped; joins reminders → the fact it's anchored to; only pending (scheduled) ones.
-export async function orphanedEventReminders(db: Database, groupId: string): Promise<{ id: string }[]> {
+// An anchor whose event is OVER (valid_to passed) is orphaned too — a heads-up about it is history.
+export async function orphanedEventReminders(db: Database, groupId: string, now: Date = clockNow()): Promise<{ id: string }[]> {
   const res = await db.execute(sql`
     SELECT r.id
     FROM baumy_reminders r
     JOIN baumy_facts f ON r.event_fact_id = f.id
     WHERE r.group_id = ${groupId} AND r.anchor_kind = 'event_offset' AND r.status = 'scheduled'
-      AND f.is_current = false`)
+      AND (f.is_current = false OR (f.valid_to IS NOT NULL AND f.valid_to <= ${now.toISOString()}))`)
   const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
   return rows.map((r) => ({ id: String(r.id) }))
 }
@@ -113,6 +200,7 @@ export async function listReminders(db: Database, groupId: string, limit = 100) 
       fireAt: reminders.fireAt,
       status: reminders.status,
       createdBy: reminders.createdBy,
+      recurrence: reminders.recurrence,
     })
     .from(reminders)
     .where(eq(reminders.groupId, groupId))
@@ -133,6 +221,8 @@ export async function dueScheduled(db: Database, before: Date, limit = 100, notB
       deliverChatId: reminders.deliverChatId,
       content: reminders.content,
       anchorKind: reminders.anchorKind, // event_offset heads-ups render differently from ⏰ reminders
+      eventFactId: reminders.eventFactId, // the event a heads-up is about — its line is written at delivery
+      recurrence: reminders.recurrence,
     })
     .from(reminders)
     .where(
@@ -150,7 +240,19 @@ export async function dueScheduled(db: Database, before: Date, limit = 100, notB
 // news. Cancelled (not deleted) so the dashboard still shows what happened, and cancelled rows are
 // gated out of every delivery path by claimReminder. Returns how many were retired so the digest
 // can LOG the drop instead of silently swallowing it.
-export async function expireStaleScheduled(db: Database, olderThan: Date): Promise<number> {
+//
+// A retired RECURRING occurrence does not end its series: the next occurrence is scheduled FIRST (the
+// idempotent insert), then the stale one is retired — so a crash in between leaves a still-scheduled
+// stale row that the next run retires, never a series with no future. Missing one bin night must not
+// silently cancel every bin night after it.
+export async function expireStaleScheduled(db: Database, olderThan: Date, opts: { now?: Date; tz?: string } = {}): Promise<number> {
+  if (opts.tz) {
+    const recurring = await db
+      .select(seriesColumns)
+      .from(reminders)
+      .where(and(eq(reminders.status, 'scheduled'), lt(reminders.fireAt, olderThan), isNotNull(reminders.recurrence)))
+    for (const r of recurring) await scheduleNextOccurrence(db, r, opts.now ?? clockNow(), opts.tz)
+  }
   const rows = await db
     .update(reminders)
     .set({ status: 'cancelled' })

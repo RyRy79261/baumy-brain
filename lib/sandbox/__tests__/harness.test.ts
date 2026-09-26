@@ -13,7 +13,7 @@ import type { ClassifierVerdict } from '@/lib/ai/classify'
 const dbh: { db: Awaited<ReturnType<typeof makeTestDb>> | null } = { db: null }
 const classifyMock = vi.fn<(t: string) => Promise<ClassifierVerdict>>()
 const extractFactsMock = vi.fn<(t: string, s?: string | null) => Promise<{ facts: unknown[] }>>()
-const extractReminderMock = vi.fn<(t: string) => Promise<{ isReminder: boolean; whenText: string; content: string }>>()
+const extractReminderMock = vi.fn<(t: string) => Promise<{ reminders: { content: string; whenText?: string; fireAt?: string }[] }>>()
 const answerMock = vi.fn<(...a: unknown[]) => Promise<{ text: string; answered: boolean }>>()
 const writeHeadsUpMock = vi.fn<(f: { subject: string }[], lead: string, when: string) => Promise<string | null>>()
 
@@ -63,7 +63,7 @@ describe('sandbox — talk as anyone, move time, watch what happens', () => {
     for (const m of [classifyMock, extractFactsMock, extractReminderMock, answerMock, writeHeadsUpMock]) m.mockReset()
     classifyMock.mockResolvedValue(CHATTER)
     extractFactsMock.mockResolvedValue({ facts: [] })
-    extractReminderMock.mockResolvedValue({ isReminder: false, whenText: '', content: '' })
+    extractReminderMock.mockResolvedValue({ reminders: [] })
     answerMock.mockResolvedValue({ text: 'meow', answered: true })
     writeHeadsUpMock.mockResolvedValue(null)
     process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 13).toString('base64')
@@ -105,16 +105,17 @@ describe('sandbox — talk as anyone, move time, watch what happens', () => {
   it('an explicit "remind us" from one person fires at its time — and each job runs at ITS OWN instant, not all at the end', async () => {
     const sb = await freshSandbox('2026-07-01T09:00:00Z')
     classifyMock.mockResolvedValue(REMINDER)
-    extractReminderMock.mockResolvedValue({ isReminder: true, whenText: '3 July at 9am', content: 'bins go out' })
+    extractReminderMock.mockResolvedValue({ reminders: [{ content: 'bins go out', whenText: '3 July at 9am' }] })
     // Directed (@mention): an undirected "remind us" in the group schedules nothing (A9).
     await sendAs(sb, 'Charl', 'remind us to put the bins out on the 3rd at 9am', { mention: true })
 
-    // Jump a WEEK in one call. The reminder must land on the 3rd's digest, not be flushed at the
-    // destination timestamp — that difference is the whole reason jobs run at their own `now`.
+    // Jump a WEEK in one call. The reminder must fire on the 3rd at 09:00 (its own instant — the armed
+    // sleepUntil path), not be flushed at the destination timestamp — that difference is the whole
+    // reason jobs run at their own `now`.
     const res = await advanceBy(sb, { days: 7 })
     const firing = res.fired.find((f) => spoken(f.said).some((t) => t.includes('bins go out')))
     expect(firing).toBeDefined()
-    expect(firing!.at.toISOString().slice(0, 10)).toBe('2026-07-03')
+    expect(firing!.at.toISOString()).toBe('2026-07-03T07:00:00.000Z') // 09:00 Berlin, not the next digest
     expect(spoken(firing!.said)[0]).toContain('⏰') // explicit reminder framing
   })
 

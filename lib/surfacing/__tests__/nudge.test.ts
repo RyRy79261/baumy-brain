@@ -1,15 +1,18 @@
 import { describe, it, expect } from 'vitest'
-import { computeNudgeStages, groupEvents, leadFor, whenLabel } from '@/lib/surfacing/nudge'
+import { computeNudgeStages, groupEvents, leadAt, leadFor, whenLabel } from '@/lib/surfacing/nudge'
 import { sanitiseHeadsUp } from '@/lib/ai/nudge'
 
 const tz = 'Europe/Berlin'
 
-describe('computeNudgeStages — lead-time policy (week / day / morning)', () => {
-  it('an upcoming event gets all three stages, each in the future and before the event', () => {
-    const now = new Date('2026-07-01T09:00:00Z')
-    const event = new Date('2026-07-08T12:00:00Z') // ~7 days out
+describe('computeNudgeStages — lead-time policy, pinned to digest slots (T11)', () => {
+  const local = (d: Date) => new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(d)
+
+  it('an upcoming event gets all three stages — 08:00 a week before, 20:00 the evening before, 08:00 on the day', () => {
+    const now = new Date('2026-07-01T05:45:00Z') // Wed 07:45 (the scan)
+    const event = new Date('2026-07-08T12:00:00Z') // Wed 8 Jul 14:00
     const stages = computeNudgeStages(event, now, tz)
     expect(stages.map((s) => s.stage)).toEqual(['week', 'day', 'morning'])
+    expect(stages.map((s) => local(s.fireAt))).toEqual(['Wed 1, 08:00', 'Tue 7, 20:00', 'Wed 8, 08:00'])
     for (const s of stages) {
       expect(s.fireAt.getTime()).toBeGreaterThan(now.getTime())
       expect(s.fireAt.getTime()).toBeLessThan(event.getTime())
@@ -28,6 +31,18 @@ describe('computeNudgeStages — lead-time policy (week / day / morning)', () =>
     expect(computeNudgeStages(event, now, tz).map((s) => s.stage)).toEqual(['morning'])
   })
 
+  it('an early-morning event (07:00) gets no after-the-fact morning nudge — the evening before covers it', () => {
+    const now = new Date('2026-07-08T09:00:00Z')
+    const event = new Date('2026-07-10T05:00:00Z') // Fri 07:00
+    expect(computeNudgeStages(event, now, tz).map((s) => s.stage)).toEqual(['day'])
+  })
+
+  it('an ALL-DAY event (local midnight start) still gets its morning-of nudge', () => {
+    const now = new Date('2026-07-08T09:00:00Z')
+    const event = new Date('2026-07-09T22:00:00Z') // Sat 11 Jul, all day
+    expect(computeNudgeStages(event, now, tz).map((s) => s.stage)).toEqual(['day', 'morning'])
+  })
+
   it('a past event yields nothing (never nudge after the fact)', () => {
     const now = new Date('2026-07-10T09:00:00Z')
     const event = new Date('2026-07-05T09:00:00Z')
@@ -35,13 +50,31 @@ describe('computeNudgeStages — lead-time policy (week / day / morning)', () =>
   })
 })
 
+describe('leadAt — the lead as of the moment the line is POSTED (T11)', () => {
+  const party = new Date('2026-10-03T20:00:00Z') // Sat 3 Oct 22:00 Berlin
+  it('reads the real distance from delivery, in house-tz calendar days', () => {
+    expect(leadAt(party, new Date('2026-10-02T18:00:00Z'), tz)).toBe('tomorrow') // Fri 20:00
+    expect(leadAt(party, new Date('2026-10-03T06:00:00Z'), tz)).toBe('tonight') // Sat 08:00 — NOT "tomorrow"
+    expect(leadAt(party, new Date('2026-09-30T06:00:00Z'), tz)).toBe('on Saturday (in 3 days)')
+    expect(leadAt(party, new Date('2026-09-26T06:00:00Z'), tz)).toBe('next week')
+    expect(leadAt(new Date('2026-10-03T08:00:00Z'), new Date('2026-10-03T06:00:00Z'), tz)).toBe('today') // a 10:00 thing, at 08:00
+  })
+  it('null once a timed event has started, or an all-day one is over — dropped, never posted late', () => {
+    expect(leadAt(party, new Date('2026-10-03T20:30:00Z'), tz)).toBeNull()
+    const allDay = new Date('2026-10-02T22:00:00Z') // Sat 3 Oct, all day
+    expect(leadAt(allDay, new Date('2026-10-03T18:00:00Z'), tz)).toBe('today') // Sat 20:00 — still that day
+    expect(leadAt(allDay, new Date('2026-10-04T06:00:00Z'), tz)).toBeNull()
+  })
+})
+
 describe('lead framing — fresh date, never the fact\'s stale phrase', () => {
   const event = new Date('2026-07-09T20:00:00Z')
-  it('labels the lead and renders the date from event_at', () => {
+  it('labels the scheduled lead and renders the date (+ time for a timed event) from event_at', () => {
     expect(leadFor('week')).toBe('next week')
     expect(leadFor('day')).toBe('tomorrow')
     expect(leadFor('morning')).toBe('today')
-    expect(whenLabel(event, tz)).toBe('Thu 9 Jul')
+    expect(whenLabel(event, tz)).toBe('Thu 9 Jul, 22:00')
+    expect(whenLabel(new Date('2026-07-08T22:00:00Z'), tz)).toBe('Thu 9 Jul') // all day
   })
 })
 

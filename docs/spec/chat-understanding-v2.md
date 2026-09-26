@@ -241,6 +241,66 @@ context only — it never writes facts and is never shown to anyone.
 - Reports: `/weekly` uses dated notes of kind statement/fact from the last 7 days (T5); `/guests` uses
   event ranges.
 
+**As implemented (phase 3):**
+- `lib/core/calendar.ts`: `messageSentLine` / `calendarTable` (21 rows from yesterday, `Sat 2026-09-26
+  (today)`) / `timeContext`, and `TIME_RULES` — the resolution defaults, stated once and put in both the
+  fact and the reminder extractor prompts, so the model and the fallback agree.
+- `lib/core/when.ts` is THE resolver: validation of what the model resolved (`eventWindowFromModel`,
+  `fireAtFromModel` — parseable local ISO, ≤ 2 years from now in either direction, an end before the
+  start is dropped and the default applies) and the chrono fallback (`resolveWhen`) with the fixed
+  defaults: filler dropped + split date/time hits merged ("friday around 10pm" → Fri 22:00); a bare
+  hour is the next occurrence, skipping 02:00–06:00, and with a day named 1–7 means pm; dayparts
+  morning 09 · noon 12 · afternoon 15 · evening/tonight 20 · night 22; a weekday said on that weekday
+  is today while the time is ahead; "this weekend" on Sat/Sun is the current weekend (a Sat–Sun
+  range); past markers read literally; "the 9th" = the next 9th; "end of the month"; "N units
+  before/after X"; durations ("for a week") are not times; day/month slashes outside the Americas;
+  **late-night rule: 00:00–04:00 "tomorrow" means the day that is dawning** (the calendar date of now).
+  `lib/reminders/parse.ts` keeps `parseWhen` / `parseEventDate` (+ `parseEventWindow`) as thin wrappers;
+  the backfill uses the same resolver plus its precision guards (T12).
+- Facts: the extractor schema has `when {start, end?, allDay}` next to `whenText` (the cross-check /
+  fallback; a disagreement is logged, the model wins). Stored as `event_at` + `valid_to`; an all-day
+  start is local midnight. A caller that dates a fact without an end gets start + 6h, so no dated fact
+  stays current forever. `lib/memory/current.ts` `liveFact(alias, now)` is the one "current" predicate —
+  used by `currentFactsForQuery`, `upcomingDatedFacts`, `recentUndatedFacts`, `eventGroupFacts`, the graph
+  walk, reflect, `/guests`, `/recent`, and orphaned-heads-up detection (an anchor whose event is over).
+  `entityTimeline` keeps expired rows as "(past, Sat 14 Mar 2026)". Reconcile: the incumbent is the LIVE
+  row; an expired one never blocks a new occurrence (lineage links the new visit to the old); a live
+  dated incumbent given a different date is a reschedule (supersede, trust-gated); an undated live
+  incumbent is dated in place; restating an occurrence that is already on record (same value + moment)
+  is a noop; something already over when it is said ("stayed last weekend") is recorded as history and
+  never supersedes or re-dates the live row. The invariant is "one LIVE row per (group, subject,
+  predicate)".
+- Reminders: the extractor returns `reminders: [{content, fireAt, whenText, recurrence, forWhom}]`
+  (several per message — A6). Per entry, code: the model's `fireAt` if valid, else the phrase; nothing
+  → `needs_time`, unreadable → `unparsed`; already past → a recurring one moves to its next occurrence,
+  a one-off whose time of day was only a default ("today" at 14:00, "tonight" at 23:30) → `needs_time`,
+  anything else → `past` (never written — it would fire instantly); clamped out of 02:00–06:00. The
+  rule is validated + pinned (`lib/reminders/recurrence.ts`: `FREQ=DAILY|WEEKLY|MONTHLY`, `INTERVAL`,
+  `BYDAY`, `BYMONTHDAY`; a WEEKLY rule gets the first occurrence's weekday, a MONTHLY one its day), with a
+  tiny phrase fallback ("every friday"). `forWhom: 'speaker'` (or, when the model omits it, a literal
+  "remind me") prefixes the AUTHENTICATED sender's first name: "⏰ Charli: call the plumber" (A4).
+  `outcome.reminders` holds every outcome, `outcome.reminder` the one the planner reads (the first
+  failure, else the first set); THIS TURN lists them all, with "(repeats every Friday)".
+- Recurrence delivery: `reminders.previous_reminder_id` (migration 0019, UNIQUE). Claim → send →
+  mark-sent → `scheduleNextOccurrence` (INSERT … ON CONFLICT DO NOTHING on that column); the digest's
+  `repairRecurringSeries` heals a crash after mark-sent; `expireStaleScheduled` schedules a retired
+  recurring occurrence's successor BEFORE retiring it. The explicit path (`deliverReminderNow`, also
+  what the sandbox drives at each reminder's own instant) applies the staleness window too.
+- Heads-ups: stages are digest slots (08:00 −7 days, 20:00 the evening before, 08:00 on the day; an
+  all-day event keeps its morning nudge); the scan runs at 07:45 and reads from the start of the house
+  day. The scan still writes a preview line (the SKIP gate, what `/reminders` shows); the digest
+  re-writes it at delivery (`headsUpAtDelivery`) from the event's live facts with `leadAt(event,
+  deliveryInstant)` — "today"/"tonight"/"tomorrow"/"on Saturday (in 3 days)"/"next week" — posts one
+  line per event, drops a stage whose event moved, ended, started or was SKIPped, and stores the posted
+  line back on the row.
+- Reports: `/weekly` (`lib/reports/digest.ts` `gatherWeekly`) = statement/fact notes from the last 7
+  days (dated + attributed), explicit reminders in the next 14 days (day + time + repeat), and dated
+  events from the facts (the event's own date; event heads-up rows are not listed). The deterministic
+  fallback digest reuses it. `/guests` = live stay/room/arrival facts, soonest first, each with its
+  date range (or "no dates given; said <day>"), plus notes from the last 30 days, dated.
+- T13: every time read in `lib/**` goes through `now()`; auth (`lib/auth/*`) stays on the wall clock on
+  purpose (a simulated clock must never extend a session or revive a magic link).
+
 ## 7. Fact model (phase 4, `lib/memory/predicates.ts`)
 
 - **Canonical predicates with cardinality.** e.g. single: `arrives_on, leaves_on, stays_in, is_away,

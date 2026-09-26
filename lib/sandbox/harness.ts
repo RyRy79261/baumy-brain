@@ -3,13 +3,14 @@ import { type Database } from '@/db/client'
 import { type TelegramMessageData } from '@/lib/inngest/client'
 import { runIngest } from '@/lib/inngest/functions/ingest'
 import { runCallback } from '@/lib/inngest/functions/callback'
-import { deliverDueReminders } from '@/lib/inngest/functions/reminders'
+import { deliverDueReminders, deliverReminderNow } from '@/lib/inngest/functions/reminders'
 import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { purgeWindow } from '@/lib/turn/window'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
-import { houseConfig } from '@/db/schema'
+import { and, asc, eq, gt, lte, ne } from 'drizzle-orm'
+import { houseConfig, reminders } from '@/db/schema'
 import { withSimulatedTime } from '@/lib/core/clock'
 import { captureOutbound, type OutboundMessage } from '@/lib/telegram/outbox'
 import { SANDBOX_BOT_ID, SANDBOX_BOT_USERNAME } from '@/lib/telegram/client'
@@ -245,9 +246,10 @@ const JOBS: Job[] = [
     },
   },
   {
+    // 07:45, like production: just before the 08:00 digest, so a morning-of heads-up is due at 08:00.
     id: 'surfacing-scan',
-    hour: 8,
-    minute: 0,
+    hour: 7,
+    minute: 45,
     run: async (sb, at) => {
       await runEventSurfacingScan(sb.db, sb.houseChatId, at, sb.tz)
     },
@@ -257,7 +259,7 @@ const JOBS: Job[] = [
     hour: 8,
     minute: 0,
     run: async (sb, at) => {
-      await deliverDueReminders(sb.db, at)
+      await deliverDueReminders(sb.db, at, sb.tz)
     },
   },
   {
@@ -265,7 +267,7 @@ const JOBS: Job[] = [
     hour: 20,
     minute: 0,
     run: async (sb, at) => {
-      await deliverDueReminders(sb.db, at)
+      await deliverDueReminders(sb.db, at, sb.tz)
     },
   },
 ]
@@ -300,13 +302,43 @@ export async function advanceTo(sb: Sandbox, to: Date): Promise<AdvanceResult> {
   if (to.getTime() < sb.now.getTime()) throw new Error('[sandbox] time only moves forward')
   const from = sb.now
   const fired: AdvanceResult['fired'] = []
+  // Explicit reminders fire at THEIR OWN instant — production's armed sleepUntil path (reminderDeliver),
+  // with the digest as the backstop. Delivered one at a time in fire order, each before any cron due at
+  // the same minute; a recurring occurrence's successor (created on delivery) is picked up in turn.
+  const deliverExplicitUntil = async (limit: Date) => {
+    for (;;) {
+      const [next] = await sb.db
+        .select({ id: reminders.id, fireAt: reminders.fireAt })
+        .from(reminders)
+        .where(
+          and(
+            eq(reminders.groupId, sb.houseChatId),
+            eq(reminders.status, 'scheduled'),
+            ne(reminders.anchorKind, 'event_offset'),
+            gt(reminders.fireAt, from),
+            lte(reminders.fireAt, limit),
+          ),
+        )
+        .orderBy(asc(reminders.fireAt))
+        .limit(1)
+      if (!next) return
+      const at = new Date(next.fireAt)
+      const { sent } = await captureOutbound(async () => withSimulatedTime(at, () => deliverReminderNow(sb.db, next.id, at, sb.tz)))
+      const said = sent.map((m) => ({ ...m, cause: 'reminder' }))
+      sb.transcript.push(...said)
+      fired.push({ job: 'reminder', at, said })
+      sb.now = at
+    }
+  }
   for (const { at, job } of firingsBetween(from, to, sb.tz)) {
+    await deliverExplicitUntil(at)
     const { sent } = await captureOutbound(async () => withSimulatedTime(at, () => job.run(sb, at)))
     const said = sent.map((m) => ({ ...m, cause: `cron:${job.id}` }))
     sb.transcript.push(...said)
     fired.push({ job: job.id, at, said })
     sb.now = at
   }
+  await deliverExplicitUntil(to)
   sb.now = to
   return { from, to, fired }
 }

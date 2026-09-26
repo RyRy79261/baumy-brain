@@ -1,6 +1,7 @@
 import { type Database } from '@/db/client'
 import { houseConfig } from '@/db/schema'
 import type { Lane } from '@/lib/core/origin'
+import { now as clockNow } from '@/lib/core/clock'
 
 // The house group's chat id. Source of truth is house_config.house_group_chat_id,
 // which is auto-captured the moment the bot is added to the group (see
@@ -82,7 +83,7 @@ export async function setReminderThread(db: Database, threadId: number | null): 
   await db
     .insert(houseConfig)
     .values({ id: true, reminderThreadId: threadId })
-    .onConflictDoUpdate({ target: houseConfig.id, set: { reminderThreadId: threadId, updatedAt: new Date() } })
+    .onConflictDoUpdate({ target: houseConfig.id, set: { reminderThreadId: threadId, updatedAt: clockNow() } })
 }
 
 // Set (or clear, with null) the ask-Baumy conversational topic. Thread id comes from an authenticated
@@ -92,7 +93,7 @@ export async function setConsoleThread(db: Database, threadId: number | null): P
   await db
     .insert(houseConfig)
     .values({ id: true, consoleThreadId: threadId })
-    .onConflictDoUpdate({ target: houseConfig.id, set: { consoleThreadId: threadId, updatedAt: new Date() } })
+    .onConflictDoUpdate({ target: houseConfig.id, set: { consoleThreadId: threadId, updatedAt: clockNow() } })
 }
 
 // The house whose SHARED memory a message reads and writes — distinct from where a reply is

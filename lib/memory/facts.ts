@@ -1,10 +1,13 @@
-import { and, desc, eq, isNull, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, isNull, lte, or, sql } from 'drizzle-orm'
+import { DateTime } from 'luxon'
 import { type Database } from '@/db/client'
 import { entities, facts, members, memoryItems } from '@/db/schema'
 import { encryptSecret } from '@/lib/core/crypto'
 import { scanSensitivity } from '@/lib/core/sensitivity'
 import { PROFILE_PREDICATE } from '@/lib/memory/reflect'
 import { now as clockNow } from '@/lib/core/clock'
+import { liveFact } from '@/lib/memory/current'
+import { DEFAULT_EVENT_HOURS } from '@/lib/core/when'
 import type { Trust } from '@/lib/core/origin'
 
 // Trust ranking for contradiction resolution. A fact may only supersede an
@@ -159,9 +162,12 @@ export interface ReconcileInput {
   trustLevel: Trust
   neverSecret?: boolean
   memoryItemId?: string | null
-  // Absolute event time, resolved by the CALLER from the fact's time phrase at capture (when
-  // relative words like "tomorrow" are unambiguous). Drives the proactive event-surfacing scan.
+  // Absolute event time, resolved by the CALLER at capture (the extractor's `when`, validated, or the
+  // fallback resolver on its time phrase — lib/core/when.ts). Drives the proactive event-surfacing scan.
   eventAt?: Date | null
+  // When what the fact describes is OVER (spec §6: end ?? end of day / start + 6h). Past it, the fact
+  // is history, not "current" (lib/memory/current.ts, T2). Null for a timeless fact.
+  validTo?: Date | null
 }
 
 export async function reconcileFact(db: Database, input: ReconcileInput): Promise<ReconcileResult> {
@@ -211,6 +217,11 @@ export async function reconcileFactDetailed(
     authoredBy: input.authoredBy,
     trustLevel: input.trustLevel,
     validFrom: clockNow(),
+    // For an event: when it is over (T2). Only ever set together with event_at at capture; a
+    // superseded or forgotten row gets valid_to = the moment it was closed (with is_current false).
+    // A caller that dates a fact without an end gets the spec default for a timed event (start + 6h),
+    // so no dated fact can stay current forever.
+    validTo: input.eventAt ? (input.validTo ?? new Date(input.eventAt.getTime() + DEFAULT_EVENT_HOURS * 3_600_000)) : null,
     // Explicit, not the column default: recorded_at is load-bearing (the reflect cron compares it
     // against a person's newest profile), and a Postgres defaultNow() is unreachable from a
     // simulated clock — it would silently stamp real time inside a sandbox run.
@@ -222,8 +233,11 @@ export async function reconcileFactDetailed(
     eventAt: input.eventAt ?? null,
   }
 
+  // The incumbent is the LIVE fact for (subject, predicate): current and not yet over. An expired one
+  // (a March visit) is history — it stays is_current (it did happen) but never blocks a new occurrence.
+  const now = clockNow()
   const [existing] = await db
-    .select({ id: facts.id, objectValue: facts.objectValue, isSecure: facts.isSecure, trustLevel: facts.trustLevel })
+    .select({ id: facts.id, objectValue: facts.objectValue, isSecure: facts.isSecure, trustLevel: facts.trustLevel, eventAt: facts.eventAt })
     .from(facts)
     .where(
       and(
@@ -231,14 +245,46 @@ export async function reconcileFactDetailed(
         eq(facts.subjectEntityId, subjectId),
         eq(facts.predicate, predicate),
         eq(facts.isCurrent, true),
+        or(isNull(facts.validTo), gt(facts.validTo, now)),
       ),
     )
     .limit(1)
 
-  if (!existing) {
-    // Lineage (no same-predicate incumbent to supersede): link this new fact to the most recent
+  // Compare trimmed + lowercased (the STORED value keeps its original case) so "Fixed" vs "fixed" isn't
+  // misread as a contradiction that spuriously supersedes for nothing.
+  const norm = (v: string | null) => (v ?? '').trim().toLowerCase()
+  const sameMoment = (a: Date | null | undefined, b: Date | null | undefined) => !!a && !!b && Math.abs(new Date(a).getTime() - new Date(b).getTime()) < 60_000
+  const incomingEvent = input.eventAt ?? null
+  // Something that is ALREADY OVER when it is said ("Zuzka stayed in the cave last weekend") is history:
+  // it is recorded, but it never supersedes (or re-dates) whatever is live now — a past visit must not
+  // close an upcoming one.
+  const incomingOver = newValues.validTo != null && newValues.validTo.getTime() <= now.getTime()
+
+  if (!existing || incomingOver) {
+    // A restatement of an occurrence that is already over and already on record ("Zuzka stayed in
+    // Charli's room last weekend", said after the fact) is not new — same value AND same moment.
+    if (incomingEvent && !isSecure) {
+      const [past] = await db
+        .select({ id: facts.id, objectValue: facts.objectValue, eventAt: facts.eventAt })
+        .from(facts)
+        .where(
+          and(
+            eq(facts.groupId, input.groupId),
+            eq(facts.subjectEntityId, subjectId),
+            eq(facts.predicate, predicate),
+            eq(facts.isCurrent, true),
+            lte(facts.validTo, now),
+          ),
+        )
+        .orderBy(desc(facts.eventAt))
+        .limit(5)
+        .then((rows) => rows.filter((r) => norm(r.objectValue) === norm(objectValue) && sameMoment(r.eventAt, incomingEvent)))
+      if (past) return { result: 'noop', factId: past.id }
+    }
+    // Lineage (no live same-predicate incumbent to supersede, or history): link this new fact to the most recent
     // thing already recorded about the SAME subject — its timeline parent. This is what chains
-    // "Zuzka is coming today" → "Zuzka has arrived" even across different predicates and authors.
+    // "Zuzka is coming today" → "Zuzka has arrived" even across different predicates and authors, and
+    // a new visit to the previous one (a NEW occurrence of an expired triple — T6).
     // Null for the very first fact about a subject. Best-effort context, not a semantic guarantee.
     const [prior] = await db
       .select({ id: facts.id })
@@ -250,11 +296,19 @@ export async function reconcileFactDetailed(
     return { result: 'add', factId: added.id }
   }
 
-  // Unchanged non-secret value → nothing to do. Compare trimmed + lowercased (the STORED
-  // value keeps its original case) so "Fixed" vs "fixed" isn't misread as a contradiction
-  // that spuriously supersedes for nothing.
-  const norm = (v: string | null) => (v ?? '').trim().toLowerCase()
-  if (!isSecure && !existing.isSecure && norm(existing.objectValue) === norm(objectValue)) return { result: 'noop', factId: existing.id }
+  const sameValue = !isSecure && !existing.isSecure && norm(existing.objectValue) === norm(objectValue)
+  if (sameValue) {
+    // Unchanged value, and no new date (or the same one) → nothing to do.
+    if (!incomingEvent || sameMoment(existing.eventAt, incomingEvent)) return { result: 'noop', factId: existing.id }
+    // The same fact finally gets its date (it was captured undated) → write the date onto it. A NEW
+    // date for an already-dated live fact is a reschedule → it supersedes below, like any change (T6:
+    // a repeat with a new date is never a noop that throws the date away).
+    if (!existing.eventAt) {
+      if (rank(input.trustLevel) < rank(existing.trustLevel)) return { result: 'rejected', factId: null }
+      await db.update(facts).set({ eventAt: incomingEvent, validTo: newValues.validTo }).where(eq(facts.id, existing.id))
+      return { result: 'update', factId: existing.id }
+    }
+  }
 
   // Contradiction: only a fact of >= trust may overwrite the incumbent.
   if (rank(input.trustLevel) < rank(existing.trustLevel)) return { result: 'rejected', factId: null }
@@ -262,9 +316,8 @@ export async function reconcileFactDetailed(
   // Supersede atomically-enough WITHOUT a transaction (the http driver has none): CLOSE the
   // incumbent FIRST, then insert the new current row. If the run dies between these two
   // autocommitted writes, the retry sees NO current incumbent and cleanly re-ADDs — so there
-  // are never two is_current rows (which could persistently surface a stale value). The brief
+  // are never two LIVE rows (which could persistently surface a stale value). The brief
   // window where the fact has no current value self-heals on the retry.
-  const now = clockNow()
   await db.update(facts).set({ isCurrent: false, validTo: now, invalidatedAt: now }).where(eq(facts.id, existing.id))
   // The new row DERIVES FROM the incumbent it replaces (its parent), mirroring the incumbent's
   // forward supersededBy pointer — so the supersession chain is walkable in both directions.
@@ -287,15 +340,19 @@ export interface DatedFact {
   objectValue: string
   authoredBy: string | null
   eventAt: Date
+  /** When the event is over (null only for a legacy row dated before valid_to was written). */
+  validTo: Date | null
 }
 
-export async function upcomingDatedFacts(db: Database, groupId: string, from: Date, to: Date): Promise<DatedFact[]> {
+// `at` = the instant "current" is judged at (default `from`) — the scan widens `from` to the start of
+// the house day, so an all-day event today (starting at local midnight) is still seen at 07:45.
+export async function upcomingDatedFacts(db: Database, groupId: string, from: Date, to: Date, at: Date = from): Promise<DatedFact[]> {
   const res = await db.execute(sql`
     SELECT f.id, f.subject_entity_id AS "subjectEntityId", e.canonical_name AS subject, f.predicate,
-           f.object_value AS "objectValue", f.authored_by AS "authoredBy", f.event_at AS "eventAt"
+           f.object_value AS "objectValue", f.authored_by AS "authoredBy", f.event_at AS "eventAt", f.valid_to AS "validTo"
     FROM baumy_facts f
     JOIN baumy_entities e ON f.subject_entity_id = e.id
-    WHERE f.group_id = ${groupId} AND f.is_current = true AND f.is_secure = false
+    WHERE f.group_id = ${groupId} AND ${liveFact('f', at)} AND f.is_secure = false
       AND f.predicate <> ${PROFILE_PREDICATE}
       AND f.event_at IS NOT NULL
       AND f.event_at >= ${from.toISOString()} AND f.event_at <= ${to.toISOString()}
@@ -309,7 +366,39 @@ export async function upcomingDatedFacts(db: Database, groupId: string, from: Da
     objectValue: r.objectValue == null ? '' : String(r.objectValue),
     authoredBy: r.authoredBy == null ? null : String(r.authoredBy),
     eventAt: new Date(r.eventAt as string),
+    validTo: r.validTo == null ? null : new Date(r.validTo as string),
   }))
+}
+
+// The facts of ONE event, found from the fact a heads-up reminder is anchored to: every live, non-secret,
+// dated fact about the same subject on the same local day (lib/surfacing/nudge.ts groupEvents — the
+// same grouping the scan used). The delivery path re-reads it so the heads-up is written from what is
+// true NOW (T11): an anchor that was superseded, forgotten or is over yields [] — nothing to post.
+export async function eventGroupFacts(db: Database, anchorFactId: string, tz: string, at: Date = clockNow()): Promise<DatedFact[]> {
+  const res = await db.execute(sql`
+    SELECT f.id, f.subject_entity_id AS "subjectEntityId", e.canonical_name AS subject, f.predicate,
+           f.object_value AS "objectValue", f.authored_by AS "authoredBy", f.event_at AS "eventAt", f.valid_to AS "validTo",
+           a.event_at AS "anchorAt"
+    FROM baumy_facts a
+    JOIN baumy_facts f ON f.group_id = a.group_id AND f.subject_entity_id = a.subject_entity_id
+    JOIN baumy_entities e ON f.subject_entity_id = e.id
+    WHERE a.id = ${anchorFactId}::uuid AND ${liveFact('a', at)} AND a.is_secure = false AND a.event_at IS NOT NULL
+      AND ${liveFact('f', at)} AND f.is_secure = false AND f.predicate <> ${PROFILE_PREDICATE} AND f.event_at IS NOT NULL
+    ORDER BY f.event_at ASC, f.id ASC`)
+  const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
+  const localDay = (v: unknown) => DateTime.fromJSDate(new Date(v as string)).setZone(tz).toISODate()
+  return rows
+    .filter((r) => localDay(r.eventAt) === localDay(r.anchorAt))
+    .map((r) => ({
+      id: String(r.id),
+      subjectEntityId: String(r.subjectEntityId),
+      subject: String(r.subject),
+      predicate: String(r.predicate),
+      objectValue: r.objectValue == null ? '' : String(r.objectValue),
+      authoredBy: r.authoredBy == null ? null : String(r.authoredBy),
+      eventAt: new Date(r.eventAt as string),
+      validTo: r.validTo == null ? null : new Date(r.validTo as string),
+    }))
 }
 
 // Recent CURRENT facts that carry a value but NO resolved event_at yet — the catch-up candidates
@@ -323,11 +412,11 @@ export interface UndatedFact {
   recordedAt: Date
 }
 
-export async function recentUndatedFacts(db: Database, groupId: string, since: Date): Promise<UndatedFact[]> {
+export async function recentUndatedFacts(db: Database, groupId: string, since: Date, now: Date = clockNow()): Promise<UndatedFact[]> {
   const res = await db.execute(sql`
     SELECT f.id, f.object_value AS "objectValue", f.recorded_at AS "recordedAt"
     FROM baumy_facts f
-    WHERE f.group_id = ${groupId} AND f.is_current = true AND f.is_secure = false
+    WHERE f.group_id = ${groupId} AND ${liveFact('f', now)} AND f.is_secure = false
       -- NEVER a reflect PROFILE: it is a prose paragraph re-synthesised every few hours, so it is
       -- permanently "recent" and any stray month name inside it would be read as a fresh event
       -- date, forever ("Heads-up — Mad profile, today"). Profiles are not events.
@@ -340,11 +429,11 @@ export async function recentUndatedFacts(db: Database, groupId: string, since: D
   return rows.map((r) => ({ id: String(r.id), objectValue: String(r.objectValue), recordedAt: new Date(r.recordedAt as string) }))
 }
 
-// Backfill a resolved event_at onto an existing CURRENT fact. A targeted single-statement UPDATE
-// (neon-http has no transactions) — NOT reconcileFact, which NOOPs when object_value is unchanged
-// and so would never write the missed date. is_current guard keeps a superseded row untouched.
-export async function setFactEventAt(db: Database, factId: string, eventAt: Date): Promise<void> {
-  await db.update(facts).set({ eventAt }).where(and(eq(facts.id, factId), eq(facts.isCurrent, true)))
+// Backfill a resolved event window onto an existing CURRENT fact. A targeted single-statement UPDATE
+// (neon-http has no transactions) — the fact already exists, nothing to reconcile. is_current guard
+// keeps a superseded row untouched. valid_to comes with it, so the backfilled event expires too (T2).
+export async function setFactEventAt(db: Database, factId: string, eventAt: Date, validTo: Date | null = null): Promise<void> {
+  await db.update(facts).set({ eventAt, validTo }).where(and(eq(facts.id, factId), eq(facts.isCurrent, true)))
 }
 
 // Tag an evidence item with the PERSON it is ABOUT (memory v2 §3), so sentiment/notes
@@ -368,7 +457,7 @@ export async function tagMemoryAboutPerson(
   if (ent) await db.update(memoryItems).set({ aboutEntityId: ent.id }).where(eq(memoryItems.id, memoryItemId))
 }
 
-// Current facts whose subject the query refers to — a lightweight structured lookup
+// CURRENT (live — lib/memory/current.ts) facts whose subject the query refers to — a lightweight structured lookup
 // the reply path unions with semantic recall. Entity resolution (Phase 3): matches
 // on the canonical name OR any recorded alias (exact substring, prioritised) and
 // falls back to a trigram fuzzy match, so "is the sink fixed" finds the "kitchen
@@ -387,6 +476,8 @@ export interface FactHit {
   /** When the fact was recorded (said) and, for a dated happening, when it happens (T1). */
   recordedAt: Date | null
   eventAt: Date | null
+  /** When the event is over (valid_to) — the reply shows a multi-day range (Sat 3–Sun 4 Oct). */
+  validTo: Date | null
 }
 
 // `excludeIds`: fact ids to leave out — the reply excludes the facts THIS turn just wrote (C1).
@@ -404,6 +495,7 @@ export async function currentFactsForQuery(db: Database, groupId: string, query:
            f.object_value AS "objectValue",
            f.recorded_at AS "recordedAt",
            f.event_at AS "eventAt",
+           f.valid_to AS "validTo",
            f.is_secure AS "isSecure",
            f.value_ciphertext AS "valueCiphertext",
            f.authored_by AS "authoredBy",
@@ -420,7 +512,7 @@ export async function currentFactsForQuery(db: Database, groupId: string, query:
     JOIN baumy_entities e ON f.subject_entity_id = e.id
     LEFT JOIN baumy_facts pf ON f.derived_from_fact_id = pf.id
     LEFT JOIN baumy_entities pe ON pf.subject_entity_id = pe.id
-    WHERE f.group_id = ${groupId} AND f.is_current = true AND length(e.canonical_name) > 0
+    WHERE f.group_id = ${groupId} AND ${liveFact('f')} AND length(e.canonical_name) > 0
       AND (
         position(e.canonical_name IN ${q}) > 0
         OR EXISTS (SELECT 1 FROM unnest(coalesce(e.aliases, '{}'::text[])) a WHERE length(a) > 0 AND position(a IN ${q}) > 0)
@@ -435,6 +527,7 @@ export async function currentFactsForQuery(db: Database, groupId: string, query:
     id: String(r.id),
     recordedAt: toDate(r.recordedAt),
     eventAt: toDate(r.eventAt),
+    validTo: toDate(r.validTo),
     content: `${r.subject as string} ${String(r.predicate).replace(/_/g, ' ')}${r.isSecure ? '' : `: ${(r.objectValue as string | null) ?? ''}`}`,
     isSecure: Boolean(r.isSecure),
     contentEncrypted: (r.valueCiphertext ?? null) as string | null,

@@ -16,7 +16,7 @@ const inngestSend = vi.fn(async (..._a: unknown[]) => ({}))
 type Call = { system: string; prompt: string }
 const calls: Call[] = []
 let triageVerdict: ClassifierVerdict
-const reminderObject = { isReminder: true, whenText: 'when Zuzka lands', content: 'pick up Zuzka' }
+const reminderObject = { reminders: [{ content: 'pick up Zuzka', whenText: 'when Zuzka lands', fireAt: '' }] }
 
 vi.mock('ai', async (orig) => {
   const actual = await orig<typeof import('ai')>()

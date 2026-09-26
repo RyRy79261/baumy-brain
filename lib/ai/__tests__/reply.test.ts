@@ -147,10 +147,20 @@ describe('renderReplyPrompt — spec §4 turn prompt', () => {
       memoryLine({ kind: 'note', who: 'Ryan', saidAt: new Date('2026-09-20T10:00:00Z'), content: 'the plumber comes thursday', isSecure: false, contentEncrypted: null }, TZ, NOW),
       memoryLine({ kind: 'note', who: null, saidAt: new Date('2025-12-01T10:00:00Z'), content: 'old news', isSecure: false, contentEncrypted: null }, TZ, NOW),
     ]
-    expect(lines[0]).toBe('  - fact · Marco · said 12 Sep · event Sun 27 Sep: bins go out: friday')
-    expect(lines[1]).toBe("  - fact · Charli · said 12 Mar · event Sat 14 Mar (past): zuzka staying in: charli's room")
+    // Phase 3: a timed event shows its time; an all-day one (local midnight) its day.
+    expect(lines[0]).toBe('  - fact · Marco · said 12 Sep · event Sun 27 Sep 10:00: bins go out: friday')
+    expect(lines[1]).toBe("  - fact · Charli · said 12 Mar · event Sat 14 Mar 09:00 (past): zuzka staying in: charli's room")
     expect(lines[2]).toBe('  - note · Ryan · 20 Sep: "the plumber comes thursday"')
     expect(lines[3]).toBe('  - note · unattributed · 1 Dec 2025: "old news"')
+  })
+
+  it('T2/T3: an event window renders as a range, and a stay is past only once its END has gone', () => {
+    const stay = (start: string, end: string) => ({ ...fact("zuzka staying in: charli's room", 'Charli', '2026-09-20T10:00:00Z', start), validTo: new Date(end) })
+    // Sat 26 – Sun 27 Sep, all-day (local midnight → end of Sunday): NOW is Sat 26 Sep → not past.
+    expect(memoryLine(stay('2026-09-25T22:00:00Z', '2026-09-27T21:59:59.999Z'), TZ, NOW)).toBe(
+      "  - fact · Charli · said 20 Sep · event Sat 26 Sep – Sun 27 Sep: zuzka staying in: charli's room",
+    )
+    expect(memoryLine(stay('2026-09-18T22:00:00Z', '2026-09-20T21:59:59.999Z'), TZ, NOW)).toContain('event Sat 19 Sep – Sun 20 Sep (past)')
   })
 
   it('C15: a secret typed into the message is withheld from any mode but answer', () => {

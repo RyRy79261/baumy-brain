@@ -86,7 +86,16 @@ export async function gatherGrounding(db: Database, ctx: TurnContext, opts: { de
       // forward ("you said Zuzka's coming → Marco said she arrived").
       const prior = nameOf(f.priorAuthoredBy)
       const content = f.priorContent ? `${f.content} (follows from — ${f.priorContent}${prior ? `, per ${prior}` : ''})` : f.content
-      return { kind: 'fact' as const, who: nameOf(f.authoredBy), saidAt: f.recordedAt, eventAt: f.eventAt, content, isSecure: f.isSecure, contentEncrypted: f.contentEncrypted }
+      return {
+        kind: 'fact' as const,
+        who: nameOf(f.authoredBy),
+        saidAt: f.recordedAt,
+        eventAt: f.eventAt,
+        validTo: f.validTo,
+        content,
+        isSecure: f.isSecure,
+        contentEncrypted: f.contentEncrypted,
+      }
     }),
     ...memories.map((m) => ({
       kind: 'note' as const,

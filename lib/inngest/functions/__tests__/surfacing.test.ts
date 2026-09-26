@@ -32,7 +32,7 @@ describe('event-surfacing scan — dated facts become event-anchored reminders',
   it('schedules the three lead nudges once, and never re-schedules them (dedup per event×stage)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
-    const now = new Date('2026-07-01T09:00:00Z')
+    const now = new Date('2026-07-01T05:45:00Z') // 07:45 Berlin — when the scan runs, before the 08:00 slot
     const eventAt = new Date('2026-07-08T12:00:00Z') // ~7 days out, inside the horizon
     // reconcileFact storing event_at is Part 1 under test here too — the scan can only see it
     // because capture now persists the resolved date.
@@ -68,7 +68,7 @@ describe('event-surfacing scan — dated facts become event-anchored reminders',
     // nudge. Same subject + same day = one event.
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
-    const now = new Date('2026-07-01T09:00:00Z')
+    const now = new Date('2026-07-01T05:45:00Z')
     const eventAt = new Date('2026-07-08T12:00:00Z')
     for (const [predicate, object] of [
       ['returns_home', 'on the 8th'],
@@ -102,7 +102,7 @@ describe('event-surfacing scan — dated facts become event-anchored reminders',
       trustLevel: 'untrusted',
       eventAt: new Date('2026-07-08T12:00:00Z'),
     })
-    const res = await runEventSurfacingScan(db, GROUP, new Date('2026-07-01T09:00:00Z'), TZ)
+    const res = await runEventSurfacingScan(db, GROUP, new Date('2026-07-01T05:45:00Z'), TZ)
     expect(res).toEqual({ created: 0, scanned: 1, skipped: 3 })
     expect(await eventReminders(db)).toHaveLength(0)
   })
@@ -151,5 +151,40 @@ describe('event-surfacing scan — dated facts become event-anchored reminders',
       eventAt: new Date('2026-07-08T12:00:00Z'),
     })
     expect(await runEventSurfacingScan(db, GROUP, new Date('2026-07-01T09:00:00Z'), TZ)).toEqual({ created: 0, scanned: 0, skipped: 0 })
+  })
+  it('T11: every stage is a digest slot — the "day before" goes out at 20:00 the evening before, saying tomorrow', async () => {
+    // Party Saturday 22:00. The old day stage was event − 24h (Fri 22:00): it missed the 20:00 slot
+    // and went out Saturday 08:00 next to the "today" one.
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, {
+      groupId: GROUP,
+      fact: { subject: 'marco', subjectKind: 'person', predicate: 'hosting_party', object: 'Sat 3 Oct 22:00' },
+      authoredBy: null,
+      trustLevel: 'untrusted',
+      eventAt: new Date('2026-10-03T20:00:00Z'),
+    })
+    await runEventSurfacingScan(db, GROUP, new Date('2026-10-01T05:45:00Z'), TZ) // Thu 07:45
+    const rows = (await eventReminders(db)).sort((a, b) => a.fireAt.getTime() - b.fireAt.getTime())
+    expect(rows.map((r) => r.fireAt.toISOString())).toEqual(['2026-10-02T18:00:00.000Z', '2026-10-03T06:00:00.000Z']) // Fri 20:00, Sat 08:00
+    expect(rows[0].content).toContain('tomorrow')
+    expect(rows[1].content).toMatch(/tonight|today/)
+  })
+
+  it('an all-day event today still gets its morning nudge from the 07:45 scan', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    // "the cleaner comes today" — all day (local midnight start), learned overnight.
+    await reconcileFact(db, {
+      groupId: GROUP,
+      fact: { subject: 'the cleaner', predicate: 'comes_on', object: 'Thu 1 Oct' },
+      authoredBy: null,
+      trustLevel: 'untrusted',
+      eventAt: new Date('2026-09-30T22:00:00Z'),
+      validTo: new Date('2026-10-01T21:59:59.999Z'),
+    })
+    const res = await runEventSurfacingScan(db, GROUP, new Date('2026-10-01T05:45:00Z'), TZ)
+    expect(res.created).toBe(1)
+    expect((await eventReminders(db))[0].fireAt.toISOString()).toBe('2026-10-01T06:00:00.000Z') // 08:00 today
   })
 })

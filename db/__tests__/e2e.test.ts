@@ -4,16 +4,17 @@ import { startPgHarness, dockerAvailable, type PgHarness } from './pg-harness'
 import { entities } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
-import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
+import { reconcileFact, currentFactsForQuery, upcomingDatedFacts, eventGroupFacts } from '@/lib/memory/facts'
 import { resolveSeedEntities, connectedEdges, gatherGraphContext } from '@/lib/memory/graph'
 import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/forget'
 import { appendInbound, recentTurns, scrubWindow, purgeWindow } from '@/lib/turn/window'
-import { createReminder, claimReminder, markSent, releaseReminder } from '@/lib/reminders/store'
+import { createReminder, claimReminder, markSent, releaseReminder, scheduleNextOccurrence, loadSeriesRow, repairRecurringSeries, orphanedEventReminders } from '@/lib/reminders/store'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { loadResponsePolicy, setGlobalEnabled } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
 import { embedSync } from '@/lib/ai/embed'
+import { withSimulatedTime } from '@/lib/core/clock'
 
 // Secure-value capture needs the app-side key.
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 3).toString('base64')
@@ -321,5 +322,44 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
       'call Robert on [redacted] tonight',
       'in the topic',
     ])
+  })
+
+  it('time model: migration 0019 + the "current = live" filter and the recurring-series SQL on real Postgres', async () => {
+    const G = '-100e2e-time'
+    await ensureRegistered(h.db, G, null)
+    const uq = await h.pool.query("SELECT indexdef FROM pg_indexes WHERE indexname = 'baumy_reminders_previous_uq'")
+    expect(uq.rows[0].indexdef).toMatch(/UNIQUE INDEX .* \(previous_reminder_id\)/)
+
+    // An expired stay (March) vs a live one (October): only the live one is current / upcoming / a group.
+    const stay = { subject: 'zuzka', subjectKind: 'person' as const, predicate: 'staying_in', object: 'the cave', objectKind: 'place' as const }
+    await withSimulatedTime(new Date('2026-03-12T18:00:00Z'), () =>
+      reconcileFact(h.db, { groupId: G, fact: stay, authoredBy: null, trustLevel: 'untrusted', eventAt: new Date('2026-03-13T23:00:00Z'), validTo: new Date('2026-03-15T22:59:59.999Z') }),
+    )
+    const now = new Date('2026-09-29T10:00:00Z')
+    expect(await withSimulatedTime(now, () => currentFactsForQuery(h.db, G, 'zuzka'))).toHaveLength(0)
+    const r = await withSimulatedTime(now, () =>
+      reconcileFact(h.db, { groupId: G, fact: stay, authoredBy: null, trustLevel: 'untrusted', eventAt: new Date('2026-10-02T22:00:00Z'), validTo: new Date('2026-10-04T21:59:59.999Z') }),
+    )
+    expect(r).toBe('add') // a new occurrence (T6), not a noop
+    const live = await withSimulatedTime(now, () => currentFactsForQuery(h.db, G, 'zuzka'))
+    expect(live.map((f) => f.validTo?.toISOString())).toEqual(['2026-10-04T21:59:59.999Z'])
+    const upcoming = await upcomingDatedFacts(h.db, G, now, new Date('2026-10-10T00:00:00Z'))
+    expect(upcoming).toHaveLength(1)
+    expect(await eventGroupFacts(h.db, upcoming[0].id, 'Europe/Berlin', now)).toHaveLength(1)
+    // A heads-up anchored to it is orphaned once the stay is over.
+    await createReminder(h.db, { groupId: G, deliverChatId: G, content: 'heads-up', fireAt: new Date('2026-10-02T18:00:00Z'), anchorKind: 'event_offset', eventFactId: upcoming[0].id, createdBy: null })
+    expect(await orphanedEventReminders(h.db, G, now)).toHaveLength(0)
+    expect(await orphanedEventReminders(h.db, G, new Date('2026-10-05T10:00:00Z'))).toHaveLength(1)
+
+    // Recurring: "create next" is exactly-once on the unique previous_reminder_id; the repair sweep finds nothing to do.
+    const id = await createReminder(h.db, { groupId: G, deliverChatId: G, content: 'bins out', fireAt: new Date('2026-10-02T18:00:00Z'), createdBy: null, recurrence: 'FREQ=WEEKLY;BYDAY=FR' })
+    await markSent(h.db, id)
+    const row = (await loadSeriesRow(h.db, id))!
+    const first = await scheduleNextOccurrence(h.db, row, new Date('2026-10-02T18:00:00Z'), 'Europe/Berlin')
+    expect(first).toBeTruthy()
+    expect(await scheduleNextOccurrence(h.db, row, new Date('2026-10-02T18:00:00Z'), 'Europe/Berlin')).toBeNull()
+    expect(await repairRecurringSeries(h.db, new Date('2026-10-03T06:00:00Z'), 'Europe/Berlin')).toBe(0)
+    const series = await h.pool.query('SELECT fire_at FROM baumy_reminders WHERE previous_reminder_id = $1', [id])
+    expect(series.rows.map((x: { fire_at: Date }) => x.fire_at.toISOString())).toEqual(['2026-10-09T18:00:00.000Z'])
   })
 })

@@ -3,6 +3,7 @@ import { type Database } from '@/db/client'
 import { entities, facts, memoryItems, memoryEmbeddings } from '@/db/schema'
 import { normalizeEntityName } from '@/lib/memory/facts'
 import { scrubWindow } from '@/lib/turn/window'
+import { now as clockNow } from '@/lib/core/clock'
 
 // Deletion on request (owner feature). The UNIT of forgetting is a concrete VALUE STRING
 // (a name, number, etc.) — resolved by the LLM, then matched EXACTLY (case-insensitive
@@ -192,7 +193,7 @@ export async function forgetMemory(
   groupId: string,
   input: { factIds: string[]; scrubValues: string[]; noteIds: string[]; aliasHits: AliasHit[]; mode: ForgetMode },
 ): Promise<{ facts: number; messagesScrubbed: number; aliasesRemoved: number }> {
-  const now = new Date()
+  const now = clockNow()
   let f = 0
   let messagesScrubbed = 0
   let aliasesRemoved = 0

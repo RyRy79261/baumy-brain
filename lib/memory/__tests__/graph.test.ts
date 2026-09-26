@@ -5,6 +5,7 @@ import { entities } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { reconcileFact } from '@/lib/memory/facts'
 import { resolveSeedEntities, connectedEdges, entityTimeline, gatherGraphContext } from '@/lib/memory/graph'
+import { withSimulatedTime } from '@/lib/core/clock'
 
 const GROUP = '-100graph'
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
@@ -74,5 +75,34 @@ describe('fact-graph traversal (human-like multi-hop knowledge)', () => {
     await seedGraph(db)
     expect(await resolveSeedEntities(db, GROUP, 'what is quantum chromodynamics')).toEqual([])
     expect(await gatherGraphContext(db, GROUP, 'what is quantum chromodynamics')).toEqual([])
+  })
+})
+
+// Phase 3 (T2): an event that is over is not a current connection — but the entity timeline still
+// tells it, as history, "(past, <date>)" (the "when did Zuzka last visit?" answer).
+describe('graph + time', () => {
+  it('an expired edge drops out of connectedEdges; the timeline keeps it as "(past, Sat 14 Mar 2026)"', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await withSimulatedTime(new Date('2026-03-12T18:00:00Z'), () =>
+      reconcileFact(db, {
+        groupId: GROUP,
+        fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'staying_in', object: 'the cave', objectKind: 'place' },
+        authoredBy: null,
+        trustLevel: t,
+        eventAt: new Date('2026-03-13T23:00:00Z'),
+        validTo: new Date('2026-03-15T22:59:59.999Z'),
+      }),
+    )
+    await withSimulatedTime(new Date('2026-03-12T18:05:00Z'), () =>
+      reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'sibling_of', object: 'charl', objectKind: 'person' }, authoredBy: null, trustLevel: t }),
+    )
+    const [zuzka] = await db.select().from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'zuzka')))
+    await withSimulatedTime(new Date('2026-09-26T10:00:00Z'), async () => {
+      const edges = await connectedEdges(db, GROUP, [zuzka.id])
+      expect(edges.map((e) => e.predicate)).toEqual(['sibling of']) // the March stay is not a current connection
+      const tl = await entityTimeline(db, GROUP, zuzka.id)
+      expect(tl.map((e) => e.content)).toEqual(['zuzka staying in: the cave (past, Sat 14 Mar 2026)', 'zuzka sibling of: charl'])
+    })
   })
 })

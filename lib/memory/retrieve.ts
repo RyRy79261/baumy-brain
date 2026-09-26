@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { createHttpDb, type Database } from '@/db/client'
 import { embed, embedMany, EMBED_MODEL } from '@/lib/ai/embed'
+import { now as clockNow } from '@/lib/core/clock'
 
 // Retrieval (task-graph M3). HYBRID recall (Phase 2) fused with MULTI-PROBE query
 // expansion (Phase 4) and a mild RECENCY composition (Phase 5). Each probe runs a
@@ -130,7 +131,7 @@ async function runHybrid(
 // 0.5^(age/halflife) ∈ (0,1] — 1 for a just-written memory, → 0 for an old one.
 function recencyDecay(createdAt?: string): number {
   if (!createdAt) return 0
-  const ageDays = (Date.now() - new Date(createdAt).getTime()) / 86_400_000
+  const ageDays = (clockNow().getTime() - new Date(createdAt).getTime()) / 86_400_000
   if (!Number.isFinite(ageDays) || ageDays < 0) return 1
   return Math.pow(0.5, ageDays / RECENCY_HALFLIFE_DAYS)
 }

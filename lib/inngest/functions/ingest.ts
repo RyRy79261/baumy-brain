@@ -17,7 +17,7 @@ import { sendToHouse, getBotUsername, getBotId } from '@/lib/telegram/client'
 import { buildTurnContext, type ReplyToContext } from '@/lib/turn/context'
 import { planResponse } from '@/lib/turn/plan'
 import { runCapture } from '@/lib/turn/capture'
-import { runList, runReminder, runForget } from '@/lib/turn/actions'
+import { runList, runReminder, runForget, primaryReminder } from '@/lib/turn/actions'
 import { takeReminderDraft } from '@/lib/reminders/draft'
 import { executePlan } from '@/lib/turn/respond'
 import { runCommands } from '@/lib/turn/commands'
@@ -249,7 +249,13 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
             content: string
           } | null)
         : null
-    if (decision === 'reminder' || draft) ctx.outcome.reminder = await runReminder(step, ctx, houseChatId, draft)
+    if (decision === 'reminder' || draft) {
+      const all = await runReminder(step, ctx, houseChatId, draft)
+      if (all) {
+        ctx.outcome.reminders = all
+        ctx.outcome.reminder = primaryReminder(all)
+      }
+    }
   } else if (decision === 'reminder') {
     ctx.outcome.reminder = { status: 'paused' }
   }
@@ -258,14 +264,14 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   }
 
   // What this message produced, on its window row — the map an edit needs to supersede it (I1).
-  const reminderId = ctx.outcome.reminder?.status === 'set' ? ctx.outcome.reminder.id : undefined
-  if (houseScope && (ctx.outcome.captured || reminderId)) {
+  const reminderIds = (ctx.outcome.reminders ?? []).flatMap((r) => (r.status === 'set' && r.id ? [r.id] : []))
+  if (houseScope && (ctx.outcome.captured || reminderIds.length)) {
     await step.run('window-link', async () => {
       try {
         await linkProduced(
           createHttpDb(),
           { chatId, messageId },
-          { memoryItemId: ctx.outcome.captured?.memoryItemId, factIds: ctx.outcome.captured?.factIds, reminderIds: reminderId ? [reminderId] : [] },
+          { memoryItemId: ctx.outcome.captured?.memoryItemId, factIds: ctx.outcome.captured?.factIds, reminderIds },
         )
       } catch (err) {
         console.warn('[baumy/ingest] conversation-window link failed:', err instanceof Error ? err.message : err)

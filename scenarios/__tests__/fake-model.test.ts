@@ -101,6 +101,16 @@ describe('shapes adapter — fixtures fit the schemas the code validates', () =>
     expect(extractedFacts.safeParse({ facts: [f] }).success).toBe(true)
     expect(reminderExtraction.safeParse(toReminderOutput(reminder({ content: 'bins', when: 'friday 8pm' }))).success).toBe(true)
     expect(reminderExtraction.safeParse(toReminderOutput(null)).success).toBe(true)
+    // Spec §6 shapes: a resolved `when` range, several reminders with fireAt / recurrence / forWhom.
+    const g = toExtractedFact(fact({ subject: 'zuzka', predicate: 'stays_in', object: "charli's room", when: { start: '2026-10-03', end: '2026-10-04', allDay: true } }))
+    expect(extractedFacts.safeParse({ facts: [g] }).success).toBe(true)
+    expect(g).toMatchObject({ when: { start: '2026-10-03', end: '2026-10-04', allDay: true } })
+    const many = toReminderOutput([
+      reminder({ content: 'defrost the chicken', when: 'at 5', fireAt: '2026-09-24T17:00', forWhom: 'speaker' }),
+      reminder({ content: 'bins out', when: 'every friday at 8pm', recurrence: 'FREQ=WEEKLY;BYDAY=FR' }),
+    ])
+    expect(reminderExtraction.safeParse(many).success).toBe(true)
+    expect((many.reminders as unknown[]).length).toBe(2)
   })
 
   it("the fake's expand / rerank defaults fit the deep tier's schemas (their callers swallow a mismatch)", async () => {

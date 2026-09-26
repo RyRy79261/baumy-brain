@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
-import { memoryItems, reminders, pendingActions, houseConfig, messages } from '@/db/schema'
+import { memoryItems, reminders, pendingActions, houseConfig, messages, facts } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { reconcileFact } from '@/lib/memory/facts'
@@ -19,7 +19,11 @@ import { withSimulatedTime } from '@/lib/core/clock'
 const dbh: { db: any } = { db: null }
 const classifyMock = vi.fn<(t: string, c?: unknown) => Promise<ClassifierVerdict>>()
 const extractFactsMock = vi.fn(async (..._a: unknown[]) => ({ facts: [] as unknown[] }))
-const extractReminderMock = vi.fn(async (..._a: unknown[]) => ({ isReminder: false, whenText: '', content: '' }))
+type Rem = { content: string; fireAt?: string; whenText?: string; recurrence?: string; forWhom?: 'speaker' | 'house' }
+const extractReminderMock = vi.fn(async (..._a: unknown[]) => ({ reminders: [] as Rem[] }))
+// The spec §6 extractor shape: a list of reminders, here each with only the verbatim phrase (fireAt
+// empty), so the code's validation + chrono fallback is what these tests exercise.
+const rem = (whenText: string, content: string): { reminders: Rem[] } => ({ reminders: [{ content, whenText, fireAt: '' }] })
 const extractListMock = vi.fn(async (..._a: unknown[]) => ({ op: 'none', items: [] as string[] }))
 const extractForgetMock = vi.fn(async (..._a: unknown[]) => ({ isForget: false, values: [] as string[], subject: '', attribute: '', permanent: false }))
 const answerMock = vi.fn(async (_ctx: TurnContext, _mode: string, _g: GroundingItem[]) => ({ text: 'words', answered: true, usedTier: 'reply' }))
@@ -114,7 +118,7 @@ beforeEach(async () => {
   for (const m of [classifyMock, extractFactsMock, extractReminderMock, extractListMock, extractForgetMock, answerMock, sendToHouse, sendConfirmCard, reactToMessage]) m.mockClear()
   classifyMock.mockResolvedValue(V())
   extractFactsMock.mockResolvedValue({ facts: [] })
-  extractReminderMock.mockResolvedValue({ isReminder: false, whenText: '', content: '' })
+  extractReminderMock.mockResolvedValue({ reminders: [] })
   extractListMock.mockResolvedValue({ op: 'none', items: [] })
   answerMock.mockResolvedValue({ text: 'words', answered: true, usedTier: 'reply' })
 })
@@ -208,7 +212,7 @@ describe('I3 — questions are not evidence', () => {
 describe('reminders — the outcome drives confirm / clarify (A2, A3, A9)', () => {
   const directedReminder = (whenText: string, content = 'take the bins out') => {
     classifyMock.mockResolvedValue(V({ intent: 'reminder', asksBaumy: true }))
-    extractReminderMock.mockResolvedValue({ isReminder: true, whenText, content })
+    extractReminderMock.mockResolvedValue(rem(whenText, content))
   }
 
   it('set → MODE confirm, THIS TURN carries the resolved time; the extractor was told the speaker', async () => {
@@ -265,14 +269,14 @@ describe('reminders — the outcome drives confirm / clarify (A2, A3, A9)', () =
 describe('reminders — answering the clarifying question creates the reminder', () => {
   it('no time → clarify (draft kept) → "at 8pm" as a reply to Baumy → reminder row, MODE confirm', async () => {
     classifyMock.mockResolvedValue(V({ intent: 'reminder', asksBaumy: true }))
-    extractReminderMock.mockResolvedValue({ isReminder: true, whenText: '', content: 'call the landlord' })
+    extractReminderMock.mockResolvedValue(rem('', 'call the landlord'))
     await run(ev({ text: '@baumy_bot remind us to call the landlord' }))
     expect(lastAnswer().mode).toBe('clarify')
     expect(await dbh.db.select().from(pendingActions)).toHaveLength(1) // the draft
 
     // The answer: a reply to Baumy's question. Triage may call it anything — here plain chatter.
     classifyMock.mockResolvedValue(V({ intent: 'chatter' }))
-    extractReminderMock.mockResolvedValue({ isReminder: true, whenText: 'at 8pm', content: '' })
+    extractReminderMock.mockResolvedValue(rem('at 8pm', ''))
     const res = await run(ev({ text: 'at 8pm', replyToMessage: { fromId: 7001, isBot: true, text: 'When should I remind you?', isTopicRoot: false } }))
     expect(extractReminderMock.mock.calls.at(-1)?.[2]).toEqual({ pending: 'call the landlord', baumyAsked: 'When should I remind you?' })
     expect(res).toMatchObject({ reminderSet: true, plan: 'words:confirm' })
@@ -285,7 +289,7 @@ describe('reminders — answering the clarifying question creates the reminder',
 
   it('the draft is one-shot and only the requester can complete it', async () => {
     classifyMock.mockResolvedValue(V({ intent: 'reminder', asksBaumy: true }))
-    extractReminderMock.mockResolvedValue({ isReminder: true, whenText: '', content: 'call the landlord' })
+    extractReminderMock.mockResolvedValue(rem('', 'call the landlord'))
     await run(ev({ text: '@baumy_bot remind us to call the landlord' }))
     classifyMock.mockResolvedValue(V({ intent: 'chatter' }))
     extractReminderMock.mockClear()
@@ -294,7 +298,7 @@ describe('reminders — answering the clarifying question creates the reminder',
     expect(extractReminderMock).not.toHaveBeenCalled()
     // Charli's next directed message consumes it — here an unrelated question, so it is abandoned.
     classifyMock.mockResolvedValue(V({ intent: 'question', asksBaumy: true }))
-    extractReminderMock.mockResolvedValue({ isReminder: false, whenText: '', content: '' })
+    extractReminderMock.mockResolvedValue({ reminders: [] })
     const res = await run(ev({ text: "@baumy_bot what's the wifi called?" }))
     expect(res.reminderSet).toBe(false)
     expect(res.plan).toBe('words:answer')
@@ -306,12 +310,107 @@ describe('reminders — answering the clarifying question creates the reminder',
   it('a DM reminder while the house is paused: nothing created, and the reply is told it is the pause', async () => {
     await dbh.db.update(houseConfig).set({ responsePolicy: { global_enabled: false } }).where(eq(houseConfig.id, true))
     classifyMock.mockResolvedValue(V({ intent: 'reminder', asksBaumy: true }))
-    extractReminderMock.mockResolvedValue({ isReminder: true, whenText: 'friday 8pm', content: 'bins' })
+    extractReminderMock.mockResolvedValue(rem('friday 8pm', 'bins'))
     const res = await run(ev({ chatId: String(CHARLI), chatType: 'private', text: 'remind me friday 8pm about the bins' }))
     expect(extractReminderMock).not.toHaveBeenCalled()
     expect(await dbh.db.select().from(reminders)).toHaveLength(0)
     expect(res).toMatchObject({ plan: 'words:answer', planRow: 'reminder-paused' })
     expect(lastAnswer().ctx.outcome.reminder).toEqual({ status: 'paused' })
+  })
+})
+
+// Phase 3 (spec §6): the time model at the turn level. NOW = Mon 28 Sep 2026, 10:00 Berlin.
+describe('the time model — reminders (T4, T9, A4, A6) and dated facts (T3, T8)', () => {
+  const local = (d: Date) => new Intl.DateTimeFormat('en-GB', { timeZone: TZ, weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(d)
+  const reminderRows = async () => (await dbh.db.select().from(reminders)) as { content: string; fireAt: Date; recurrence: string | null; createdBy: string | null }[]
+  beforeEach(() => classifyMock.mockResolvedValue(V({ intent: 'reminder', asksBaumy: true })))
+
+  it('A6: one message, two reminders → two rows; THIS TURN lists both; the extractor got MESSAGE SENT + the calendar', async () => {
+    extractReminderMock.mockResolvedValue({
+      reminders: [
+        { content: 'defrost the chicken', fireAt: '2026-09-28T17:00', whenText: 'at 5', forWhom: 'speaker' },
+        { content: 'put it in the oven', fireAt: '2026-09-28T19:00', whenText: 'at 7', forWhom: 'speaker' },
+      ],
+    })
+    const res = await run(ev({ text: '@baumy_bot remind me at 5 to defrost the chicken and at 7 to put it in the oven' }))
+    expect(res).toMatchObject({ reminderSet: true, plan: 'words:confirm' })
+    const rows = (await reminderRows()).sort((a, b) => a.fireAt.getTime() - b.fireAt.getTime())
+    expect(rows.map((r) => `${r.content} @ ${local(r.fireAt)}`)).toEqual(['Charli: defrost the chicken @ Mon 28 Sept, 17:00', 'Charli: put it in the oven @ Mon 28 Sept, 19:00'])
+    expect(extractReminderMock.mock.calls[0][3]).toMatchObject({ tz: TZ })
+    const { ctx } = lastAnswer()
+    expect(ctx.outcome.reminders).toHaveLength(2)
+    const windowLinks = await dbh.db.select().from(messages)
+    expect(windowLinks.find((m: { producedReminderIds: string[] | null }) => (m.producedReminderIds ?? []).length === 2)).toBeTruthy()
+  })
+
+  it('A4: a personal reminder names the (authenticated) requester; a house reminder does not', async () => {
+    extractReminderMock.mockResolvedValue({
+      reminders: [
+        { content: 'call the plumber', fireAt: '2026-09-28T18:00', forWhom: 'speaker' },
+        { content: 'bins out', fireAt: '2026-09-28T19:00', forWhom: 'house' },
+      ],
+    })
+    await run(ev({ text: '@baumy_bot remind me to call the plumber at 6pm and remind everyone bins out at 7' }))
+    expect((await reminderRows()).map((r) => r.content).sort()).toEqual(['Charli: call the plumber', 'bins out'])
+  })
+
+  it('A6: a recurring reminder stores its (validated, pinned) rule and confirms it', async () => {
+    extractReminderMock.mockResolvedValue({ reminders: [{ content: 'put the bins out', fireAt: '2026-10-02T20:00', whenText: 'every friday at 8pm', recurrence: 'FREQ=WEEKLY', forWhom: 'house' }] })
+    await run(ev({ text: '@baumy_bot remind us every friday at 8pm to put the bins out' }))
+    const [row] = await reminderRows()
+    expect(row.recurrence).toBe('FREQ=WEEKLY;BYDAY=FR')
+    expect(local(row.fireAt)).toBe('Fri 2 Oct, 20:00')
+    expect(lastAnswer().ctx.outcome.reminder).toMatchObject({ status: 'set', recurrence: 'FREQ=WEEKLY;BYDAY=FR' })
+  })
+
+  it('a recurring reminder whose first time already went today starts at the next occurrence (not "past")', async () => {
+    extractReminderMock.mockResolvedValue({ reminders: [{ content: 'water the plants', fireAt: '2026-09-28T08:00', recurrence: 'FREQ=DAILY', forWhom: 'house' }] })
+    await run(ev({ text: '@baumy_bot remind us every morning at 8 to water the plants' }))
+    expect(local((await reminderRows())[0].fireAt)).toBe('Tue 29 Sept, 08:00')
+  })
+
+  it('T4: the model\'s fireAt wins over a disagreeing phrase reading (logged); T9: phrase-only "at 5" is 17:00 today', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    extractReminderMock.mockResolvedValue({ reminders: [{ content: 'let Zuzka in', fireAt: '2026-10-02T22:00', whenText: 'friday morning' }] })
+    await run(ev({ text: '@baumy_bot remind us friday around 10pm to let Zuzka in' }))
+    expect(local((await reminderRows())[0].fireAt)).toBe('Fri 2 Oct, 22:00')
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('cross-check'))).toBe(true)
+    warn.mockRestore()
+
+    extractReminderMock.mockResolvedValue(rem('at 5', 'take the bins out'))
+    await run(ev({ text: '@baumy_bot remind us at 5 to take the bins out' }))
+    expect((await reminderRows()).map((r) => local(r.fireAt))).toContain('Mon 28 Sept, 17:00')
+  })
+
+  it('T4: a lead time that has already gone ("a week before friday" on a Monday) is a clarifying question, never an instant ⏰', async () => {
+    extractReminderMock.mockResolvedValue({ reminders: [{ content: 'book the van', fireAt: '2026-09-25T09:00', whenText: 'a week before friday' }] })
+    await run(ev({ text: '@baumy_bot remind us a week before friday to book the van' }))
+    expect(await reminderRows()).toHaveLength(0)
+    expect(lastAnswer()).toMatchObject({ mode: 'clarify' })
+    expect(lastAnswer().ctx.outcome.reminder).toMatchObject({ status: 'past' })
+  })
+
+  it('"today" with no time, said after the default hour, asks for a time instead of calling it past', async () => {
+    extractReminderMock.mockResolvedValue(rem('today', 'buy a present'))
+    await run(ev({ text: '@baumy_bot remind me today to buy a present' }))
+    expect(await reminderRows()).toHaveLength(0)
+    expect(lastAnswer().ctx.outcome.reminder).toMatchObject({ status: 'needs_time' })
+  })
+
+  it('T3/T8: a fact with a resolved `when` gets event_at + valid_to; a phrase-only one ("the 9th") via the fallback', async () => {
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
+    extractFactsMock.mockResolvedValue({
+      facts: [
+        { subject: 'zuzka', subjectKind: 'person', predicate: 'stays_in', object: "charli's room, Sat 3–Sun 4 Oct", when: { start: '2026-10-03', end: '2026-10-04', allDay: true }, whenText: 'this weekend' },
+        { subject: "marco's parents", subjectKind: 'person', predicate: 'arrive_on', object: '9 Oct', whenText: 'the 9th' },
+      ],
+    })
+    await run(ev({ text: 'Zuzka is staying in my room this weekend, and Marco\'s parents arrive on the 9th' }))
+    expect(extractFactsMock.mock.calls[0][2]).toMatchObject({ tz: TZ })
+    const rows = (await dbh.db.select().from(facts)) as { predicate: string; eventAt: Date; validTo: Date }[]
+    const stay = rows.find((f) => f.predicate === 'stays_in')!
+    expect([local(stay.eventAt), local(stay.validTo)]).toEqual(['Sat 3 Oct, 00:00', 'Sun 4 Oct, 23:59'])
+    expect(local(rows.find((f) => f.predicate === 'arrive_on')!.eventAt)).toBe('Fri 9 Oct, 00:00')
   })
 })
 

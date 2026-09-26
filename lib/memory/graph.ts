@@ -1,5 +1,9 @@
 import { sql } from 'drizzle-orm'
+import { DateTime } from 'luxon'
 import { type Database } from '@/db/client'
+import { liveFact } from '@/lib/memory/current'
+import { now as clockNow } from '@/lib/core/clock'
+import { houseTz } from '@/lib/env'
 
 // Graph traversal over the facts knowledge graph — the "human-like" layer that walks
 // connections BETWEEN subjects (Zuzka —sibling of→ Charl —owns→ the cave) and the full
@@ -10,7 +14,8 @@ import { type Database } from '@/db/client'
 // object_entity_id set (subject —predicate→ object entity); attribute facts hang off a
 // subject; derived_from/superseded_by give the temporal chain. Nothing traversed it until now.
 //
-// Every query here is GROUP-SCOPED, current/active, and SECRET-EXCLUDED (a secret value or a
+// Every query here is GROUP-SCOPED, current/active (live: an event that is over is not a current
+// connection — lib/memory/current.ts), and SECRET-EXCLUDED (a secret value or a
 // secret edge is never surfaced as ambient "context" — it's only ever decrypted on a direct
 // answer, elsewhere). Bounded by hops + node/edge caps so a walk can never dump the whole graph.
 
@@ -82,6 +87,7 @@ export async function connectedEdges(
   const maxHops = opts.maxHops ?? 2
   const maxNodes = opts.maxNodes ?? 10
   const maxEdges = opts.maxEdges ?? 12
+  const at = clockNow()
   const seedList = sql.join(
     seedIds.map((id) => sql`${id}::uuid`),
     sql`, `,
@@ -93,7 +99,7 @@ export async function connectedEdges(
       SELECT (CASE WHEN f.subject_entity_id = r.id THEN f.object_entity_id ELSE f.subject_entity_id END), r.depth + 1
       FROM reach r
       JOIN baumy_facts f
-        ON f.group_id = ${groupId} AND f.is_current = true AND f.object_entity_id IS NOT NULL AND f.is_secure = false
+        ON f.group_id = ${groupId} AND ${liveFact('f', at)} AND f.object_entity_id IS NOT NULL AND f.is_secure = false
        AND (f.subject_entity_id = r.id OR f.object_entity_id = r.id)
       WHERE r.depth < ${maxHops}
     ),
@@ -106,7 +112,7 @@ export async function connectedEdges(
     JOIN nodes no ON no.id = f.object_entity_id
     JOIN baumy_entities se ON se.id = f.subject_entity_id
     JOIN baumy_entities oe ON oe.id = f.object_entity_id
-    WHERE f.group_id = ${groupId} AND f.is_current = true AND f.object_entity_id IS NOT NULL AND f.is_secure = false
+    WHERE f.group_id = ${groupId} AND ${liveFact('f', at)} AND f.object_entity_id IS NOT NULL AND f.is_secure = false
     ORDER BY depth ASC, f.recorded_at DESC
     LIMIT ${maxEdges}`)
   return rowsOf(res).map((r) => ({
@@ -129,13 +135,17 @@ export interface TimelineEntry {
 }
 
 // The full progression of ONE subject, oldest → newest, INCLUDING superseded rows (that's the
-// story: "coming today" then "arrived"). Secret values are shown as their descriptor only,
-// never the plaintext. Soft-deleted rows are excluded.
+// story: "coming today" then "arrived") and events that are OVER — the one place a past visit still
+// shows, as history: "(past, Sat 14 Mar)" (T2 — "when did Zuzka last visit?"). Secret values are
+// shown as their descriptor only, never the plaintext. Soft-deleted rows are excluded.
 export async function entityTimeline(db: Database, groupId: string, entityId: string, limit = 8): Promise<TimelineEntry[]> {
+  const at = clockNow()
+  const tz = houseTz()
   const res = await db.execute(sql`
     SELECT f.id AS "factId", f.recorded_at AS "recordedAt",
            e.canonical_name AS subject, f.predicate AS predicate, f.object_value AS "objectValue",
-           f.is_secure AS "isSecure", f.authored_by AS "authoredBy", f.is_current AS "isCurrent"
+           f.is_secure AS "isSecure", f.authored_by AS "authoredBy", f.is_current AS "isCurrent",
+           f.event_at AS "eventAt", f.valid_to AS "validTo"
     FROM baumy_facts f
     JOIN baumy_entities e ON f.subject_entity_id = e.id
     WHERE f.group_id = ${groupId} AND f.subject_entity_id = ${entityId}::uuid AND f.deleted_at IS NULL
@@ -144,12 +154,15 @@ export async function entityTimeline(db: Database, groupId: string, entityId: st
   return rowsOf(res).map((r) => {
     const base = `${String(r.subject)} ${String(r.predicate).replace(/_/g, ' ')}`
     const content = r.isSecure ? base : `${base}: ${(r.objectValue as string | null) ?? ''}`
+    const expired = r.isCurrent && r.validTo != null && new Date(r.validTo as string).getTime() <= at.getTime()
+    const live = Boolean(r.isCurrent) && !expired
+    const day = r.eventAt ? DateTime.fromJSDate(new Date(r.eventAt as string)).setZone(tz).toFormat('ccc d LLL yyyy') : null
     return {
       factId: String(r.factId),
       recordedAt: r.recordedAt ? new Date(r.recordedAt as string) : null,
-      content: r.isCurrent ? content : `${content} (past)`,
+      content: live ? content : `${content} (past${expired && day ? `, ${day}` : ''})`,
       authoredBy: (r.authoredBy ?? null) as string | null,
-      isCurrent: Boolean(r.isCurrent),
+      isCurrent: live,
     }
   })
 }
