@@ -34,7 +34,9 @@ cause a privileged effect. Preserve this in every change.
 
 ```bash
 pnpm typecheck      # tsc --noEmit
-pnpm test           # vitest run (offline; PGlite)
+pnpm test           # vitest run (offline; PGlite) — includes the offline scenarios
+pnpm test:scenarios # just the multi-turn house scenarios (scenarios/, offline)
+pnpm test:scenarios:live  # same scenarios vs real models + LLM judge (needs ANTHROPIC_API_KEY + VOYAGE_API_KEY)
 pnpm build          # next build
 pnpm db:generate    # drizzle-kit generate (migrations)
 pnpm db:migrate     # apply migrations (needs DATABASE_URL_UNPOOLED)
@@ -200,6 +202,13 @@ crown jewels. The pipeline:
 - Keep the suite **offline and deterministic** (vitest timeouts + worker caps are set for the
   growing PGlite suite — don't remove them).
 - Add a test for every security-relevant change (the poisoning/authz/exactly-once paths).
+- **Scenarios** (`scenarios/`, `docs/spec/chat-understanding-v2.md` §9): declarative multi-turn house
+  conversations through the REAL pipeline (sandbox harness), with a scripted model injected via the
+  test-only `setModelOverride` seam (`lib/ai/registry.ts`) and `setEmbedOverride` (`lib/ai/embed.ts`).
+  They assert routing, reactions, rows and **what the model was told**. Behaviour the code doesn't
+  have yet is a `knownGap` (runs as `it.fails`, names the finding + phase) — when your change flips
+  one, drop its `knownGap`. Fixtures use the spec's classifier shape through ONE adapter
+  (`scenarios/shapes.ts`); a schema change edits that file, not the scenarios. See `scenarios/README.md`.
 
 ## Env & deploy
 

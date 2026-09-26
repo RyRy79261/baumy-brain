@@ -15,8 +15,17 @@ export async function embed(text: string): Promise<number[]> {
   return v
 }
 
+// TEST-ONLY seam (scenarios/, docs/spec/chat-understanding-v2.md §9): when set, embedMany (and so
+// embed) answers from it instead of Voyage — the offline scenario suite points it at embedSync so no
+// network call is ever made. Never set in production; unset, nothing below changes.
+let embedOverride: ((values: string[]) => Promise<number[][]>) | null = null
+export function setEmbedOverride(fn: ((values: string[]) => Promise<number[][]>) | null): void {
+  embedOverride = fn
+}
+
 export async function embedMany(values: string[]): Promise<number[][]> {
   if (values.length === 0) return []
+  if (embedOverride) return embedOverride(values)
   const key = process.env.VOYAGE_API_KEY
   if (!key) throw new Error('[baumy/embed] VOYAGE_API_KEY not set')
   const res = await fetch('https://api.voyageai.com/v1/embeddings', {

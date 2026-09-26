@@ -10,10 +10,27 @@ export const anthropicProvider = createAnthropic({ apiKey: process.env.ANTHROPIC
 
 export const registry = createProviderRegistry({ anthropic: anthropicProvider })
 
-// Resolve a language model for a routing role. Never inline ids at call sites.
-export function resolveModel(role: Role) {
+type ResolvedModel = ReturnType<typeof registry.languageModel>
+
+// TEST-ONLY seam (scenarios/fake-model.ts, docs/spec/chat-understanding-v2.md §9): when set, every
+// role resolves through it instead of the Anthropic registry, so the scenario suite can script (or
+// record) each LLM call while the REAL pipeline runs. Never set in production — unset, resolveModel
+// behaves exactly as before. `real` is the model this role would otherwise resolve to, so a
+// recorder can wrap it (live scenario mode) rather than replace it.
+type ModelOverride = (role: Role, real: () => ResolvedModel) => ResolvedModel
+let modelOverride: ModelOverride | null = null
+export function setModelOverride(fn: ModelOverride | null): void {
+  modelOverride = fn
+}
+
+function resolveRegistered(role: Role): ResolvedModel {
   const m = MODELS[role]
   return registry.languageModel(`${m.provider}:${m.id}`)
+}
+
+// Resolve a language model for a routing role. Never inline ids at call sites.
+export function resolveModel(role: Role): ResolvedModel {
+  return modelOverride ? modelOverride(role, () => resolveRegistered(role)) : resolveRegistered(role)
 }
 
 // Boot health-check (architecture F5): construct each configured model so a

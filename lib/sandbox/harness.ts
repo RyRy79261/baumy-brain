@@ -103,6 +103,9 @@ export interface SendOptions {
   anonymousAdmin?: boolean
   /** Forum topic the message sits in (message_thread_id). */
   threadId?: number
+  /** Reuse an earlier message's id — how Telegram delivers an EDIT (a new update, same message_id;
+   *  the webhook forwards edited_message like any message — I1). Defaults to a fresh id. */
+  messageId?: number
 }
 
 /** Telegram's fixed identity for anonymous-admin posts. */
@@ -120,7 +123,7 @@ export async function sendAs(sb: Sandbox, who: string | number, text: string, op
   const event: { data: TelegramMessageData } = {
     data: {
       updateId,
-      messageId: updateId,
+      messageId: opts.messageId ?? updateId,
       // The lane is derived from chat type + ids by the real origin resolver — the sandbox supplies
       // transport facts, exactly like Telegram would, and never asserts a trust level directly.
       chatId: opts.dm ? String(person.id) : sb.houseChatId,
