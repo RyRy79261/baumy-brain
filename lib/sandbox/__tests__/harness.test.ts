@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { reminders } from '@/db/schema'
+import { reminders, memoryItems } from '@/db/schema'
 import { createReminder } from '@/lib/reminders/store'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { embedSync } from '@/lib/ai/embed'
@@ -13,15 +13,15 @@ import type { ClassifierVerdict } from '@/lib/ai/classify'
 const dbh: { db: Awaited<ReturnType<typeof makeTestDb>> | null } = { db: null }
 const classifyMock = vi.fn<(t: string) => Promise<ClassifierVerdict>>()
 const extractFactsMock = vi.fn<(t: string, s?: string | null) => Promise<{ facts: unknown[] }>>()
-const extractReminderMock = vi.fn<(t: string) => Promise<{ isReminder: boolean; whenText: string; content: string }>>()
-const answerMock = vi.fn<(q: string) => Promise<{ text: string; answered: boolean }>>()
+const extractReminderMock = vi.fn<(t: string) => Promise<{ reminders: { content: string; whenText?: string; fireAt?: string }[] }>>()
+const answerMock = vi.fn<(...a: unknown[]) => Promise<{ text: string; answered: boolean }>>()
 const writeHeadsUpMock = vi.fn<(f: { subject: string }[], lead: string, when: string) => Promise<string | null>>()
 
 vi.mock('@/db/client', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/db/client')>()), createHttpDb: () => dbh.db }))
 vi.mock('@/lib/ai/classify', async (o) => ({ ...(await o<typeof import('@/lib/ai/classify')>()), classify: (t: string) => classifyMock(t) }))
 vi.mock('@/lib/ai/extract', async (o) => ({ ...(await o<typeof import('@/lib/ai/extract')>()), extractFacts: (t: string, s?: string | null) => extractFactsMock(t, s) }))
 vi.mock('@/lib/ai/reminder-extract', async (o) => ({ ...(await o<typeof import('@/lib/ai/reminder-extract')>()), extractReminder: (t: string) => extractReminderMock(t) }))
-vi.mock('@/lib/ai/reply', async (o) => ({ ...(await o<typeof import('@/lib/ai/reply')>()), answer: (q: string) => answerMock(q) }))
+vi.mock('@/lib/ai/reply', async (o) => ({ ...(await o<typeof import('@/lib/ai/reply')>()), answer: (...a: unknown[]) => answerMock(...a) }))
 vi.mock('@/lib/ai/nudge', async (o) => ({ ...(await o<typeof import('@/lib/ai/nudge')>()), writeHeadsUp: (...a: [{ subject: string }[], string, string]) => writeHeadsUpMock(...a) }))
 vi.mock('@/lib/ai/embed', async (o) => {
   const actual = await o<typeof import('@/lib/ai/embed')>()
@@ -33,19 +33,19 @@ const { createSandbox, sendAs, advanceTo, advanceBy, spoken } = await import('@/
 // Real verdict shape — worthRemembering is what gates capture, so a fixture missing it silently
 // disables the whole memory path (it did, first time round).
 const CHATTER: ClassifierVerdict = {
-  worthRemembering: false,
   intent: 'chatter',
-  needsReply: false,
+  asksBaumy: false,
+  worthRemembering: false,
   confidence: 0.9,
-  respond: 'ignore',
-  reaction: null,
+  replyValue: 0.9,
+  vibe: null,
   tier: 'quick',
   webSearch: false,
   list: 'none',
 }
-const FACT: ClassifierVerdict = { ...CHATTER, worthRemembering: true, intent: 'fact', respond: 'react' }
-const REMINDER: ClassifierVerdict = { ...CHATTER, worthRemembering: true, intent: 'reminder', respond: 'react' }
-const QUESTION: ClassifierVerdict = { ...CHATTER, intent: 'question', respond: 'answer', needsReply: true, confidence: 0.95 }
+const FACT: ClassifierVerdict = { ...CHATTER, worthRemembering: true, intent: 'statement' }
+const REMINDER: ClassifierVerdict = { ...CHATTER, worthRemembering: true, intent: 'reminder', asksBaumy: true }
+const QUESTION: ClassifierVerdict = { ...CHATTER, intent: 'question', asksBaumy: true, confidence: 0.95 }
 
 const PEOPLE = [
   { id: 501, name: 'Lena', role: 'owner' as const },
@@ -64,7 +64,7 @@ describe('sandbox — talk as anyone, move time, watch what happens', () => {
     for (const m of [classifyMock, extractFactsMock, extractReminderMock, answerMock, writeHeadsUpMock]) m.mockReset()
     classifyMock.mockResolvedValue(CHATTER)
     extractFactsMock.mockResolvedValue({ facts: [] })
-    extractReminderMock.mockResolvedValue({ isReminder: false, whenText: '', content: '' })
+    extractReminderMock.mockResolvedValue({ reminders: [] })
     answerMock.mockResolvedValue({ text: 'meow', answered: true })
     writeHeadsUpMock.mockResolvedValue(null)
     process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 13).toString('base64')
@@ -106,15 +106,17 @@ describe('sandbox — talk as anyone, move time, watch what happens', () => {
   it('an explicit "remind us" from one person fires at its time — and each job runs at ITS OWN instant, not all at the end', async () => {
     const sb = await freshSandbox('2026-07-01T09:00:00Z')
     classifyMock.mockResolvedValue(REMINDER)
-    extractReminderMock.mockResolvedValue({ isReminder: true, whenText: '3 July at 9am', content: 'bins go out' })
-    await sendAs(sb, 'Felix', 'remind us to put the bins out on the 3rd at 9am')
+    extractReminderMock.mockResolvedValue({ reminders: [{ content: 'bins go out', whenText: '3 July at 9am' }] })
+    // Directed (@mention): an undirected "remind us" in the group schedules nothing (A9).
+    await sendAs(sb, 'Felix', 'remind us to put the bins out on the 3rd at 9am', { mention: true })
 
-    // Jump a WEEK in one call. The reminder must land on the 3rd's digest, not be flushed at the
-    // destination timestamp — that difference is the whole reason jobs run at their own `now`.
+    // Jump a WEEK in one call. The reminder must fire on the 3rd at 09:00 (its own instant — the armed
+    // sleepUntil path), not be flushed at the destination timestamp — that difference is the whole
+    // reason jobs run at their own `now`.
     const res = await advanceBy(sb, { days: 7 })
     const firing = res.fired.find((f) => spoken(f.said).some((t) => t.includes('bins go out')))
     expect(firing).toBeDefined()
-    expect(firing!.at.toISOString().slice(0, 10)).toBe('2026-07-03')
+    expect(firing!.at.toISOString()).toBe('2026-07-03T07:00:00.000Z') // 09:00 Berlin, not the next digest
     expect(spoken(firing!.said)[0]).toContain('⏰') // explicit reminder framing
   })
 
@@ -173,6 +175,54 @@ describe('sandbox — talk as anyone, move time, watch what happens', () => {
     answerMock.mockResolvedValue({ text: 'meow', answered: true })
     const said = await sendAs(sb, 'Lena', 'you there?')
     expect(spoken(said)).toEqual(['meow'])
+  })
+})
+
+// The transport facts later scenarios drive (C7/C8/C9/C12/I8): the harness supplies them exactly as
+// the webhook would, and the REAL pipeline decides directedness and trust from them.
+describe('sandbox — reply / mention / anonymous-admin transport options', () => {
+  beforeEach(() => {
+    for (const m of [classifyMock, extractFactsMock, extractReminderMock, answerMock, writeHeadsUpMock]) m.mockReset()
+    classifyMock.mockResolvedValue(CHATTER)
+    extractFactsMock.mockResolvedValue({ facts: [] })
+    answerMock.mockResolvedValue({ text: 'meow', answered: true })
+    process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 13).toString('base64')
+    delete process.env.BAUMY_HOUSE_CHAT_ID
+  })
+
+  it('replyToBaumy: a bare "yes" answering Baumy reaches triage (C7) and is directed', async () => {
+    const sb = await freshSandbox('2026-07-01T09:00:00Z')
+    classifyMock.mockResolvedValue(QUESTION)
+    const said = await sendAs(sb, 'Felix', 'yes', { replyToBaumy: 'want me to remind the house?' })
+    expect(classifyMock).toHaveBeenCalledWith('yes')
+    expect(spoken(said)).toEqual(['meow'])
+  })
+
+  it('replyTo another bot / the topic root is NOT directed (C8/C9)', async () => {
+    const sb = await freshSandbox('2026-07-01T09:00:00Z')
+    classifyMock.mockResolvedValue({ ...CHATTER, intent: 'question' })
+    await sendAs(sb, 'Felix', 'lol same', { replyTo: { fromId: 5555, isBot: true, text: 'Poll closes at 9' } })
+    await sendAs(sb, 'Felix', 'Zosia arriving Sat', { threadId: 44, replyTo: { fromId: 1087968824, isBot: true, isTopicRoot: true } })
+    expect(answerMock).not.toHaveBeenCalled()
+  })
+
+  it('mention: the @baumy_bot token makes it directed but never reaches memory (C12)', async () => {
+    const sb = await freshSandbox('2026-07-01T09:00:00Z')
+    classifyMock.mockResolvedValue(FACT)
+    await sendAs(sb, 'Felix', 'the plumber comes monday', { mention: true })
+    expect(classifyMock).toHaveBeenCalledWith('the plumber comes monday')
+    const rows = await sb.db.select().from(memoryItems).where(eq(memoryItems.groupId, sb.houseChatId))
+    expect(rows.map((r: { content: string }) => r.content)).toEqual(['the plumber comes monday'])
+  })
+
+  it('anonymousAdmin: house text, untrusted, unattributed — facts ARE extracted (I8)', async () => {
+    const sb = await freshSandbox('2026-07-01T09:00:00Z')
+    classifyMock.mockResolvedValue(FACT)
+    await sendAs(sb, 'Lena', 'rent goes up to 650 from October', { anonymousAdmin: true })
+    expect(extractFactsMock).toHaveBeenCalledTimes(1)
+    const [row] = await sb.db.select().from(memoryItems).where(eq(memoryItems.groupId, sb.houseChatId))
+    expect(row.trustLevel).toBe('untrusted')
+    expect(row.authoredBy).toBeNull()
   })
 })
 

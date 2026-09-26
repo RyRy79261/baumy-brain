@@ -1,7 +1,8 @@
-import { and, asc, eq, gt, gte, lt, lte, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, gte, inArray, lt, lte, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { reminders, pendingActions } from '@/db/schema'
 import { orphanedEventReminders } from '@/lib/reminders/store'
+import { TAPPABLE_ACTIONS } from '@/lib/confirm/store'
 import { upcomingDatedFacts, recentUndatedFacts } from '@/lib/memory/facts'
 
 // "What is Baumy about to do?" — the console's pending view (docs/spec/sandbox-console.md).
@@ -111,7 +112,8 @@ export async function pendingConfirms(db: Database, groupId: string, now: Date, 
       createdAt: pendingActions.createdAt,
     })
     .from(pendingActions)
-    .where(and(eq(pendingActions.groupId, groupId), eq(pendingActions.status, 'pending')))
+    // Tap-able cards only: a reminder draft waiting for its time is internal state, not a decision.
+    .where(and(eq(pendingActions.groupId, groupId), eq(pendingActions.status, 'pending'), inArray(pendingActions.actionType, [...TAPPABLE_ACTIONS])))
     .orderBy(asc(pendingActions.expiresAt))
     .limit(limit)
   // Expiry is evaluated against the passed `now`, not the DB clock — so this stays honest under a

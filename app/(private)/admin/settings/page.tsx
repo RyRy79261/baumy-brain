@@ -46,7 +46,7 @@ export default async function SettingsPage() {
       <h2 style={{ marginTop: '2rem' }}>Reply frequency</h2>
       <p style={{ color: '#888', fontSize: 14 }}>
         How readily Baumy jumps into the group unprompted. It always answers when @-mentioned or
-        replied to; this only tunes <em>volunteered</em> replies (reactions like 🧠/👀 are unaffected).
+        replied to; this only tunes <em>volunteered</em> replies (reactions like ✍/👀 are unaffected).
       </p>
       <p style={{ color: '#aaa', fontSize: 14 }}>
         Currently: <strong>{FREQ_LABEL[policy.reply_frequency]}</strong>.

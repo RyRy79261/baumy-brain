@@ -15,10 +15,28 @@ type Events = {
       fromFirstName?: string | null
       fromLastName?: string | null
       fromUsername?: string | null
+      /** The text, or the caption of a photo/document/video (folded in at the webhook — I4). */
       text: string | null
+      /** The media kind the message carries (lib/telegram/content.ts), null for plain text. Media with
+       *  no caption has text null and is dropped by ingest with reason 'media'. */
+      media?: string | null
+      /** An edited_message (I1): same message_id as the original, new update_id. */
+      isEdit?: boolean
       isBot: boolean
       isForwarded: boolean
+      // COMPAT ONLY: "the replied-to author is SOME bot" — the pre-v2 coarse signal (C8). Ingest
+      // decides reply-to-Baumy from `replyToMessage` below and falls back to this only for an
+      // event enqueued by an older webhook (replyToMessage absent).
       replyToBot: boolean
+      // The message this one replies to (null = not a reply), from Telegram-authenticated fields.
+      // `fromId` is compared to Baumy's own bot id (C8); `isTopicRoot` marks the forum topic's
+      // creation service message, which Telegram sets as reply_to_message on EVERY message in a
+      // topic and must never count as a reply (C9); `text` is its text or caption (context only);
+      // `messageId` keys the reply link in the conversation window (spec §5).
+      replyToMessage?: { fromId: number | null; isBot: boolean; isForwarded?: boolean; text: string | null; isTopicRoot: boolean; messageId?: number | null } | null
+      // message.sender_chat.id — an admin posting anonymously ("as the group") sends
+      // from=@GroupAnonymousBot with sender_chat = the house; that is house text, not bot content (I8).
+      senderChatId?: string | null
       // Forum-topic thread this message sits in (null = General / not a forum). Lets the owner point
       // reminders at a topic via /notifyhere, and lets a reply thread back into the right topic.
       messageThreadId?: number | null

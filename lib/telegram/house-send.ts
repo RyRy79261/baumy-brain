@@ -5,6 +5,7 @@ import { houseConfig } from '@/db/schema'
 import { sendToHouse } from '@/lib/telegram/client'
 import { resolveHouseIds } from '@/lib/identity/house'
 import { writeAudit } from '@/lib/audit'
+import { now as clockNow } from '@/lib/core/clock'
 
 // The new -100… supergroup id Telegram hands back when you send to a STALE (pre-upgrade) group id:
 // HTTP 400 "group chat was upgraded to a supergroup chat", with parameters.migrate_to_chat_id set to
@@ -36,7 +37,7 @@ export async function sendToHouseResilient(db: Database, text: string, opts?: { 
     // Converge the transport id (scope untouched) so every later send goes straight to the supergroup.
     await db
       .update(houseConfig)
-      .set({ liveChatId: newId, migratedFromChatId: sendId, updatedAt: new Date() })
+      .set({ liveChatId: newId, migratedFromChatId: sendId, updatedAt: clockNow() })
       .where(eq(houseConfig.id, true))
     await writeAudit(db, 'house.migrated', null, null, { from: sendId, to: newId, via: 'send-400' }).catch(() => {})
     await sendToHouse(newId, text, sendOpts) // retry once against the new id (same topic)

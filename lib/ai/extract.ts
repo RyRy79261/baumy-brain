@@ -2,6 +2,10 @@ import { generateObject, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { resolveModel } from './registry'
 import { EXTRACT_FACTS_SYSTEM } from './prompts'
+import { isMalformedObjectError } from './errors'
+import { timeContext } from '@/lib/core/calendar'
+import { now as clockNow } from '@/lib/core/clock'
+import { houseTz } from '@/lib/env'
 
 // NO ceiling on how many facts one message can teach — if it states 50, we store 50.
 // A "full" page (>= PROBE_AGAIN new facts) might not be the whole story, so we PAGINATE:
@@ -30,10 +34,22 @@ export const extractedFacts = z.object({
       // the default and makes NO graph edge; a concrete entity kind makes the object
       // a real node + relationship EDGE (memory v2 §4). Precision-first.
       objectKind: z.enum(['person', 'place', 'org', 'event', 'thing', 'value']).optional(),
-      // The time phrase VERBATIM when this fact is about something HAPPENING at a specific
-      // time (a guest arriving/staying, a dated event, a deadline) — resolved to an absolute
-      // event_at at CAPTURE time (when "tomorrow" is still unambiguous) so a proactive heads-up
-      // can be scheduled. Empty/absent for timeless facts. See docs/spec/event-surfacing.md.
+      // "X is no longer staying" (spec §7): this VALUE ends — reconcile closes the matching live fact
+      // (trust-gated) instead of adding it. Absent/false for an ordinary fact.
+      removes: z.boolean().optional(),
+      // WHEN the fact happens, resolved by the model against MESSAGE SENT + the calendar table (spec §6):
+      // local ISO start, an end for a period (a stay over the weekend), allDay when no time of day was
+      // said. Code validates it (lib/core/when.ts eventWindowFromModel) into event_at + valid_to — the
+      // anchor the heads-ups read, and the moment the fact stops being current (T2/T3/T8/T10).
+      when: z
+        .object({
+          start: z.string(),
+          end: z.string().optional(),
+          allDay: z.boolean().optional(),
+        })
+        .optional(),
+      // The time phrase VERBATIM — a cross-check, and the chrono FALLBACK when `when` is missing or
+      // does not validate. Empty/absent for timeless facts. See docs/spec/event-surfacing.md.
       whenText: z.string().optional(),
     }),
   ),
@@ -43,17 +59,19 @@ export type ExtractedFacts = z.infer<typeof extractedFacts>
 // Uses the SMARTER 'assess' tier (Sonnet), not the cheap classifier — fact
 // distillation + entity/pronoun resolution is the memory crown jewel and worth it;
 // capture runs in the background (Inngest), so the latency isn't user-facing. The
-// SPEAKER is passed so first-person references resolve to a concrete person.
+// SPEAKER is passed so first-person references resolve to a concrete person; the MESSAGE SENT line
+// and the calendar table (at = when the message was sent, in the house tz) so dates can be absolute.
 export async function extractFacts(
   text: string,
   speaker?: string | null,
+  time: { at?: Date; tz?: string } = {},
   model: LanguageModel = resolveModel('assess'),
 ): Promise<ExtractedFacts> {
-  const speakerLine = `SPEAKER: ${speaker ?? 'a housemate'}`
+  const speakerLine = `SPEAKER: ${speaker ?? 'a housemate'}\n${timeContext(time.at ?? clockNow(), time.tz ?? houseTz())}`
   const all: ExtractedFacts['facts'] = []
   const seen = new Set<string>()
   const keyOf = (f: ExtractedFacts['facts'][number]) =>
-    `${f.subject.trim().toLowerCase()}|${f.predicate.trim().toLowerCase()}|${f.object.trim().toLowerCase()}`
+    `${f.subject.trim().toLowerCase()}|${f.predicate.trim().toLowerCase()}|${f.object.trim().toLowerCase()}|${f.removes ? 'x' : ''}`
 
   // Paginate until the message is drained: each pass re-states what's already captured
   // and asks ONLY for new facts, so nothing is dropped no matter how dense the message.
@@ -65,9 +83,10 @@ export async function extractFacts(
       : ''
     let page: ExtractedFacts['facts']
     try {
-      // BEST-EFFORT: a schema/model hiccup must NEVER throw the ingest function (that
-      // once crash-looped capture and stopped Baumy learning). On failure we keep every
-      // fact earlier passes already found and stop — the evidence item is still stored.
+      // BEST-EFFORT on a malformed object: it must NEVER throw the ingest function (that
+      // once crash-looped capture and stopped Baumy learning). We keep every fact earlier
+      // passes already found and stop — the evidence item is still stored. A TRANSIENT API
+      // error rethrows instead, so the capture step retries rather than memoizing "no facts" (I2).
       const { object } = await generateObject({
         model,
         schema: extractedFacts,
@@ -76,7 +95,8 @@ export async function extractFacts(
       })
       page = object.facts
     } catch (err) {
-      console.error(`extractFacts pass ${pass} failed — keeping ${all.length} facts captured so far:`, err)
+      if (!isMalformedObjectError(err)) throw err
+      console.error(`extractFacts pass ${pass} malformed — keeping ${all.length} facts captured so far:`, err)
       break
     }
     const fresh = page.filter((f) => {

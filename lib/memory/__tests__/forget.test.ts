@@ -142,3 +142,91 @@ describe('deletion on request (forget) — exact value matching', () => {
     expect(n.c).toContain('Lena Okafor')
   })
 })
+
+// Phase 5 (spec §8): a soft forget HIDES the source message too (A7); subject / attribute resolution
+// finds what a person naturally names (A8). The confirm tap is the precision gate, so resolution may
+// be generous — the card lists every row before anything goes.
+describe('forget — A7 soft hides the source note, A8 subject/attribute matching', () => {
+  async function seed() {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const noteId = await captureMemory({ groupId: GROUP, content: 'Zosia is staying in my room this weekend', memoryType: 'statement', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    await reconcileFact(db, { groupId: GROUP, fact: { ...person('zosia', 'stays_in', "chloe's room"), objectKind: 'value' }, authoredBy: null, trustLevel: 'untrusted', memoryItemId: noteId })
+    return { db, noteId }
+  }
+
+  it('attributeMatches is loose on purpose: cue words, predicate/synonym words, shared stems, the value', async () => {
+    const { attributeMatches } = await import('@/lib/memory/forget')
+    expect(attributeMatches('where she is sleeping', 'stays_in', "chloe's room")).toBe(true) // cue "sleeping"
+    expect(attributeMatches('phone number', 'phone', '0176')).toBe(true)
+    expect(attributeMatches('the room', 'stays_in', "chloe's room")).toBe(true) // a word of the value
+    expect(attributeMatches('birthday', 'stays_in', "chloe's room")).toBe(false)
+    expect(attributeMatches('she is', 'stays_in', "chloe's room")).toBe(false) // only filler → nothing
+  })
+
+  it('"forget Zosia" (the value IS the subject) proposes her facts, not just notes', async () => {
+    const { db, noteId } = await seed()
+    const m = await findMemoryToForget(db, GROUP, { values: ['Zosia'], subject: 'Zosia', attribute: '' })
+    expect(m.facts.map((f) => f.label)).toEqual(["zosia stays in: chloe's room"])
+    expect(m.noteIds).toEqual([noteId])
+  })
+
+  it('subject + natural attribute ("where she is sleeping") finds stays_in', async () => {
+    const { db } = await seed()
+    const m = await findMemoryToForget(db, GROUP, { values: [], subject: 'Zosia', attribute: 'where she is sleeping' })
+    expect(m.facts).toHaveLength(1)
+    expect(m.scrubValues).toEqual(["chloe's room"])
+  })
+
+  it('subject + attribute proposes ONLY the matched facts — the matched value (an entity) is not expanded', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, { groupId: GROUP, fact: { ...person('zosia', 'stays_in', 'cave'), objectKind: 'place' }, authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'cave', subjectKind: 'place', predicate: 'status', object: 'damp' }, authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'cave', subjectKind: 'place', predicate: 'location', object: 'downstairs' }, authoredBy: null, trustLevel: 'untrusted' })
+    const m = await findMemoryToForget(db, GROUP, { values: [], subject: 'Zosia', attribute: 'where she is sleeping' })
+    expect(m.facts.map((f) => f.label)).toEqual(['zosia stays in: cave'])
+    // …while literally NAMING the entity still proposes its record.
+    const named = await findMemoryToForget(db, GROUP, { values: ['cave'], subject: '', attribute: '' })
+    expect(named.facts.map((f) => f.label).sort()).toEqual(['cave location: downstairs', 'cave status: damp', 'zosia stays in: cave'])
+  })
+
+  it('a STATED ownership fact (belongs_to / legacy owned_by) is a forgettable detail; the structural edge is not', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    // "chloe's bike" mints the structural edge (belongs_to chloe, system); the ladder's owner is stated.
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: "chloe's bike", predicate: 'location', object: 'the shed' }, authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'the ladder', predicate: 'owned_by', object: 'marco' }, authoredBy: null, trustLevel: 'untrusted' })
+    const ladder = await findMemoryToForget(db, GROUP, { values: [], subject: 'the ladder', attribute: 'the owner' })
+    expect(ladder.facts.map((f) => f.label)).toEqual(['ladder belongs to: marco'])
+    const bike = await findMemoryToForget(db, GROUP, { values: [], subject: "chloe's bike", attribute: '' })
+    expect(bike.facts.map((f) => f.label)).toEqual(["chloe's bike location: the shed"])
+  })
+
+  it('a subject with no detail and no value → the whole current record', async () => {
+    const { db } = await seed()
+    await reconcileFact(db, { groupId: GROUP, fact: person('zosia', 'arrives_on', 'friday'), authoredBy: null, trustLevel: 'untrusted' })
+    const m = await findMemoryToForget(db, GROUP, { values: [], subject: 'Zosia', attribute: '' })
+    expect(m.facts).toHaveLength(2)
+  })
+
+  it('a SOFT forget hides the fact AND its source note, so retrieval no longer returns it (reversible: the row stays)', async () => {
+    const { db, noteId } = await seed()
+    const m = await findMemoryToForget(db, GROUP, { values: [], subject: 'Zosia', attribute: 'where she is sleeping' })
+    const res = await run(db, m, 'soft')
+    expect(res).toMatchObject({ facts: 1, messagesHidden: 1, messagesScrubbed: 0 })
+    const [note] = await db.select({ active: memoryItems.isActive, c: memoryItems.content }).from(memoryItems).where(eq(memoryItems.id, noteId))
+    expect(note).toEqual({ active: false, c: 'Zosia is staying in my room this weekend' }) // hidden, not rewritten
+    const { retrieve } = await import('@/lib/memory/retrieve')
+    expect(await retrieve('where is Zosia staying this weekend', { groupId: GROUP, k: 8, floor: 0.05 }, { db, embed })).toEqual([])
+    expect(await currentFactsForQuery(db, GROUP, 'where is zosia staying?')).toEqual([])
+  })
+
+  it('a soft forget also hides the source note of a fact proposed before noteIds carried it', async () => {
+    const { db, noteId } = await seed()
+    const m = await findMemoryToForget(db, GROUP, { values: [], subject: 'Zosia', attribute: 'sleeping' })
+    await forgetMemory(db, GROUP, { factIds: m.factIds, scrubValues: [], noteIds: [], aliasHits: [], mode: 'soft' })
+    const [note] = await db.select({ active: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, noteId))
+    expect(note.active).toBe(false)
+  })
+})

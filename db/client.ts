@@ -10,14 +10,27 @@ function url(): string {
   return process.env.DATABASE_URL ?? BUILD_PLACEHOLDER_URL
 }
 
-// HTTP driver: stateless, NO transactions — route/edge reads + the fast path.
-export function createHttpDb() {
+function makeHttpDb() {
   return drizzleHttp(neon(url()), { schema })
 }
 
 // Shared db type for the memory/retrieval helpers (tests inject a PGlite-backed
 // instance cast to this — the drizzle query surface is structurally compatible).
-export type Database = ReturnType<typeof createHttpDb>
+export type Database = ReturnType<typeof makeHttpDb>
+
+// PGlite test seam (architecture D2): tests inject an in-memory db here.
+let override: Database | null = null
+
+export function __setDbOverride(dbOverride: Database | null): void {
+  override = dbOverride
+}
+
+// HTTP driver: stateless, NO transactions — route/edge reads + the fast path.
+// Honours the test override above (the scenario suite runs the real pipeline on PGlite); unset in
+// production, so this is always a fresh neon-http client there.
+export function createHttpDb(): Database {
+  return override ?? makeHttpDb()
+}
 
 // Pooled (WebSocket) driver: transactions + row locking — memory supersede,
 // reminder claims (FOR UPDATE SKIP LOCKED), multi-row writes.
@@ -26,14 +39,6 @@ export function createPooledDb() {
   return { db: drizzlePool(pool, { schema }), pool }
 }
 
-// PGlite test seam (architecture D2): tests inject an in-memory db here.
-type HttpDb = ReturnType<typeof createHttpDb>
-let override: HttpDb | null = null
-
-export function __setDbOverride(dbOverride: HttpDb | null): void {
-  override = dbOverride
-}
-
-export function db(): HttpDb {
-  return override ?? createHttpDb()
+export function db(): Database {
+  return createHttpDb()
 }

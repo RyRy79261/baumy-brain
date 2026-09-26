@@ -1,0 +1,2 @@
+ALTER TABLE "baumy_memory_items" ADD COLUMN "forwarded_by" text;--> statement-breakpoint
+ALTER TABLE "baumy_memory_items" ADD CONSTRAINT "baumy_memory_items_forwarded_by_baumy_members_telegram_user_id_fk" FOREIGN KEY ("forwarded_by") REFERENCES "public"."baumy_members"("telegram_user_id") ON DELETE set null ON UPDATE no action;

@@ -2,6 +2,7 @@ import { generateObject, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { resolveModel } from './registry'
 import { FORGET_EXTRACT_SYSTEM } from './prompts'
+import { degradeOnMalformed } from './errors'
 
 // Slot-extract a "forget X" request into EXACT targets — never a fuzzy description. The
 // model resolves what the user means to concrete strings (values they named) and/or a
@@ -28,7 +29,8 @@ export async function extractForget(
   speaker?: string | null,
   model: LanguageModel = resolveModel('assess'),
 ): Promise<ForgetExtraction> {
-  // BEST-EFFORT: a malformed object must never crash ingest — degrade to not-a-forget.
+  // BEST-EFFORT: a malformed object must never crash ingest — degrade to not-a-forget. A
+  // transient API error rethrows so the step retries (I2).
   try {
     const { object } = await generateObject({
       model,
@@ -38,7 +40,6 @@ export async function extractForget(
     })
     return object
   } catch (err) {
-    console.error('extractForget failed — treating as not-a-forget:', err)
-    return NOT_A_FORGET
+    return degradeOnMalformed(err, 'extractForget', NOT_A_FORGET)
   }
 }

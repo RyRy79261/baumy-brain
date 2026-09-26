@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { resolveModel } from './registry'
 import { ISSUE_ENRICH_SYSTEM } from './prompts'
 import { scanSensitivity } from '@/lib/core/sensitivity'
+import { isMalformedObjectError } from './errors'
 
 // Structured GitHub issue distilled from a housemate's casual /bug or /feature message
 // (shape adapted from ryry79261/intake-tracker's reporter). The model is told to be
@@ -25,8 +26,9 @@ const trimTitle = (s: string) => {
   return t.length > 96 ? `${t.slice(0, 95)}…` : t || 'Report from the house'
 }
 
-// Restructure a raw report into a clean issue. AI is ADDITIVE: on any failure we fall back
-// to a plain template from the raw text, so a report is never lost to a model hiccup.
+// Restructure a raw report into a clean issue. AI is ADDITIVE: on a malformed object we fall
+// back to a plain template from the raw text, so a report is never lost to a model hiccup. A
+// transient API error rethrows so the report step retries with the model (I2).
 export async function enrichIssue(
   rawReport: string,
   hint: ReportHint,
@@ -41,7 +43,8 @@ export async function enrichIssue(
     })
     return object
   } catch (err) {
-    console.error('enrichIssue failed — filing from the plain template:', err)
+    if (!isMalformedObjectError(err)) throw err
+    console.error('enrichIssue malformed — filing from the plain template:', err)
     const type = hint === 'feature' ? 'feature' : 'bug'
     // The raw report is copied verbatim into a (public) GitHub issue on this path, so run the
     // deterministic secret scan first: if it trips, withhold the raw text and file only a

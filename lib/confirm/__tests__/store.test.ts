@@ -14,6 +14,7 @@ describe('pending actions (human-confirm wall)', () => {
     const first = await resolvePendingAction(db, id, 'confirmed')
     expect(first?.actionType).toBe('memory.forget')
     expect((first?.payload as { content: string }).content).toBe('take the bins out')
+    expect(first?.groupId).toBe('-100') // the stored scope the confirmed action executes in (A1)
     // a second confirm (double-tap / retry) is a no-op
     expect(await resolvePendingAction(db, id, 'confirmed')).toBeNull()
   })

@@ -1,6 +1,7 @@
 import { verifyWebhookSecret } from '@/lib/telegram/verify'
-import { parseUpdate } from '@/lib/telegram/schema'
+import { parseUpdate, type TelegramMessage } from '@/lib/telegram/schema'
 import { inngest } from '@/lib/inngest/client'
+import { messageContent } from '@/lib/telegram/content'
 
 // The "200-fast-then-defer-to-Inngest" spine (architecture D5/D6/D7/D8). grammY
 // types the update; ALL work happens in Inngest functions off this request path.
@@ -69,6 +70,8 @@ export async function POST(req: Request): Promise<Response> {
     // ignore) is resolved DOWNSTREAM from house_config — the webhook needs no chat id.
     const msg = update.message ?? update.edited_message
     if (!msg) return Response.json({ ok: true, ignored: 'no-message' })
+    // A caption IS the message's text (I4); media without one is flagged so ingest ignores it explicitly.
+    const content = messageContent(msg)
     await inngest.send({
       id: `tg:update:${update.update_id}`,
       name: 'telegram/message.received',
@@ -82,19 +85,46 @@ export async function POST(req: Request): Promise<Response> {
         fromFirstName: msg.from?.first_name ?? null,
         fromLastName: msg.from?.last_name ?? null,
         fromUsername: msg.from?.username ?? null,
-        text: msg.text ?? null,
+        text: content.text,
+        media: content.media,
+        // An EDIT (I1): Telegram re-delivers the message under a NEW update_id with the SAME message_id.
+        // Ingest supersedes what the original produced (lib/turn/edit.ts) and never replies twice.
+        isEdit: update.edited_message != null && update.message == null,
         // Forum-topic thread (null = General / not a forum) — for /notifyhere capture + reply threading.
         messageThreadId: msg.is_topic_message ? (msg.message_thread_id ?? null) : null,
         // Trust signals resolved downstream: bot-origin / forwarded → quarantined.
         isBot: msg.from?.is_bot === true,
         isForwarded: msg.forward_origin != null,
-        // Raw signal for "directed at Baumy"; the @mention match (against the bot's
-        // real username via getMe) is resolved in the pipeline.
+        // Compat: the coarse pre-v2 "replied to SOME bot" flag. Directedness is decided downstream
+        // from replyToMessage.fromId === Baumy's own id (getMe), never from is_bot alone (C8).
         replyToBot: msg.reply_to_message?.from?.is_bot === true,
+        replyToMessage: replyToMessageOf(msg),
+        // Anonymous-admin posts carry sender_chat = the house (I8) — resolved against the house ids downstream.
+        senderChatId: msg.sender_chat?.id != null ? String(msg.sender_chat.id) : null,
       },
     })
     return Response.json({ ok: true })
   } catch {
     return new Response('enqueue failed', { status: 503 })
+  }
+}
+
+// The replied-to message, reduced to the transport facts the pipeline needs (C8/C9). In a forum
+// topic, Telegram sets reply_to_message on EVERY ordinary message to the topic's creation service
+// message (forum_topic_created, message_id === message_thread_id) — flagged isTopicRoot so it is
+// never mistaken for a real reply (or quoted as "the message being replied to").
+function replyToMessageOf(msg: TelegramMessage) {
+  const r = msg.reply_to_message
+  if (!r) return null
+  const isTopicRoot = r.forum_topic_created != null || (msg.is_topic_message === true && r.message_id === msg.message_thread_id)
+  return {
+    fromId: r.from?.id ?? null,
+    isBot: r.from?.is_bot === true,
+    // A forwarded message's `from` is the FORWARDER, not the author of the words: the pipeline must
+    // never show its text as that housemate's own (quarantine / D4).
+    isForwarded: r.forward_origin != null,
+    text: r.text ?? r.caption ?? null,
+    isTopicRoot,
+    messageId: r.message_id,
   }
 }

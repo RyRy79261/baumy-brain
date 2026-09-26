@@ -138,3 +138,76 @@ describe('telegram webhook — the fast-ack spine', () => {
     expect(send).not.toHaveBeenCalled()
   })
 })
+
+// C8/C9/I8: the transport facts the pipeline needs to decide directedness and trust.
+describe('telegram webhook — reply + sender_chat forwarding', () => {
+  const sentData = () => (send.mock.calls[0]?.[0] as { data: Record<string, unknown> }).data
+  const msg = (over: Record<string, unknown>) => ({
+    update_id: 20,
+    message: { message_id: 20, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 100 }, text: 'lol same', ...over },
+  })
+
+  it('forwards the replied-to author id, bot flag and text (or caption) — directedness is decided downstream by bot id', async () => {
+    await POST(req(msg({ reply_to_message: { message_id: 7, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 5555, is_bot: true, first_name: 'Poll' }, text: 'Poll closes at 9' } })))
+    expect(sentData().replyToMessage).toEqual({ fromId: 5555, isBot: true, isForwarded: false, text: 'Poll closes at 9', isTopicRoot: false, messageId: 7 })
+    send.mockClear()
+    await POST(req(msg({ reply_to_message: { message_id: 8, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 42, is_bot: false, first_name: 'Ana' }, caption: 'the new sofa' } })))
+    expect(sentData().replyToMessage).toMatchObject({ fromId: 42, isBot: false, isForwarded: false, text: 'the new sofa' })
+  })
+
+  // A forwarded message's `from` is the FORWARDER: downstream must never show its text as their words.
+  it('flags a replied-to message that was itself forwarded', async () => {
+    const fwd = {
+      message_id: 9,
+      date: 0,
+      chat: { id: Number(HOUSE), type: 'supergroup' },
+      from: { id: 42, is_bot: false, first_name: 'Ana' },
+      forward_origin: { type: 'hidden_user', sender_user_name: 'Landlord', date: 0 },
+      text: 'rent goes up 20%',
+    }
+    await POST(req(msg({ reply_to_message: fwd })))
+    expect(sentData().replyToMessage).toMatchObject({ fromId: 42, isForwarded: true })
+  })
+
+  it('flags the forum topic-root service message (every topic message "replies" to it)', async () => {
+    const root = { message_id: 44, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 1087968824, is_bot: true, first_name: 'Group' }, forum_topic_created: { name: 'Guests', icon_color: 1 } }
+    await POST(req(msg({ is_topic_message: true, message_thread_id: 44, reply_to_message: root })))
+    expect(sentData().replyToMessage).toMatchObject({ isTopicRoot: true })
+    expect(sentData().messageThreadId).toBe(44)
+  })
+
+  it('a non-reply forwards replyToMessage: null', async () => {
+    await POST(req(msg({})))
+    expect(sentData().replyToMessage).toBeNull()
+    expect(sentData().senderChatId).toBeNull()
+  })
+
+  it('forwards sender_chat (an anonymous admin posting as the group)', async () => {
+    await POST(req(msg({ from: { id: 1087968824, is_bot: true, first_name: 'Group' }, sender_chat: { id: Number(HOUSE), type: 'supergroup', title: 'House' } })))
+    expect(sentData().senderChatId).toBe(HOUSE)
+    expect(sentData().isBot).toBe(true)
+  })
+})
+
+// Phase 5 (spec §8): captions are the message text (I4); an edit is flagged (I1).
+describe('telegram webhook — captions, media, edits', () => {
+  const lastData = () => (send.mock.calls.at(-1)?.[0] as { data: Record<string, unknown> }).data
+  const base = { message_id: 5, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 701, is_bot: false, first_name: 'Chloe' } }
+
+  it('a photo caption is forwarded as the text, with the media kind (I4)', async () => {
+    await POST(req({ update_id: 40, message: { ...base, photo: [{ file_id: 'a', file_unique_id: 'a', width: 1, height: 1 }], caption: 'bins now go out tuesdays' } }))
+    expect(lastData()).toMatchObject({ text: 'bins now go out tuesdays', media: 'photo', isEdit: false })
+  })
+
+  it('a voice note / contact without a caption carries no text but says what it is (ignored explicitly downstream)', async () => {
+    await POST(req({ update_id: 41, message: { ...base, voice: { file_id: 'v', file_unique_id: 'v', duration: 4 } } }))
+    expect(lastData()).toMatchObject({ text: null, media: 'voice' })
+    await POST(req({ update_id: 42, message: { ...base, contact: { phone_number: '+49 30 123', first_name: 'Klaus' } } }))
+    expect(lastData()).toMatchObject({ text: null, media: 'contact' })
+  })
+
+  it('an edited_message is flagged isEdit with the ORIGINAL message_id (I1)', async () => {
+    await POST(req({ update_id: 43, edited_message: { ...base, edit_date: 1, text: 'fixed typo' } }))
+    expect(lastData()).toMatchObject({ isEdit: true, messageId: 5, text: 'fixed typo', media: null })
+  })
+})

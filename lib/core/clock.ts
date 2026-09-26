@@ -12,6 +12,10 @@ import { houseTz } from '@/lib/env'
 // It is also why we do NOT use libfaketime or move the container clock — an ambient time change
 // moves Postgres's own now() and leaves Inngest's scheduler on real time, so the app and the
 // durable-execution engine would immediately disagree about what "now" is.
+//
+// Every time read in lib/** goes through now() (T13) — with ONE deliberate exception: the auth layer
+// (lib/auth/session.ts, lib/auth/tokens.ts) stays on the wall clock, so a simulated instant can never
+// stretch a session cookie or revive an expired magic link.
 const clock = new AsyncLocalStorage<{ at: Date }>()
 
 /** The current instant — simulated inside withSimulatedTime, the wall clock everywhere else. */

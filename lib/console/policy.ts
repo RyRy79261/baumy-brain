@@ -70,17 +70,28 @@ export const POLICY: Record<string, TablePolicy> = {
     receivedAt: prov('insert stamp'),
   },
 
-  // Declared but never written (no reader or writer outside db/schema.ts). Kept in the policy so
-  // the drift test stays green and so a future implementer inherits the verdicts.
+  // The 48h conversation window (docs/spec/chat-understanding-v2.md §5). Written by ingest and the
+  // Telegram send seam only; secret-redacted before insert and purged after 48h.
   messages: {
     id: prov('surrogate key'),
     ...scoped,
     chatId: prov('where it was said'),
     messageId: prov('Telegram message id'),
+    authorKind: prov('member | baumy | anon — from the authenticated transport, never text'),
     authorMemberId: prov('authenticated sender'),
-    text: open('message body'),
-    sentAt: prov('when Telegram says it was sent'),
+    authorName: open('display name at write time'),
+    // Never rendered: the window is context for the models only (spec §5), and the redaction is
+    // pattern-based (advisory), so a row may still hold something private the scan did not know.
+    textRedacted: secret('recent chat text, secret-redacted — model context only, never shown to anyone'),
+    trust: prov('trust tier from the authenticated lane — the injection wall depends on this'),
+    replyToMessageId: prov('the Telegram message it replies to'),
+    threadId: prov('forum topic it sits in'),
+    sentAt: prov('when it was said — the 48h purge keys on it'),
+    producedMemoryItemId: prov('the evidence note this message produced (edit supersession, I1)'),
+    producedFactIds: prov('facts this message produced (edit supersession, I1)'),
+    producedReminderIds: prov('reminders this message produced (edit supersession, I1)'),
     receivedAt: prov('when we got it'),
+    seq: prov('insert order — the "newest last" tie-break'),
   },
 
   replies: {
@@ -132,6 +143,7 @@ export const POLICY: Record<string, TablePolicy> = {
     content: open('the evidence text. Editing it MUST invalidate the embedding (set it NULL) so the reembed sweep recomputes'),
     authoredBy: prov('who said it — attribution is a trust input, never a free-text field'),
     aboutEntityId: prov('who it is about — feeds reflection'),
+    forwardedBy: prov('who FORWARDED it (trust forwarded, D4) — the words are someone else\'s, so never the author'),
     trustLevel: prov('trust tier from the authenticated lane — the injection wall depends on this'),
     isSecure: prov('flips the encryption path; changing it would strand a ciphertext'),
     contentEncrypted: secret('AES-256-GCM blob. The key is not in the DB, GCM fails closed on tamper, and there is no rotation — any edit destroys it irrecoverably'),
@@ -167,14 +179,15 @@ export const POLICY: Record<string, TablePolicy> = {
     eventAt: open('resolved event time — must come from parseEventDate, never a bare chrono call, or the nudge scan surfaces a wrong date'),
     recurrence: open('RRULE-lite, unused today'),
     validFrom: prov('bitemporal validity'),
-    validTo: prov('bitemporal validity — closed when superseded'),
-    isCurrent: prov('the invariant "one is_current row per (group, subject, predicate)" is enforced in CODE ONLY — there is no unique index, so a hand-edit here permanently surfaces a stale value'),
+    validTo: prov('when the fact stops being current: an event\'s end (set at capture — past it the fact is history, T2), or the moment it was superseded/forgotten'),
+    isCurrent: prov('the invariant "one LIVE row (is_current and valid_to not passed) per (group, subject, predicate)" is enforced in CODE ONLY — there is no unique index, so a hand-edit here permanently surfaces a stale value'),
     supersededBy: prov('forward pointer of the supersession chain'),
     recordedAt: prov('load-bearing, not audit: the reflect cron compares it against a person\'s newest profile, so an edit that leaves it behind freezes that profile stale'),
     invalidatedAt: prov('when it stopped being current'),
     deletedAt: prov('soft delete'),
     sourceMemoryItemId: prov('the evidence note this was extracted from'),
-    derivedFromFactId: prov('backward pointer of the supersession chain'),
+    derivedFromFactId: prov('backward pointer of the supersession chain — set only on a real supersession or a new occurrence of the same fact'),
+    conflictsWithFactId: prov('set ⇒ a correction the trust gate refused (not current, never grounds a reply); points at the live fact it contradicts. The hygiene sweep retires it'),
   },
 
   reminders: {
@@ -186,7 +199,8 @@ export const POLICY: Record<string, TablePolicy> = {
     fireAt: open('when it fires — subject to the 24h staleness window'),
     eventFactId: prov('anchoring fact; ON DELETE CASCADE, so deleting that fact vaporises this reminder'),
     leadInterval: open(),
-    recurrence: open('unused today'),
+    recurrence: open('RRULE-lite (FREQ=WEEKLY;BYDAY=FR) — on delivery the next occurrence is created from it; an invalid rule ends the series'),
+    previousReminderId: prov('the occurrence this one follows in a recurring series — UNIQUE, the exactly-once guard on "create next"; hand-editing it can fork or end a series'),
     status: prov('scheduled|firing|sent|cancelled|failed — the exactly-once state machine. Hand-editing it can double-send or zero-fire'),
     createdBy: prov('who asked for it'),
     ...stamped,

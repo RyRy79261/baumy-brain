@@ -176,6 +176,22 @@ describe('memory store → recall (PGlite + pgvector)', () => {
     expect(hit?.id).toBe(id2)
   })
 
+  it('consolidation skips a FORWARDED note: it never folds onto (or swallows) an anonymous note with the same words (D4)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 100)
+    // An anonymous-admin post (untrusted, no author), then Ryan forwards the landlord saying the same —
+    // both unattributed, so only the relayed-trust guard keeps them apart.
+    const anon = await captureMemory({ groupId: GROUP, content: 'the boiler inspection is on tuesday', memoryType: 'statement', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    const fwd = await captureMemory(
+      { groupId: GROUP, content: 'the boiler inspection is on tuesday', memoryType: 'statement', authoredBy: null, trustLevel: 'forwarded', forwardedBy: '100' },
+      { db, embed },
+    )
+    expect(fwd).not.toBe(anon)
+    const res = await retrieve('when is the boiler inspection', { groupId: GROUP, floor: 0 }, { db, embed })
+    expect(res.find((r) => r.id === fwd)).toMatchObject({ trustLevel: 'forwarded', forwardedBy: '100', authoredBy: null })
+    expect(res.find((r) => r.id === anon)).toMatchObject({ trustLevel: 'untrusted', forwardedBy: null })
+  })
+
   it('salience re-ranks equally-relevant memories (de-noise, never deletion)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, 100)

@@ -16,7 +16,7 @@ one shared memory — built so the group chat has to remember *less*, not scroll
 | | |
 |---|---|
 | 🧠 **Remembers the house** | Every message is captured, embedded, and distilled into a trust-gated knowledge graph. Ask "who's in the cave this week?" months later and it knows. |
-| 💬 **Answers, grounded** | Replies only from what the house actually said — with an *honest miss* when it doesn't know, never a hallucinated fact. Reacts (👀🧠👍) more than it speaks. |
+| 💬 **Answers, grounded** | Replies only from what the house actually said — with an *honest miss* when it doesn't know, never a hallucinated fact. Reacts (👀✍👍) more than it speaks. |
 | ⏰ **Reminders** | "remind us to pay rent friday" → DST-correct, exactly-once delivery to the house group. |
 | 👥 **Learns people** | People are first-class entities — housemates, guests, the landlord — with relationships, notes, and attributed sentiment (never a score, never volunteered). |
 | 🌙 **Reflects** | A sleep-time job consolidates what it knows into durable per-person profiles — the "it learns over time" step. |

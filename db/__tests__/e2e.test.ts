@@ -1,18 +1,24 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { and, eq } from 'drizzle-orm'
 import { startPgHarness, dockerAvailable, type PgHarness } from './pg-harness'
-import { entities } from '@/db/schema'
+import { entities, facts, memoryItems, reminders } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
-import { reconcileFact, currentFactsForQuery } from '@/lib/memory/facts'
+import { reconcileFact, reconcileFactDetailed, currentFactsForQuery, upcomingDatedFacts, eventGroupFacts, ensureSpeakerEntity } from '@/lib/memory/facts'
+import { runHygieneSweep } from '@/lib/memory/hygiene'
 import { resolveSeedEntities, connectedEdges, gatherGraphContext } from '@/lib/memory/graph'
-import { findMemoryToForget, forgetMemory } from '@/lib/memory/forget'
-import { createReminder, claimReminder, markSent, releaseReminder } from '@/lib/reminders/store'
+import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/forget'
+import { appendInbound, recentTurns, scrubWindow, purgeWindow, linkProduced, withholdProducing, EXPIRED_WINDOW_TEXT } from '@/lib/turn/window'
+import { createReminder, claimReminder, markSent, releaseReminder, scheduleNextOccurrence, loadSeriesRow, repairRecurringSeries, orphanedEventReminders, reminderDestination } from '@/lib/reminders/store'
+import { lookupEdit, withdrawForEdit, settleEditedFacts } from '@/lib/turn/edit'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { loadResponsePolicy, setGlobalEnabled } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
 import { embedSync } from '@/lib/ai/embed'
+import { withSimulatedTime } from '@/lib/core/clock'
 
 // Secure-value capture needs the app-side key.
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 3).toString('base64')
@@ -102,32 +108,37 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
 
   it('fact reconcile is trust-gated on the real schema (memory-poisoning defense)', async () => {
     await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'landlord', predicate: 'phone', object: '0300' }, authoredBy: null, trustLevel: 'trusted' })
-    // a lower-trust (planted) contradiction is rejected, not applied
+    // a lower-trust (planted) contradiction is not applied — kept as a non-current conflict row (spec §7, F5)
     expect(
       await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'landlord', predicate: 'phone', object: '0666' }, authoredBy: null, trustLevel: 'untrusted' }),
-    ).toBe('rejected')
+    ).toBe('conflict')
     const hits = await currentFactsForQuery(h.db, GROUP, 'landlord phone?')
-    expect(hits[0]?.content).toContain('0300')
+    expect(hits.map((x) => x.content)).toEqual([expect.stringContaining('0300')])
+    const c = await h.pool.query("SELECT is_current, conflicts_with_fact_id FROM baumy_facts WHERE group_id = $1 AND object_value = '0666'", [GROUP])
+    expect(c.rows[0].is_current).toBe(false)
+    expect(c.rows[0].conflicts_with_fact_id).toBeTruthy()
   })
 
-  it('fact lineage: origin note + cross-person progression on the real migration (0009)', async () => {
+  it('fact lineage: origin note + a correction that shows what it replaced, on the real migration (0009)', async () => {
     await upsertMember(h.db, GROUP, '810', 'Ryan', 'member')
     await upsertMember(h.db, GROUP, '820', 'Marco', 'member')
     const memId = await captureMemory(
       { groupId: GROUP, content: 'zosia is coming today', memoryType: 'fact', authoredBy: '810', trustLevel: 'untrusted' },
       { db: h.db, embed },
     )
-    // Ryan: "coming today"; Marco: "arrived" — different predicate → an ADD deriving from the prior fact.
+    // Ryan: "arriving today"; Marco corrects it under a SYNONYM predicate → it supersedes (F3), and the
+    // lineage parent is the value it replaced (F8 — never an unrelated earlier fact).
     await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'zosia-guest', subjectKind: 'person', predicate: 'arriving', object: 'today' }, authoredBy: '810', trustLevel: 'untrusted', memoryItemId: memId })
-    await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'zosia-guest', subjectKind: 'person', predicate: 'status', object: 'arrived' }, authoredBy: '820', trustLevel: 'untrusted' })
+    await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'zosia-guest', subjectKind: 'person', predicate: 'arrival_date', object: 'tomorrow' }, authoredBy: '820', trustLevel: 'untrusted' })
     // real FKs (source_memory_item_id + derived_from_fact_id) resolved on real Postgres
-    const src = await h.pool.query("SELECT source_memory_item_id FROM baumy_facts WHERE predicate = 'arriving' AND group_id = $1", [GROUP])
+    const src = await h.pool.query("SELECT source_memory_item_id FROM baumy_facts WHERE predicate = 'arrives_on' AND object_value = 'today' AND group_id = $1", [GROUP])
     expect(src.rows[0].source_memory_item_id).toBe(memId)
-    const hits = await currentFactsForQuery(h.db, GROUP, 'has zosia-guest arrived?')
-    const arrived = hits.find((r) => r.content.includes('arrived'))
-    expect(arrived?.authoredBy).toBe('820') // Marco stated it
-    expect(arrived?.priorContent).toContain('arriving') // ...following Ryan's "coming today"
-    expect(arrived?.priorAuthoredBy).toBe('810')
+    const hits = await currentFactsForQuery(h.db, GROUP, 'when does zosia-guest arrive?')
+    const arrival = hits.find((r) => r.content.includes('arrives on'))
+    expect(arrival?.content).toContain('tomorrow')
+    expect(arrival?.authoredBy).toBe('820') // Marco stated it
+    expect(arrival?.priorContent).toContain('today') // ...replacing Ryan's "today"
+    expect(arrival?.priorAuthoredBy).toBe('810')
   })
 
   it('graph traversal: a multi-hop cross-subject walk on the real recursive CTE', async () => {
@@ -295,5 +306,247 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect((await loadRoster(h.db)).canAccessDashboard(900)).toBe(true)
     await setDashboardAccess(h.db, '900', false)
     expect((await loadRoster(h.db)).canAccessDashboard(900)).toBe(false)
+  })
+  it('conversation window: migrations 0017/0018, redacted append, topic-scoped 48h read, scrub + purge (real SQL)', async () => {
+    const cols = await h.pool.query("SELECT column_name FROM information_schema.columns WHERE table_name = 'baumy_messages' AND column_name IN ('text', 'text_redacted', 'seq')")
+    expect(cols.rows.map((r: { column_name: string }) => r.column_name).sort()).toEqual(['seq', 'text_redacted'])
+    const t0 = new Date('2026-09-26T19:00:00Z')
+    const base = { groupId: GROUP, chatId: GROUP, authorKind: 'member' as const, authorMemberId: null, authorName: 'Marco', trust: 'untrusted', replyToMessageId: null }
+    await appendInbound(h.db, { ...base, messageId: 1, text: 'the wifi password is hunter2', threadId: null, sentAt: t0 })
+    await appendInbound(h.db, { ...base, messageId: 2, text: 'call Robert on 0176 5550123', threadId: null, sentAt: new Date(t0.getTime() + 60_000) })
+    await appendInbound(h.db, { ...base, messageId: 3, text: 'in the topic', threadId: 44, sentAt: new Date(t0.getTime() + 120_000) })
+    await appendInbound(h.db, { ...base, messageId: 4, text: 'long ago', threadId: null, sentAt: new Date(t0.getTime() - 49 * 3_600_000) })
+    // an edit (same chat + message_id) upserts
+    await appendInbound(h.db, { ...base, messageId: 2, text: 'call Robert on 0176 5550123 tonight', threadId: null, sentAt: new Date(t0.getTime() + 60_000) })
+    const general = await recentTurns(h.db, { groupId: GROUP, chatId: GROUP, threadId: null, at: new Date(t0.getTime() + 600_000) })
+    expect(general.map((t) => t.text)).toEqual(['[a message containing the wifi password — withheld]', 'call Robert on 0176 5550123 tonight'])
+    expect((await recentTurns(h.db, { groupId: GROUP, chatId: GROUP, threadId: 44, at: new Date(t0.getTime() + 600_000) })).map((t) => t.text)).toEqual(['in the topic'])
+    const secret = await h.pool.query("SELECT count(*)::int n FROM baumy_messages WHERE text_redacted LIKE '%hunter2%'")
+    expect(secret.rows[0].n).toBe(0)
+    expect(await scrubWindow(h.db, GROUP, ['0176 5550123'], redactValues)).toBe(1)
+    expect(await purgeWindow(h.db, t0)).toBe(1)
+    // A forget (soft or purge) withholds the row that PRODUCED a forgotten fact (jsonb membership).
+    const fid = '00000000-0000-0000-0000-0000000000e2'
+    await linkProduced(h.db, { chatId: GROUP, messageId: 3 }, { factIds: [fid] })
+    expect(await withholdProducing(h.db, GROUP, { factIds: [fid], memoryItemIds: [] }, '[forgotten]')).toBe(1)
+    const left = await h.pool.query('SELECT text_redacted FROM baumy_messages WHERE group_id = $1 ORDER BY seq', [GROUP])
+    expect(left.rows.map((r: { text_redacted: string }) => r.text_redacted)).toEqual([
+      '[a message containing the wifi password — withheld]',
+      'call Robert on [redacted] tonight',
+      '[forgotten]',
+    ])
+  })
+
+  it('time model: migration 0019 + the "current = live" filter and the recurring-series SQL on real Postgres', async () => {
+    const G = '-100e2e-time'
+    await ensureRegistered(h.db, G, null)
+    const uq = await h.pool.query("SELECT indexdef FROM pg_indexes WHERE indexname = 'baumy_reminders_previous_uq'")
+    expect(uq.rows[0].indexdef).toMatch(/UNIQUE INDEX .* \(previous_reminder_id\)/)
+
+    // An expired stay (March) vs a live one (October): only the live one is current / upcoming / a group.
+    const stay = { subject: 'zosia', subjectKind: 'person' as const, predicate: 'staying_in', object: 'the cave', objectKind: 'place' as const }
+    await withSimulatedTime(new Date('2026-03-12T18:00:00Z'), () =>
+      reconcileFact(h.db, { groupId: G, fact: stay, authoredBy: null, trustLevel: 'untrusted', eventAt: new Date('2026-03-13T23:00:00Z'), validTo: new Date('2026-03-15T22:59:59.999Z') }),
+    )
+    const now = new Date('2026-09-29T10:00:00Z')
+    expect(await withSimulatedTime(now, () => currentFactsForQuery(h.db, G, 'zosia'))).toHaveLength(0)
+    const r = await withSimulatedTime(now, () =>
+      reconcileFact(h.db, { groupId: G, fact: stay, authoredBy: null, trustLevel: 'untrusted', eventAt: new Date('2026-10-02T22:00:00Z'), validTo: new Date('2026-10-04T21:59:59.999Z') }),
+    )
+    expect(r).toBe('add') // a new occurrence (T6), not a noop
+    const live = await withSimulatedTime(now, () => currentFactsForQuery(h.db, G, 'zosia'))
+    expect(live.map((f) => f.validTo?.toISOString())).toEqual(['2026-10-04T21:59:59.999Z'])
+    const upcoming = await upcomingDatedFacts(h.db, G, now, new Date('2026-10-10T00:00:00Z'))
+    expect(upcoming).toHaveLength(1)
+    expect(await eventGroupFacts(h.db, upcoming[0].id, 'Europe/Berlin', now)).toHaveLength(1)
+    // A heads-up anchored to it is orphaned once the stay is over.
+    await createReminder(h.db, { groupId: G, deliverChatId: G, content: 'heads-up', fireAt: new Date('2026-10-02T18:00:00Z'), anchorKind: 'event_offset', eventFactId: upcoming[0].id, createdBy: null })
+    expect(await orphanedEventReminders(h.db, G, now)).toHaveLength(0)
+    expect(await orphanedEventReminders(h.db, G, new Date('2026-10-05T10:00:00Z'))).toHaveLength(1)
+
+    // Recurring: "create next" is exactly-once on the unique previous_reminder_id; the repair sweep finds nothing to do.
+    const id = await createReminder(h.db, { groupId: G, deliverChatId: G, content: 'bins out', fireAt: new Date('2026-10-02T18:00:00Z'), createdBy: null, recurrence: 'FREQ=WEEKLY;BYDAY=FR' })
+    await markSent(h.db, id)
+    const row = (await loadSeriesRow(h.db, id))!
+    const first = await scheduleNextOccurrence(h.db, row, new Date('2026-10-02T18:00:00Z'), 'Europe/Berlin')
+    expect(first).toBeTruthy()
+    expect(await scheduleNextOccurrence(h.db, row, new Date('2026-10-02T18:00:00Z'), 'Europe/Berlin')).toBeNull()
+    expect(await repairRecurringSeries(h.db, new Date('2026-10-03T06:00:00Z'), 'Europe/Berlin')).toBe(0)
+    const series = await h.pool.query('SELECT fire_at FROM baumy_reminders WHERE previous_reminder_id = $1', [id])
+    expect(series.rows.map((x: { fire_at: Date }) => x.fire_at.toISOString())).toEqual(['2026-10-09T18:00:00.000Z'])
+  })
+
+  it('migration 0020: a LEGACY live dated fact (event_at set, valid_to NULL) is closed and stops being current (T2)', async () => {
+    const G = '-100e2e-legacy'
+    await ensureRegistered(h.db, G, null)
+    const stay = { subject: 'zosia', subjectKind: 'person' as const, predicate: 'stays_in', object: "chloe's room", objectKind: 'place' as const }
+    const party = { subject: 'marco', subjectKind: 'person' as const, predicate: 'hosts_party', object: 'Sat 14 Mar 21:00' }
+    const march = new Date('2026-03-10T10:00:00Z')
+    await withSimulatedTime(march, () => reconcileFact(h.db, { groupId: G, fact: stay, authoredBy: null, trustLevel: 'untrusted', eventAt: new Date('2026-03-13T23:00:00Z') }))
+    await withSimulatedTime(march, () => reconcileFact(h.db, { groupId: G, fact: party, authoredBy: null, trustLevel: 'untrusted', eventAt: new Date('2026-03-14T20:00:00Z') }))
+    // The pre-time-model shape: dated, but valid_to only ever written on close.
+    await h.pool.query('UPDATE baumy_facts SET valid_to = NULL WHERE group_id = $1', [G])
+    const sept = new Date('2026-09-26T10:00:00Z')
+    expect(await withSimulatedTime(sept, () => currentFactsForQuery(h.db, G, 'zosia staying'))).toHaveLength(1) // the bug
+
+    await h.pool.query(readFileSync(join(process.cwd(), 'db/migrations/0020_close_legacy_dated_facts.sql'), 'utf8'))
+    const rows = await h.pool.query('SELECT predicate, valid_to FROM baumy_facts WHERE group_id = $1 AND event_at IS NOT NULL ORDER BY predicate', [G])
+    expect(rows.rows.map((r: { predicate: string; valid_to: Date }) => [r.predicate, r.valid_to.toISOString()])).toEqual([
+      ['hosts_party', '2026-03-15T02:00:00.000Z'], // timed: start + 6h
+      ['stays_in', '2026-03-14T22:59:59.999Z'], // all-day (local midnight start): the end of that Berlin day
+    ])
+    expect(await withSimulatedTime(sept, () => currentFactsForQuery(h.db, G, 'zosia staying'))).toHaveLength(0)
+    // During the stay it was (and still would be) current.
+    expect(await withSimulatedTime(new Date('2026-03-14T12:00:00Z'), () => currentFactsForQuery(h.db, G, 'zosia staying'))).toHaveLength(1)
+  })
+
+  it('fact model: migrations 0021/0022 + the lookup, hygiene, retrieval-arm and consolidation SQL on real Postgres (spec §7)', async () => {
+    const G = '-100e2e-facts'
+    await ensureRegistered(h.db, G, null)
+    await upsertMember(h.db, G, '901', 'Chloe Smith', 'owner')
+    await upsertMember(h.db, G, '902', 'Marco', 'member')
+    // 0021: the conflict pointer (self-FK, ON DELETE SET NULL)
+    const col = await h.pool.query("SELECT is_nullable FROM information_schema.columns WHERE table_name = 'baumy_facts' AND column_name = 'conflicts_with_fact_id'")
+    expect(col.rows[0].is_nullable).toBe('YES')
+
+    // 0022: legacy synonym predicates are renamed (raw rows, the pre-vocabulary shape); canonical ones untouched
+    const [z] = await h.db.insert(entities).values({ groupId: G, kind: 'person', canonicalName: 'zosia' }).returning({ id: entities.id })
+    for (const [p, v, at] of [['Arrival Date', 'friday', '2026-09-01T10:00:00Z'], ['arrives_on', 'saturday', '2026-09-02T10:00:00Z'], ['staying in', 'the cave', '2026-09-01T10:00:00Z']])
+      await h.pool.query('INSERT INTO baumy_facts (group_id, subject_entity_id, predicate, object_value, recorded_at, valid_from, is_current) VALUES ($1, $2, $3, $4, $5, $5, true)', [G, z.id, p, v, at])
+    // …and a FALSE lineage parent (a different predicate — the old "last fact about the subject") is dropped
+    const [bins] = await h.db.insert(entities).values({ groupId: G, kind: 'thing', canonicalName: 'bins' }).returning({ id: entities.id })
+    const parent = await h.pool.query("INSERT INTO baumy_facts (group_id, subject_entity_id, predicate, object_value, is_current) VALUES ($1, $2, 'colour', 'green', true) RETURNING id", [G, bins.id])
+    await h.pool.query("INSERT INTO baumy_facts (group_id, subject_entity_id, predicate, object_value, is_current, derived_from_fact_id) VALUES ($1, $2, 'bin_day', 'friday', true, $3)", [G, bins.id, parent.rows[0].id])
+    for (const stmt of readFileSync(join(process.cwd(), 'db/migrations/0022_normalise_fact_predicates.sql'), 'utf8').split('--> statement-breakpoint')) await h.pool.query(stmt)
+    const lineage = await h.pool.query("SELECT predicate, derived_from_fact_id FROM baumy_facts WHERE group_id = $1 AND subject_entity_id = $2 AND object_value = 'friday'", [G, bins.id])
+    expect(lineage.rows[0]).toEqual({ predicate: 'collection_day', derived_from_fact_id: null })
+    await h.pool.query('DELETE FROM baumy_facts WHERE subject_entity_id = $1', [bins.id])
+    const renamed = await h.pool.query('SELECT predicate, object_value FROM baumy_facts WHERE group_id = $1 ORDER BY predicate, object_value', [G])
+    expect(renamed.rows.map((r: { predicate: string; object_value: string }) => `${r.predicate}=${r.object_value}`)).toEqual(['arrives_on=friday', 'arrives_on=saturday', 'stays_in=the cave'])
+
+    // the sweep resolves the split the rename exposed (row-constructor IN, UPDATE … RETURNING)
+    const at = new Date('2026-09-27T01:40:00Z')
+    const r = await runHygieneSweep(h.db, G, at)
+    expect(r.resolved).toBe(1)
+    expect((await withSimulatedTime(at, () => currentFactsForQuery(h.db, G, 'when does zosia arrive?'))).map((x) => x.content)).toEqual(['zosia arrives on: saturday', 'zosia stays in: the cave'])
+
+    // speaker aliases + whole-word / object-side / first-person lookup (text[] aliases through the driver)
+    await ensureSpeakerEntity(h.db, G, '901', 'Chloe Smith')
+    await withSimulatedTime(at, () => reconcileFact(h.db, { groupId: G, fact: { subject: 'Chloe Smith', subjectKind: 'person', predicate: 'is_away', object: 'this weekend' }, authoredBy: '901', trustLevel: 'trusted' }))
+    await withSimulatedTime(at, () => reconcileFact(h.db, { groupId: G, fact: { subject: 'marta', subjectKind: 'person', predicate: 'stays_in', object: "chloe's room", objectKind: 'place' }, authoredBy: '902', trustLevel: 'untrusted' }))
+    const ask = (q: string, speaker?: { memberId: string; firstName: string }) => withSimulatedTime(at, () => currentFactsForQuery(h.db, G, q, 5, [], { speaker })).then((x) => x.map((y) => y.content))
+    expect(await ask('is chloe around this weekend?')).toEqual(['chloe is away: this weekend'])
+    expect(await ask("who's in the cave?")).toEqual(['zosia stays in: the cave'])
+    expect(await ask("who's in my room?", { memberId: '901', firstName: 'Chloe' })).toEqual(["marta stays in: chloe's room"])
+
+    // the trust gate: a group correction by the SAME author takes; by someone else → a conflict row
+    expect((await withSimulatedTime(at, () => reconcileFactDetailed(h.db, { groupId: G, fact: { subject: 'chloe', subjectKind: 'person', predicate: 'is_away', object: 'next weekend' }, authoredBy: '902', trustLevel: 'untrusted' }))).result).toBe('conflict')
+    expect((await withSimulatedTime(at, () => reconcileFactDetailed(h.db, { groupId: G, fact: { subject: 'chloe', subjectKind: 'person', predicate: 'is_away', object: 'next weekend' }, authoredBy: '901', trustLevel: 'untrusted' }))).result).toBe('update')
+    // …and the now-moot conflict is retired by the sweep
+    expect((await runHygieneSweep(h.db, G, at)).retired).toBe(1)
+
+    // retrieval: OR lexical arm + author arm; consolidation keyed on author
+    const note = await captureMemory({ groupId: G, content: 'Zosia is staying in my room this weekend', memoryType: 'statement', authoredBy: '901', trustLevel: 'untrusted' }, { db: h.db, embed })
+    const junk = async () => embedSync('completely unrelated vocabulary xyzzy plugh')
+    expect((await retrieve('when does zosia arrive?', { groupId: G, floor: 0.99 }, { db: h.db, embed: junk })).map((m) => m.id)).toContain(note)
+    expect((await retrieve('what did chloe say?', { groupId: G, floor: 0.99, authorId: '901' }, { db: h.db, embed: junk })).map((m) => m.id)).toContain(note)
+    const other = await captureMemory({ groupId: G, content: 'Zosia is staying in my room this weekend', memoryType: 'statement', authoredBy: '902', trustLevel: 'untrusted' }, { db: h.db, embed })
+    expect(other).not.toBe(note) // Marco's identical line is HIS note, not folded onto Chloe's (F9)
+  })
+  it('intake & actions: migration 0023 (forwarded_by), forwarded recall, edit supersession, series cancel, soft forget (spec §8)', async () => {
+    const G = '-100e2e-intake'
+    await ensureRegistered(h.db, G, null)
+    await upsertMember(h.db, G, '911', 'Chloe', 'owner')
+    await upsertMember(h.db, G, '912', 'Marco', 'member')
+    // 0023: the forwarder column (FK → members, ON DELETE SET NULL)
+    const col = await h.pool.query("SELECT is_nullable FROM information_schema.columns WHERE table_name = 'baumy_memory_items' AND column_name = 'forwarded_by'")
+    expect(col.rows[0].is_nullable).toBe('YES')
+
+    // D4: a member-forwarded note is stored unattributed with its forwarder, and every retrieval arm returns it labelled
+    const fwd = await captureMemory({ groupId: G, content: 'Landlord: boiler inspection Tuesday 10am', memoryType: 'statement', authoredBy: null, trustLevel: 'forwarded', forwardedBy: '912' }, { db: h.db, embed })
+    const junk = async () => embedSync('completely unrelated vocabulary xyzzy plugh')
+    const hit = (await retrieve('when is the boiler inspection?', { groupId: G, floor: 0.99 }, { db: h.db, embed: junk })).find((m) => m.id === fwd)
+    expect(hit).toMatchObject({ trustLevel: 'forwarded', forwardedBy: '912', authoredBy: null })
+
+    // I1: an edit retires the original's note, cancels its unsent series (recursive CTE), and settles its facts
+    const note = await captureMemory({ groupId: G, content: 'zosia arrives friday', memoryType: 'statement', authoredBy: '911', trustLevel: 'untrusted' }, { db: h.db, embed })
+    const first = await reconcileFactDetailed(h.db, { groupId: G, fact: { subject: 'zosia', subjectKind: 'person', predicate: 'arrives_on', object: 'friday' }, authoredBy: '911', trustLevel: 'untrusted', memoryItemId: note })
+    const r1 = await createReminder(h.db, { groupId: G, deliverChatId: G, content: 'bins', fireAt: new Date('2026-10-02T18:00:00Z'), createdBy: '911', recurrence: 'FREQ=WEEKLY;BYDAY=FR' })
+    await claimReminder(h.db, r1)
+    await markSent(h.db, r1)
+    const r2 = await scheduleNextOccurrence(h.db, (await loadSeriesRow(h.db, r1))!, new Date('2026-10-02T18:01:00Z'), 'Europe/Berlin')
+    await appendInbound(h.db, { groupId: G, chatId: G, messageId: 77, authorKind: 'member', authorMemberId: '911', authorName: 'Chloe', text: 'zosia arrives friday', trust: 'untrusted', replyToMessageId: null, threadId: null, sentAt: new Date() })
+    await linkProduced(h.db, { chatId: G, messageId: 77 }, { memoryItemId: note, factIds: [first.factId!], reminderIds: [r1] })
+    const map = await lookupEdit(h.db, { chatId: G, messageId: 77 })
+    expect(map).toMatchObject({ processed: true, memoryItemId: note, factIds: [first.factId], reminderIds: [r1] })
+    const w = await withdrawForEdit(h.db, G, map)
+    expect(w).toEqual({ noteRetired: true, remindersCancelled: [r2] }) // the SENT first occurrence stays sent
+    const statuses = await h.db.select({ id: reminders.id, status: reminders.status }).from(reminders).where(eq(reminders.groupId, G))
+    expect(Object.fromEntries(statuses.map((x) => [x.id, x.status]))).toEqual({ [r1]: 'sent', [r2!]: 'cancelled' })
+    const note2 = await captureMemory({ groupId: G, content: 'zosia arrives saturday', memoryType: 'statement', authoredBy: '911', trustLevel: 'untrusted' }, { db: h.db, embed })
+    const fixed = await reconcileFactDetailed(h.db, { groupId: G, fact: { subject: 'zosia', subjectKind: 'person', predicate: 'arrives_on', object: 'saturday' }, authoredBy: '911', trustLevel: 'untrusted', memoryItemId: note2 })
+    expect(fixed.result).toBe('update')
+    const retracted = await settleEditedFacts(h.db, G, map, { produced: [fixed.factId!], kept: [], noteId: note2 })
+    expect(retracted).toEqual([first.factId])
+    const [newRow] = await h.db.select({ parent: facts.derivedFromFactId }).from(facts).where(eq(facts.id, fixed.factId!))
+    expect(newRow.parent).toBeNull() // the typo is not "earlier" history
+    const [oldNote] = await h.db.select({ active: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, note))
+    expect(oldNote.active).toBe(false)
+
+    // A7/A8: "forget Zosia" proposes her facts (subject side) and their source note; a soft forget hides both
+    const m = await findMemoryToForget(h.db, G, { values: ['Zosia'], subject: 'Zosia', attribute: '' })
+    expect(m.factIds).toEqual([fixed.factId])
+    expect(m.noteIds).toContain(note2)
+    const res = await forgetMemory(h.db, G, { ...m, mode: 'soft' })
+    expect(res).toMatchObject({ facts: 1, messagesHidden: 1 })
+    const [hidden] = await h.db.select({ active: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, note2))
+    expect(hidden.active).toBe(false)
+
+    // D2: a personal reminder's destination is its creator's DM only while they are an active member
+    expect(await reminderDestination(h.db, { groupId: G, deliverChatId: '912', createdBy: '912' })).toEqual({ kind: 'dm', chatId: '912' })
+    expect(await reminderDestination(h.db, { groupId: G, deliverChatId: '912', createdBy: '911' })).toBeNull()
+  })
+
+  it('phase-5 review: the purge keeps an edit map for a pending reminder series, a shared note survives an edit, forget sees stated ownership (real SQL)', async () => {
+    const G = '-100e2e-review'
+    await ensureRegistered(h.db, G, null)
+    await upsertMember(h.db, G, '921', 'Chloe', 'owner')
+    const T = new Date('2026-09-26T19:00:00Z')
+    const base = { groupId: G, chatId: G, authorKind: 'member' as const, authorMemberId: '921', authorName: 'Chloe', trust: 'untrusted', replyToMessageId: null, threadId: null }
+    const old = new Date(T.getTime() - 50 * 3_600_000)
+
+    // purgeWindow: jsonb_array_elements_text + the recursive series walk — a row whose series still has a
+    // scheduled occurrence keeps its map (text replaced), one whose reminder is over is deleted.
+    const sent = await createReminder(h.db, { groupId: G, deliverChatId: G, content: 'plants', fireAt: new Date(T.getTime() - 3_600_000), createdBy: '921', recurrence: 'FREQ=WEEKLY;BYDAY=FR' })
+    await claimReminder(h.db, sent)
+    await markSent(h.db, sent)
+    await scheduleNextOccurrence(h.db, (await loadSeriesRow(h.db, sent))!, new Date(T.getTime() - 3_500_000), 'Europe/Berlin')
+    const over = await createReminder(h.db, { groupId: G, deliverChatId: G, content: 'over', fireAt: new Date(T.getTime() - 7_200_000), createdBy: '921' })
+    await claimReminder(h.db, over)
+    await markSent(h.db, over)
+    await appendInbound(h.db, { ...base, messageId: 1, text: 'remind us to water the plants every friday', sentAt: old })
+    await appendInbound(h.db, { ...base, messageId: 2, text: 'remind us of something over', sentAt: old })
+    await linkProduced(h.db, { chatId: G, messageId: 1 }, { reminderIds: [sent] })
+    await linkProduced(h.db, { chatId: G, messageId: 2 }, { reminderIds: [over] })
+    expect(await purgeWindow(h.db, T)).toBe(1)
+    const left = await h.pool.query('SELECT message_id, text_redacted FROM baumy_messages WHERE group_id = $1', [G])
+    expect(left.rows).toEqual([{ message_id: '1', text_redacted: EXPIRED_WINDOW_TEXT }])
+    expect((await lookupEdit(h.db, { chatId: G, messageId: 1 })).reminderIds).toEqual([sent])
+
+    // withdrawForEdit: a note two window rows produced (a consolidated repeat) is not retired by editing one
+    const note = await captureMemory({ groupId: G, content: 'the boiler is broken', memoryType: 'statement', authoredBy: '921', trustLevel: 'untrusted' }, { db: h.db, embed })
+    await appendInbound(h.db, { ...base, messageId: 10, text: 'the boiler is broken', sentAt: T })
+    await appendInbound(h.db, { ...base, messageId: 12, text: 'the boiler is broken', sentAt: T })
+    await linkProduced(h.db, { chatId: G, messageId: 10 }, { memoryItemId: note })
+    await linkProduced(h.db, { chatId: G, messageId: 12 }, { memoryItemId: note })
+    expect((await withdrawForEdit(h.db, G, await lookupEdit(h.db, { chatId: G, messageId: 12 }))).noteRetired).toBe(false)
+    await linkProduced(h.db, { chatId: G, messageId: 10 }, { memoryItemId: null })
+    expect((await withdrawForEdit(h.db, G, await lookupEdit(h.db, { chatId: G, messageId: 12 }))).noteRetired).toBe(true)
+
+    // forget: the structural possessor edge (system) is excluded, a stated belongs_to is not
+    await reconcileFact(h.db, { groupId: G, fact: { subject: "chloe's bike", predicate: 'location', object: 'the shed' }, authoredBy: null, trustLevel: 'untrusted' })
+    await reconcileFact(h.db, { groupId: G, fact: { subject: 'the ladder', predicate: 'owned_by', object: 'marco' }, authoredBy: null, trustLevel: 'untrusted' })
+    expect((await findMemoryToForget(h.db, G, { values: [], subject: "chloe's bike", attribute: '' })).facts.map((f) => f.label)).toEqual(["chloe's bike location: the shed"])
+    expect((await findMemoryToForget(h.db, G, { values: [], subject: 'the ladder', attribute: '' })).facts.map((f) => f.label)).toEqual(['ladder belongs to: marco'])
   })
 })

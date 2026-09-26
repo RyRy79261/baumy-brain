@@ -3,6 +3,7 @@ import { type Database, createHttpDb } from '@/db/client'
 import { inngest } from '@/lib/inngest/client'
 import { houseConfig } from '@/db/schema'
 import { writeAudit } from '@/lib/audit'
+import { now as clockNow } from '@/lib/core/clock'
 
 // Converge the house TRANSPORT id on a group→supergroup migration (docs/spec/telegram.md D9). The
 // ids come from Telegram-authenticated service fields (never message text), but we still bind the
@@ -26,7 +27,7 @@ export async function convergeMigration(
   if (live === newId) return { alreadyConverged: newId } // idempotent replay
   await db
     .update(houseConfig)
-    .set({ liveChatId: newId, migratedFromChatId: oldId, updatedAt: new Date() })
+    .set({ liveChatId: newId, migratedFromChatId: oldId, updatedAt: clockNow() })
     .where(eq(houseConfig.id, true))
   await writeAudit(db, 'house.migrated', null, null, { from: oldId, to: newId, via: 'service-message' })
   return { migrated: { from: oldId, to: newId } }
