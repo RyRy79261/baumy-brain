@@ -147,8 +147,14 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   anyone (console policy marks `text_redacted` secret).
 - **Dashboard authz is live:** re-checked against the DB on every request
   (`lib/auth/require-admin.ts`) — never cached in the cookie.
-- **Trust-gated facts:** a fact may supersede an incumbent only if its trust ≥ the incumbent's
-  (`lib/memory/facts.ts`) — the memory-poisoning defense.
+- **Trust-gated facts:** a fact may supersede (or close) an incumbent only if its trust ≥ the
+  incumbent's (`lib/memory/facts.ts` `mayOverride`) — the memory-poisoning defense. Two authenticated
+  exceptions (spec §7, F5): the **same author** may correct their own fact from any lane, and the
+  **owner** (roster role) may correct anything below `system`; identity comes from the turn, never text.
+  Any other lower-trust contradiction is stored as a **non-current conflict row**
+  (`conflicts_with_fact_id`) and surfaced in `ctx.outcome.captured.conflicts` → the planner's
+  `statement-conflict` row asks which is right. A conflict row never grounds anything; the hygiene
+  sweep retires it. A `system` (reflect) fact is never correctable by chat.
 - **Fail closed** everywhere (roster, env, webhook secret).
 
 ## The turn & Baumy's voice (`lib/turn/*`, `docs/spec/chat-understanding-v2.md` §1–§4)
@@ -164,7 +170,7 @@ filter → slash commands, `lib/turn/commands.ts`) and then ONE turn:
    object → `SAFE_VERDICT` (captures nothing, `degraded`).
 3. **Write-gate** (`lib/core/decide.ts`): `shouldCapture` = statements / info-carrying requests and
    reminders only — **never a question, chatter or a forget request** (I3).
-4. **Capture** (`capture.ts`) returns `{memoryItemId, factIds, learned, rejected}`; **actions**
+4. **Capture** (`capture.ts`) returns `{memoryItemId, factIds, learned, rejected, conflicts}`; **actions**
    (`actions.ts`: list, reminder, forget) return what actually happened. All land in `ctx.outcome`.
 5. **`planResponse(ctx, policy)`** (`plan.ts`) — pure, table-driven, exhaustively tested — picks
    none / a reaction / the deterministic list or forget text / words in a **MODE** (answer, ack,
@@ -195,19 +201,36 @@ The whole point of Baumy is recall — treat `lib/memory/` + the retrieval AI in
 crown jewels. The pipeline:
 
 - **Capture** (`write.ts` `captureMemory`): store the message as an evidence item + Voyage
-  embedding. A near-verbatim restatement (≥0.97 cosine) **consolidates** onto the original
-  (salience bump) instead of duplicating; secure and quarantined input are exempt.
-- **Facts** (`facts.ts`): `extractFacts` (Haiku) → `reconcileFact` distils {subject,predicate,
-  object} triples into a **trust-gated, bitemporal** knowledge graph. `resolveEntity`
-  de-fragments subjects (normalize → exact → alias → conservative `strict_word_similarity`
-  merge), so "the sink"/"kitchen sink" are one entity while "marta"/"marco" stay distinct —
-  **write side is precision-first** (a bad merge corrupts the graph); read side fuzzes generously.
+  embedding. A near-verbatim restatement (≥0.97 cosine) **by the same author within 24h**
+  **consolidates** onto the original (salience bump) instead of duplicating (F9 — keyed on cosine
+  alone, Charli's "I'm away" folded onto Marco's month-old note); secure and quarantined input are
+  exempt.
+- **Facts** (`facts.ts`, spec §7): `extractFacts` → `reconcileFact` distils {subject,predicate,
+  object} triples into a **trust-gated, bitemporal** knowledge graph. **Predicates are a controlled
+  vocabulary** (`lib/memory/predicates.ts`): canonical names with a **cardinality** + a synonym map
+  (`arrival_date → arrives_on`); the extractor prompt lists them, reconcile normalises whatever comes
+  back. **single** = one live value, a new one supersedes; **multi** (`has_guest`, `likes`,
+  `allergic_to`, `sibling_of`…) = values accumulate and only a `removes` fact closes one; unknown
+  predicates are single. `resolveEntity` de-fragments subjects (normalize → exact → alias → a
+  **near-equal** trigram merge: least of both `strict_word_similarity` directions ≥ 0.7, same word
+  count), so a typo merges while "marta"/"martha" stay distinct — **write side is precision-first**.
+  **Never merged:** a person by trigram, a **possessive** ("charli's bike" gets a `belongs_to` edge to
+  charli at `system` trust instead — F1), or a qualified phrase into its head ("kitchen sink" never
+  folds into "sink"); only a bare head resolves to the ONE qualified node ending in it ("the sink" →
+  "kitchen sink"). The speaker is ONE person node carrying their full + first name as aliases
+  (`ensureSpeakerEntity`, F6); notes are tagged by the entity id reconcile resolved (F15).
   Every fact carries **lineage** (`docs/spec/fact-lineage.md`): `source_memory_item_id` (the
   evidence note it came from — its origin, with `authored_by` = who) and `derived_from_fact_id`
-  (the prior fact it follows from — a supersession target, or the previous thing said about the
-  same subject). This chains a progression across predicates + people ("you said Zuzka's coming"
-  → "Marco said she arrived"); `currentFactsForQuery` surfaces the author + parent into the reply
-  grounding (a **secret** parent is redacted). Both nullable, additive.
+  (the fact it **replaced**, or the previous occurrence of the same key — F8: never "the last thing
+  said about the subject", and never a forgotten or conflict row). `currentFactsForQuery` surfaces
+  the author + parent as "(earlier: …)" (a **secret** parent is redacted). Both nullable, additive.
+- **Lookup** (`lib/memory/lookup.ts` + `currentFactsForQuery`, `resolveSeedEntities`): names match as
+  **whole words** (plural-tolerant); a fact is found from its **subject or object** (node or value —
+  "who's in the cave?"), from a predicate cue ("who's staying…"), or — for "what did X say" — its
+  author (`askedAuthor`, roster names only). Ranked: named subject > named object > value > the
+  `house` hub (capped) > cue > typo; "I/my/me" are the **authenticated sender** (passed from the
+  turn); a reflect profile always ranks last. The retrieval lexical arm is an **OR** tsquery (F14)
+  and "what did X say" adds X's notes as an author arm (F13).
 - **Time** (`docs/spec/chat-understanding-v2.md` §6): the fact + reminder extractors get a `MESSAGE
   SENT` line and a 21-day calendar table (`lib/core/calendar.ts`) and resolve times themselves (local
   ISO); code validates (`lib/core/when.ts` — parseable, ≤2 years out, end ≥ start) and falls back to
@@ -228,7 +251,8 @@ crown jewels. The pipeline:
   graph (relationship edges = a fact row with `object_entity_id` set). `connectedEdges` walks it
   with a **bounded recursive CTE** (≤2 hops / node+edge caps, both directions) from a query's seed
   entities — the cross-subject hop ("Charl's sister → the cave"); `entityTimeline` walks one
-  subject's full progression (incl. superseded and expired, tagged `(past)`). `gatherGraphContext` feeds both
+  subject's progression **newest first** (incl. superseded and expired, tagged `(past)`; never conflict
+  rows). `gatherGraphContext` feeds both
   into the **deep-tier** reply grounding (best-effort). Group-scoped, secret-excluded, current-only.
 - **Retrieve** (`retrieve.ts`): **hybrid RRF** — semantic (pgvector cosine) ⊕ lexical
   (`content_tsv` full-text), fused by Reciprocal Rank Fusion, then recency-composed. The **deep
@@ -243,6 +267,16 @@ crown jewels. The pipeline:
   activity since their last profile (never churns). Material is **non-secret + non-quarantined**
   (untrusted native-group notes ARE included — it's already-captured evidence/facts, not live
   group text; only secret + forwarded/bot content is excluded). This is the "it learns" step.
+  The material is **live** facts only, each **dated + attributed** (who said it, when, when it
+  happens — F11), and the profile grounds as its own `profile` kind ("Baumy's summary · as of <day>"),
+  ranked below every direct fact.
+- **Hygiene** (`hygiene.ts` + `functions/hygiene.ts`, nightly 03:40 Berlin, F12): predicate
+  canonicalisation, **proven** entity merges (same normalised name / an alias / the same housemate —
+  audited `memory.entity_merge`), look-alike THING/PLACE merges the model only **proposes**
+  (`lib/ai/dedupe.ts`; code offers the pairs and re-checks every guard — never people, never a
+  possessive, never a qualified/head pair), contradiction resolution through the same trust gate, and
+  conflict-row retirement. Ingest runs **one message at a time per chat** (Inngest concurrency key on
+  `event.data.chatId`, F16) so a correction is never superseded by the message it corrected.
 - **Forget** (`forget.ts`, deletion on request): `findMemoryToForget` resolves a target
   description to exact **group-scoped** row ids (facts via trigram/substring, notes via hybrid
   recall); `forgetMemory` runs **soft** (hide: `is_current`/`is_active=false`, reversible) or

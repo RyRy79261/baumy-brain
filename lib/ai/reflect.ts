@@ -1,10 +1,20 @@
 import { generateText, type LanguageModel } from 'ai'
 import { resolveModel } from './registry'
 import { REFLECT_SYSTEM } from './prompts'
+import { DateTime } from 'luxon'
+import { formatEventWindow } from '@/lib/core/calendar'
+import { now as clockNow } from '@/lib/core/clock'
+import { houseTz } from '@/lib/env'
 
 export interface ReflectFact {
   predicate: string
   value: string
+  /** Who said it (display name) and when — the profile attributes + dates what can change (F11). */
+  by?: string | null
+  saidAt?: Date | null
+  /** For a dated happening: when it happens / is over. */
+  eventAt?: Date | null
+  validTo?: Date | null
 }
 export interface ReflectNote {
   text: string
@@ -23,10 +33,17 @@ export async function reflectPerson(
   facts: ReflectFact[],
   notes: ReflectNote[],
   model: LanguageModel = resolveModel('assess'),
+  tz: string = houseTz(),
 ): Promise<string> {
-  const factLines = facts.map((f) => `- ${f.predicate.replace(/_/g, ' ')}: ${f.value}`).join('\n')
+  const day = (d: Date) => DateTime.fromJSDate(d).setZone(tz).toFormat('d LLL yyyy')
+  const factLines = facts
+    .map((f) => {
+      const meta = [f.by ? `said by ${f.by}` : null, f.saidAt ? day(new Date(f.saidAt)) : null, f.eventAt ? `happens ${formatEventWindow(new Date(f.eventAt), f.validTo ? new Date(f.validTo) : null, tz)}` : null].filter(Boolean)
+      return `- ${f.predicate.replace(/_/g, ' ')}: ${f.value}${meta.length ? ` (${meta.join(', ')})` : ''}`
+    })
+    .join('\n')
   const noteLines = notes.map((n) => `- ${n.by ? `${n.by}: ` : ''}${n.text}`).join('\n')
-  const prompt = `PERSON: ${name}\n\nFACTS:\n${factLines || '(none)'}\n\nNOTES:\n${noteLines || '(none)'}`
+  const prompt = `PERSON: ${name}\nTODAY: ${day(clockNow())}\n\nFACTS:\n${factLines || '(none)'}\n\nNOTES:\n${noteLines || '(none)'}`
   const { text } = await generateText({ model, system: REFLECT_SYSTEM, prompt })
   return text.trim()
 }

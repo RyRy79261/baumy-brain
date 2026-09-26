@@ -153,18 +153,4 @@ describe('AUDIT intake/triage/capture', () => {
     expect(res).toMatchObject({ decision: 'drop', reason: 'out-of-scope' })
     expect(sendToHouse).not.toHaveBeenCalled()
   })
-
-  // New: near-verbatim restatement consolidation — a NEW occurrence ("cleaner is coming tomorrow"
-  // said again weeks later, by someone else) folds onto the OLD note: old created_at, old author.
-  it('consolidation folds a fresh restatement by another person onto the old note (old date, old author)', async () => {
-    classifyMock.mockResolvedValue(V({ worthRemembering: true, intent: 'statement' }))
-    await runIngest(ev({ text: 'the cleaner is coming tomorrow' }), step)
-    const [orig] = await items()
-    await dbh.db.update(memoryItems).set({ createdAt: new Date('2026-01-01T00:00:00Z') }).where(eq(memoryItems.id, orig.id))
-    await runIngest(ev({ text: 'the cleaner is coming tomorrow', fromId: MARCO, fromFirstName: 'Marco' }), step)
-    const rows = await items()
-    expect(rows.length).toBe(1)
-    expect(rows[0].authoredBy).toBe(String(CHARLI))
-    expect(new Date(rows[0].createdAt).toISOString()).toBe('2026-01-01T00:00:00.000Z')
-  })
 })

@@ -218,7 +218,7 @@ describe('scenario: the time model (phase 3)', () => {
       expectPrompt(
         'reply',
         (c) => {
-          const facts = memoryLines(c.prompt).filter((l) => /- fact/.test(l)).map((l) => l.split(' (follows from')[0])
+          const facts = memoryLines(c.prompt).filter((l) => /- fact/.test(l)).map((l) => l.split(' (earlier:')[0])
           return facts.some((l) => /since Fri 25 Sep: kitchen sink status: fixed$/.test(l)) && !facts.some((l) => /status: broken$/.test(l))
         },
         'MEMORY grounds the NEW state (since Fri 25 Sep), not the old one',

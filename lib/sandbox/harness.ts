@@ -7,6 +7,8 @@ import { deliverDueReminders, deliverReminderNow } from '@/lib/inngest/functions
 import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { purgeWindow } from '@/lib/turn/window'
+import { runHygieneSweep } from '@/lib/memory/hygiene'
+import { proposeEntityMerges } from '@/lib/ai/dedupe'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { and, asc, eq, gt, lte, ne, notInArray } from 'drizzle-orm'
@@ -235,6 +237,15 @@ const JOBS: Job[] = [
     minute: 17,
     run: async (sb, at) => {
       await purgeWindow(sb.db, at)
+    },
+  },
+  {
+    // Nightly graph hygiene (spec §7, F12) — its model proposal goes through the scenario's model.
+    id: 'hygiene',
+    hour: 3,
+    minute: 40,
+    run: async (sb, at) => {
+      await runHygieneSweep(sb.db, sb.houseChatId, at, { proposeMerges: proposeEntityMerges })
     },
   },
   {

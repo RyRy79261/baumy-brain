@@ -89,7 +89,7 @@ describe('event-surfacing scan — dated facts become event-anchored reminders',
     expect(res.scanned).toBe(3) // three facts…
     expect(res.created).toBe(3) // …but three STAGES of ONE event, not 3 facts × 3 stages
     // and every fact went into the one written line, so the nudge can say the whole thing
-    expect(writeHeadsUp.mock.calls[0][0].map((f) => f.predicate).sort()).toEqual(['needs', 'returns_home', 'staying_in'])
+    expect(writeHeadsUp.mock.calls[0][0].map((f) => f.predicate).sort()).toEqual(['needs', 'returns_home', 'stays_in']) // staying_in is stored as the canonical stays_in (spec §7)
   })
 
   it('a SKIP from the model schedules NOTHING (an unwanted heads-up is worse than none)', async () => {

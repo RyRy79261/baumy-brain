@@ -74,6 +74,8 @@ export interface FactSpec {
    */
   when?: string | WhenSpec
   whenText?: string
+  /** "X is no longer staying" — this value ends (spec §7). */
+  removes?: boolean
 }
 
 export const fact = (f: FactSpec): FactSpec => f

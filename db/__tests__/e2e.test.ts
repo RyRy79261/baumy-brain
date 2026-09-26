@@ -6,7 +6,8 @@ import { startPgHarness, dockerAvailable, type PgHarness } from './pg-harness'
 import { entities } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
-import { reconcileFact, currentFactsForQuery, upcomingDatedFacts, eventGroupFacts } from '@/lib/memory/facts'
+import { reconcileFact, reconcileFactDetailed, currentFactsForQuery, upcomingDatedFacts, eventGroupFacts, ensureSpeakerEntity } from '@/lib/memory/facts'
+import { runHygieneSweep } from '@/lib/memory/hygiene'
 import { resolveSeedEntities, connectedEdges, gatherGraphContext } from '@/lib/memory/graph'
 import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/forget'
 import { appendInbound, recentTurns, scrubWindow, purgeWindow, linkProduced, withholdProducing } from '@/lib/turn/window'
@@ -106,32 +107,37 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
 
   it('fact reconcile is trust-gated on the real schema (memory-poisoning defense)', async () => {
     await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'landlord', predicate: 'phone', object: '0300' }, authoredBy: null, trustLevel: 'trusted' })
-    // a lower-trust (planted) contradiction is rejected, not applied
+    // a lower-trust (planted) contradiction is not applied — kept as a non-current conflict row (spec §7, F5)
     expect(
       await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'landlord', predicate: 'phone', object: '0666' }, authoredBy: null, trustLevel: 'untrusted' }),
-    ).toBe('rejected')
+    ).toBe('conflict')
     const hits = await currentFactsForQuery(h.db, GROUP, 'landlord phone?')
-    expect(hits[0]?.content).toContain('0300')
+    expect(hits.map((x) => x.content)).toEqual([expect.stringContaining('0300')])
+    const c = await h.pool.query("SELECT is_current, conflicts_with_fact_id FROM baumy_facts WHERE group_id = $1 AND object_value = '0666'", [GROUP])
+    expect(c.rows[0].is_current).toBe(false)
+    expect(c.rows[0].conflicts_with_fact_id).toBeTruthy()
   })
 
-  it('fact lineage: origin note + cross-person progression on the real migration (0009)', async () => {
+  it('fact lineage: origin note + a correction that shows what it replaced, on the real migration (0009)', async () => {
     await upsertMember(h.db, GROUP, '810', 'Ryan', 'member')
     await upsertMember(h.db, GROUP, '820', 'Marco', 'member')
     const memId = await captureMemory(
       { groupId: GROUP, content: 'zuzka is coming today', memoryType: 'fact', authoredBy: '810', trustLevel: 'untrusted' },
       { db: h.db, embed },
     )
-    // Ryan: "coming today"; Marco: "arrived" — different predicate → an ADD deriving from the prior fact.
+    // Ryan: "arriving today"; Marco corrects it under a SYNONYM predicate → it supersedes (F3), and the
+    // lineage parent is the value it replaced (F8 — never an unrelated earlier fact).
     await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'zuzka-guest', subjectKind: 'person', predicate: 'arriving', object: 'today' }, authoredBy: '810', trustLevel: 'untrusted', memoryItemId: memId })
-    await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'zuzka-guest', subjectKind: 'person', predicate: 'status', object: 'arrived' }, authoredBy: '820', trustLevel: 'untrusted' })
+    await reconcileFact(h.db, { groupId: GROUP, fact: { subject: 'zuzka-guest', subjectKind: 'person', predicate: 'arrival_date', object: 'tomorrow' }, authoredBy: '820', trustLevel: 'untrusted' })
     // real FKs (source_memory_item_id + derived_from_fact_id) resolved on real Postgres
-    const src = await h.pool.query("SELECT source_memory_item_id FROM baumy_facts WHERE predicate = 'arriving' AND group_id = $1", [GROUP])
+    const src = await h.pool.query("SELECT source_memory_item_id FROM baumy_facts WHERE predicate = 'arrives_on' AND object_value = 'today' AND group_id = $1", [GROUP])
     expect(src.rows[0].source_memory_item_id).toBe(memId)
-    const hits = await currentFactsForQuery(h.db, GROUP, 'has zuzka-guest arrived?')
-    const arrived = hits.find((r) => r.content.includes('arrived'))
-    expect(arrived?.authoredBy).toBe('820') // Marco stated it
-    expect(arrived?.priorContent).toContain('arriving') // ...following Ryan's "coming today"
-    expect(arrived?.priorAuthoredBy).toBe('810')
+    const hits = await currentFactsForQuery(h.db, GROUP, 'when does zuzka-guest arrive?')
+    const arrival = hits.find((r) => r.content.includes('arrives on'))
+    expect(arrival?.content).toContain('tomorrow')
+    expect(arrival?.authoredBy).toBe('820') // Marco stated it
+    expect(arrival?.priorContent).toContain('today') // ...replacing Ryan's "today"
+    expect(arrival?.priorAuthoredBy).toBe('810')
   })
 
   it('graph traversal: a multi-hop cross-subject walk on the real recursive CTE', async () => {
@@ -372,7 +378,7 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
   it('migration 0020: a LEGACY live dated fact (event_at set, valid_to NULL) is closed and stops being current (T2)', async () => {
     const G = '-100e2e-legacy'
     await ensureRegistered(h.db, G, null)
-    const stay = { subject: 'zuzka', subjectKind: 'person' as const, predicate: 'staying_in', object: "charli's room", objectKind: 'place' as const }
+    const stay = { subject: 'zuzka', subjectKind: 'person' as const, predicate: 'stays_in', object: "charli's room", objectKind: 'place' as const }
     const party = { subject: 'marco', subjectKind: 'person' as const, predicate: 'hosts_party', object: 'Sat 14 Mar 21:00' }
     const march = new Date('2026-03-10T10:00:00Z')
     await withSimulatedTime(march, () => reconcileFact(h.db, { groupId: G, fact: stay, authoredBy: null, trustLevel: 'untrusted', eventAt: new Date('2026-03-13T23:00:00Z') }))
@@ -383,13 +389,67 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect(await withSimulatedTime(sept, () => currentFactsForQuery(h.db, G, 'zuzka staying'))).toHaveLength(1) // the bug
 
     await h.pool.query(readFileSync(join(process.cwd(), 'db/migrations/0020_close_legacy_dated_facts.sql'), 'utf8'))
-    const rows = await h.pool.query('SELECT predicate, valid_to FROM baumy_facts WHERE group_id = $1 ORDER BY predicate', [G])
+    const rows = await h.pool.query('SELECT predicate, valid_to FROM baumy_facts WHERE group_id = $1 AND event_at IS NOT NULL ORDER BY predicate', [G])
     expect(rows.rows.map((r: { predicate: string; valid_to: Date }) => [r.predicate, r.valid_to.toISOString()])).toEqual([
       ['hosts_party', '2026-03-15T02:00:00.000Z'], // timed: start + 6h
-      ['staying_in', '2026-03-14T22:59:59.999Z'], // all-day (local midnight start): the end of that Berlin day
+      ['stays_in', '2026-03-14T22:59:59.999Z'], // all-day (local midnight start): the end of that Berlin day
     ])
     expect(await withSimulatedTime(sept, () => currentFactsForQuery(h.db, G, 'zuzka staying'))).toHaveLength(0)
     // During the stay it was (and still would be) current.
     expect(await withSimulatedTime(new Date('2026-03-14T12:00:00Z'), () => currentFactsForQuery(h.db, G, 'zuzka staying'))).toHaveLength(1)
+  })
+
+  it('fact model: migrations 0021/0022 + the lookup, hygiene, retrieval-arm and consolidation SQL on real Postgres (spec §7)', async () => {
+    const G = '-100e2e-facts'
+    await ensureRegistered(h.db, G, null)
+    await upsertMember(h.db, G, '901', 'Charli Smith', 'owner')
+    await upsertMember(h.db, G, '902', 'Marco', 'member')
+    // 0021: the conflict pointer (self-FK, ON DELETE SET NULL)
+    const col = await h.pool.query("SELECT is_nullable FROM information_schema.columns WHERE table_name = 'baumy_facts' AND column_name = 'conflicts_with_fact_id'")
+    expect(col.rows[0].is_nullable).toBe('YES')
+
+    // 0022: legacy synonym predicates are renamed (raw rows, the pre-vocabulary shape); canonical ones untouched
+    const [z] = await h.db.insert(entities).values({ groupId: G, kind: 'person', canonicalName: 'zuzka' }).returning({ id: entities.id })
+    for (const [p, v, at] of [['Arrival Date', 'friday', '2026-09-01T10:00:00Z'], ['arrives_on', 'saturday', '2026-09-02T10:00:00Z'], ['staying in', 'the cave', '2026-09-01T10:00:00Z']])
+      await h.pool.query('INSERT INTO baumy_facts (group_id, subject_entity_id, predicate, object_value, recorded_at, valid_from, is_current) VALUES ($1, $2, $3, $4, $5, $5, true)', [G, z.id, p, v, at])
+    // …and a FALSE lineage parent (a different predicate — the old "last fact about the subject") is dropped
+    const [bins] = await h.db.insert(entities).values({ groupId: G, kind: 'thing', canonicalName: 'bins' }).returning({ id: entities.id })
+    const parent = await h.pool.query("INSERT INTO baumy_facts (group_id, subject_entity_id, predicate, object_value, is_current) VALUES ($1, $2, 'colour', 'green', true) RETURNING id", [G, bins.id])
+    await h.pool.query("INSERT INTO baumy_facts (group_id, subject_entity_id, predicate, object_value, is_current, derived_from_fact_id) VALUES ($1, $2, 'bin_day', 'friday', true, $3)", [G, bins.id, parent.rows[0].id])
+    for (const stmt of readFileSync(join(process.cwd(), 'db/migrations/0022_normalise_fact_predicates.sql'), 'utf8').split('--> statement-breakpoint')) await h.pool.query(stmt)
+    const lineage = await h.pool.query("SELECT predicate, derived_from_fact_id FROM baumy_facts WHERE group_id = $1 AND subject_entity_id = $2 AND object_value = 'friday'", [G, bins.id])
+    expect(lineage.rows[0]).toEqual({ predicate: 'collection_day', derived_from_fact_id: null })
+    await h.pool.query('DELETE FROM baumy_facts WHERE subject_entity_id = $1', [bins.id])
+    const renamed = await h.pool.query('SELECT predicate, object_value FROM baumy_facts WHERE group_id = $1 ORDER BY predicate, object_value', [G])
+    expect(renamed.rows.map((r: { predicate: string; object_value: string }) => `${r.predicate}=${r.object_value}`)).toEqual(['arrives_on=friday', 'arrives_on=saturday', 'stays_in=the cave'])
+
+    // the sweep resolves the split the rename exposed (row-constructor IN, UPDATE … RETURNING)
+    const at = new Date('2026-09-27T01:40:00Z')
+    const r = await runHygieneSweep(h.db, G, at)
+    expect(r.resolved).toBe(1)
+    expect((await withSimulatedTime(at, () => currentFactsForQuery(h.db, G, 'when does zuzka arrive?'))).map((x) => x.content)).toEqual(['zuzka arrives on: saturday', 'zuzka stays in: the cave'])
+
+    // speaker aliases + whole-word / object-side / first-person lookup (text[] aliases through the driver)
+    await ensureSpeakerEntity(h.db, G, '901', 'Charli Smith')
+    await withSimulatedTime(at, () => reconcileFact(h.db, { groupId: G, fact: { subject: 'Charli Smith', subjectKind: 'person', predicate: 'is_away', object: 'this weekend' }, authoredBy: '901', trustLevel: 'trusted' }))
+    await withSimulatedTime(at, () => reconcileFact(h.db, { groupId: G, fact: { subject: 'marta', subjectKind: 'person', predicate: 'stays_in', object: "charli's room", objectKind: 'place' }, authoredBy: '902', trustLevel: 'untrusted' }))
+    const ask = (q: string, speaker?: { memberId: string; firstName: string }) => withSimulatedTime(at, () => currentFactsForQuery(h.db, G, q, 5, [], { speaker })).then((x) => x.map((y) => y.content))
+    expect(await ask('is charli around this weekend?')).toEqual(['charli is away: this weekend'])
+    expect(await ask("who's in the cave?")).toEqual(['zuzka stays in: the cave'])
+    expect(await ask("who's in my room?", { memberId: '901', firstName: 'Charli' })).toEqual(["marta stays in: charli's room"])
+
+    // the trust gate: a group correction by the SAME author takes; by someone else → a conflict row
+    expect((await withSimulatedTime(at, () => reconcileFactDetailed(h.db, { groupId: G, fact: { subject: 'charli', subjectKind: 'person', predicate: 'is_away', object: 'next weekend' }, authoredBy: '902', trustLevel: 'untrusted' }))).result).toBe('conflict')
+    expect((await withSimulatedTime(at, () => reconcileFactDetailed(h.db, { groupId: G, fact: { subject: 'charli', subjectKind: 'person', predicate: 'is_away', object: 'next weekend' }, authoredBy: '901', trustLevel: 'untrusted' }))).result).toBe('update')
+    // …and the now-moot conflict is retired by the sweep
+    expect((await runHygieneSweep(h.db, G, at)).retired).toBe(1)
+
+    // retrieval: OR lexical arm + author arm; consolidation keyed on author
+    const note = await captureMemory({ groupId: G, content: 'Zuzka is staying in my room this weekend', memoryType: 'statement', authoredBy: '901', trustLevel: 'untrusted' }, { db: h.db, embed })
+    const junk = async () => embedSync('completely unrelated vocabulary xyzzy plugh')
+    expect((await retrieve('when does zuzka arrive?', { groupId: G, floor: 0.99 }, { db: h.db, embed: junk })).map((m) => m.id)).toContain(note)
+    expect((await retrieve('what did charli say?', { groupId: G, floor: 0.99, authorId: '901' }, { db: h.db, embed: junk })).map((m) => m.id)).toContain(note)
+    const other = await captureMemory({ groupId: G, content: 'Zuzka is staying in my room this weekend', memoryType: 'statement', authoredBy: '902', trustLevel: 'untrusted' }, { db: h.db, embed })
+    expect(other).not.toBe(note) // Marco's identical line is HIS note, not folded onto Charli's (F9)
   })
 })

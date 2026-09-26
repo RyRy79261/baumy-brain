@@ -34,6 +34,9 @@ export const extractedFacts = z.object({
       // the default and makes NO graph edge; a concrete entity kind makes the object
       // a real node + relationship EDGE (memory v2 §4). Precision-first.
       objectKind: z.enum(['person', 'place', 'org', 'event', 'thing', 'value']).optional(),
+      // "X is no longer staying" (spec §7): this VALUE ends — reconcile closes the matching live fact
+      // (trust-gated) instead of adding it. Absent/false for an ordinary fact.
+      removes: z.boolean().optional(),
       // WHEN the fact happens, resolved by the model against MESSAGE SENT + the calendar table (spec §6):
       // local ISO start, an end for a period (a stay over the weekend), allDay when no time of day was
       // said. Code validates it (lib/core/when.ts eventWindowFromModel) into event_at + valid_to — the
@@ -68,7 +71,7 @@ export async function extractFacts(
   const all: ExtractedFacts['facts'] = []
   const seen = new Set<string>()
   const keyOf = (f: ExtractedFacts['facts'][number]) =>
-    `${f.subject.trim().toLowerCase()}|${f.predicate.trim().toLowerCase()}|${f.object.trim().toLowerCase()}`
+    `${f.subject.trim().toLowerCase()}|${f.predicate.trim().toLowerCase()}|${f.object.trim().toLowerCase()}|${f.removes ? 'x' : ''}`
 
   // Paginate until the message is drained: each pass re-states what's already captured
   // and asks ONLY for new facts, so nothing is dropped no matter how dense the message.

@@ -25,7 +25,8 @@ const answerSchema = z.object({
 
 /** One MEMORY line: what the house said, who said it, and when (spec §4). */
 export interface GroundingItem {
-  kind: 'fact' | 'note' | 'connection' | 'timeline'
+  /** 'profile' = Baumy's own reflect synthesis of a person (background, dated, never a housemate's words). */
+  kind: 'fact' | 'note' | 'connection' | 'timeline' | 'profile'
   /** Display name of whoever said it (null = unattributed / system). */
   who: string | null
   /** When it was said (note created_at / fact recorded_at). */
@@ -50,6 +51,10 @@ function day(d: Date, tz: string, now: DateTime, weekday = false): string {
 
 export function memoryLine(m: GroundingItem, tz: string, nowAt: Date): string {
   const now = DateTime.fromJSDate(nowAt).setZone(tz)
+  if (m.kind === 'profile') {
+    // Dated + attributed to what it is (F11): Baumy's synthesis as of the day it was written.
+    return `  - profile · Baumy's summary (not anyone's words)${m.saidAt ? ` · as of ${day(m.saidAt, tz, now)}` : ''}: ${m.content}`
+  }
   const who = m.who ?? 'unattributed'
   const parts = [m.kind, who]
   if (m.kind === 'note') {

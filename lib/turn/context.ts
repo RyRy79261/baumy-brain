@@ -35,6 +35,22 @@ export interface FactSummary {
   when: string | null
   /** The object is a secret (stored encrypted) — rendered as a descriptor, never the value. */
   secure: boolean
+  /** A `removes` fact: this value NO LONGER holds (spec §7) — rendered "no longer". */
+  removed?: boolean
+}
+
+/** A correction the trust gate refused (spec §7, F5): what the message said vs the live fact it
+ *  contradicts. Kept as a non-current conflict row; the planner asks which is right. */
+export interface FactConflict {
+  fact: FactSummary
+  current: {
+    /** The live value (a descriptor when it is a secret). */
+    object: string
+    /** Who stated the live fact (display name; null = unattributed). */
+    by: string | null
+    /** When it was said (ISO — step results are JSON-memoized). */
+    saidAt: string | null
+  }
 }
 
 export interface ListOutcome {
@@ -67,6 +83,8 @@ export interface TurnOutcome {
     factIds: string[]
     learned: FactSummary[]
     rejected: FactSummary[]
+    /** Contradictions of a more trusted fact by someone who may not override it (F5) — never silent. */
+    conflicts?: FactConflict[]
     /** A fact extracted from this message scans secure on its TRIPLE (stored encrypted) — its non-secret
      *  descriptor ("the wifi password"). The raw text may not scan ("wifi is hunter2 now"), so the turn
      *  withholds the window row and Baumy's words for it on THIS signal too (spec §5). */
@@ -226,9 +244,21 @@ export function describeOutcome(o: TurnOutcome, tz: string, opts: { withholdObje
   const parts: string[] = []
   const fact = (f: FactSummary) =>
     `${f.subject} · ${f.predicate} · ${opts.withholdObjects && !f.secure ? '(value withheld)' : f.object}${f.when ? ` (${f.when})` : ''}`
-  if (o.captured?.learned.length) parts.push(`noted — ${o.captured.learned.map(fact).join('; ')}`)
-  else if (o.captured) parts.push('filed the message in memory (nothing new to add as a fact — possibly already known)')
+  const added = o.captured?.learned.filter((f) => !f.removed) ?? []
+  const removed = o.captured?.learned.filter((f) => f.removed) ?? []
+  const conflicts = o.captured?.conflicts ?? []
+  if (added.length) parts.push(`noted — ${added.map(fact).join('; ')}`)
+  if (removed.length) parts.push(`noted that these NO LONGER hold — ${removed.map((f) => `${f.subject} · ${f.predicate} · ${f.object}`).join('; ')}`)
+  if (o.captured && !added.length && !removed.length && !conflicts.length)
+    parts.push('filed the message in memory (nothing new to add as a fact — possibly already known)')
   if (o.captured?.rejected.length) parts.push(`NOT stored (conflicts with something more trusted) — ${o.captured.rejected.map(fact).join('; ')}`)
+  for (const c of conflicts) {
+    const said = c.current.saidAt ? `, said ${fmtDay(new Date(c.current.saidAt), tz)}` : ''
+    const cur = opts.withholdObjects ? '(value withheld)' : c.current.object
+    parts.push(
+      `CONFLICT, not stored as current — this message says ${fact(c.fact)}, but ${c.current.by ?? 'the house'} said ${c.fact.subject} · ${c.fact.predicate} · ${cur}${said}; ask which is right`,
+    )
+  }
   for (const r of o.reminders ?? (o.reminder ? [o.reminder] : [])) {
     if (r.status === 'set') {
       const repeat = describeRecurrence(r.recurrence)

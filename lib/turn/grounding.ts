@@ -3,6 +3,7 @@ import { retrieve, retrieveExpanded, type RetrievedMemory } from '@/lib/memory/r
 import { currentFactsForQuery } from '@/lib/memory/facts'
 import { gatherGraphContext, type GraphContextItem } from '@/lib/memory/graph'
 import { memberDisplayNames } from '@/lib/identity/roster'
+import { askedAuthor, type LookupSpeaker } from '@/lib/memory/lookup'
 import { expandQuery } from '@/lib/ai/expand'
 import { rerank } from '@/lib/ai/rerank'
 import { decryptSecret } from '@/lib/core/crypto'
@@ -41,6 +42,11 @@ export async function gatherGrounding(db: Database, ctx: TurnContext, opts: { de
   const excludeNotes = ctx.outcome.captured ? [ctx.outcome.captured.memoryItemId] : []
   const excludeFacts = ctx.outcome.captured?.factIds ?? []
   const { deep } = opts
+  // Who is asking (the authenticated sender — "I / my / me" are them, F4) and, for "what did X say",
+  // whose words to look for (F13). Both from the turn + roster, never from the text's claims.
+  const names = await memberDisplayNames(db)
+  const speaker: LookupSpeaker | null = ctx.authorId ? { memberId: ctx.authorId, firstName: ctx.sender.firstName } : null
+  const authorId = askedAuthor(query, names, speaker)
 
   // Deep tier earns query expansion (wider recall) + a re-rank (precision); both best-effort,
   // degrading to plain hybrid retrieval on any hiccup.
@@ -52,7 +58,7 @@ export async function gatherGrounding(db: Database, ctx: TurnContext, opts: { de
     } catch (err) {
       console.warn('[baumy/grounding] query expansion failed — using the raw query:', err instanceof Error ? err.message : err)
     }
-    const ropts = { groupId: scope, k: 30, floor: 0.05, excludeIds: excludeNotes }
+    const ropts = { groupId: scope, k: 30, floor: 0.05, excludeIds: excludeNotes, authorId }
     memories = expansions.length ? await retrieveExpanded(query, expansions, ropts, { db }) : await retrieve(query, ropts, { db })
     try {
       memories = await rerank(query, memories)
@@ -60,17 +66,17 @@ export async function gatherGrounding(db: Database, ctx: TurnContext, opts: { de
       console.warn('[baumy/grounding] re-rank failed — keeping the fusion order:', err instanceof Error ? err.message : err)
     }
   } else {
-    memories = await retrieve(query, { groupId: scope, k: 8, floor: 0.2, excludeIds: excludeNotes }, { db })
+    memories = await retrieve(query, { groupId: scope, k: 8, floor: 0.2, excludeIds: excludeNotes, authorId }, { db })
   }
   memories = memories.filter((m) => !excludeNotes.includes(m.id) && !NOT_EVIDENCE.has(m.memoryType))
 
-  const factHits = await currentFactsForQuery(db, scope, query, deep ? 15 : 5, excludeFacts)
+  const factHits = await currentFactsForQuery(db, scope, query, deep ? 15 : 5, excludeFacts, { speaker, authorId })
   // Deep tier: WALK the fact graph from the query's entities — cross-subject connections + the top
   // subject's timeline. Enrichment only: any error degrades to [].
   let graphItems: GraphContextItem[] = []
   if (deep) {
     try {
-      graphItems = (await gatherGraphContext(db, scope, query)).filter((g) => !g.factId || !excludeFacts.includes(g.factId))
+      graphItems = (await gatherGraphContext(db, scope, query, { speaker })).filter((g) => !g.factId || !excludeFacts.includes(g.factId))
     } catch (err) {
       // Graph traversal is enrichment only — never fail the reply on it (but never hide it either).
       console.warn('[baumy/grounding] graph walk failed — no graph context:', err instanceof Error ? err.message : err)
@@ -78,16 +84,17 @@ export async function gatherGrounding(db: Database, ctx: TurnContext, opts: { de
   }
 
   // Authors by NAME (not raw id) so the model can attribute + resolve first person in a note.
-  const names = await memberDisplayNames(db)
   const nameOf = (id: string | null) => (id ? (names.get(id) ?? null) : null)
   const items: GroundingItem[] = [
     ...factHits.map((f) => {
-      // Fold the lineage parent in, so the model can narrate the progression and who moved it
-      // forward ("you said Zuzka's coming → Marco said she arrived").
+      // Fold the lineage parent in — only ever the value this fact REPLACED, or the previous occurrence
+      // of the same thing (F8) — so the model can narrate the change and who made it ("you said Friday,
+      // Marco says Saturday now").
       const prior = nameOf(f.priorAuthoredBy)
-      const content = f.priorContent ? `${f.content} (follows from — ${f.priorContent}${prior ? `, per ${prior}` : ''})` : f.content
+      const content = f.priorContent ? `${f.content} (earlier: ${f.priorContent}${prior ? `, per ${prior}` : ''})` : f.content
       return {
-        kind: 'fact' as const,
+        // A reflect profile is background synthesis (F11): its own kind, ranked last by the lookup.
+        kind: f.isProfile ? ('profile' as const) : ('fact' as const),
         who: nameOf(f.authoredBy),
         saidAt: f.recordedAt,
         eventAt: f.eventAt,

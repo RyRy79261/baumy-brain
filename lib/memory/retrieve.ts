@@ -15,6 +15,7 @@ const CANDIDATES = 50 // per-probe candidate pool feeding the fusion
 const RECENCY_HALFLIFE_DAYS = 30 // recency decay half-life
 const RECENCY_WEIGHT = 0.25 // max fractional score boost for a brand-new memory (relevance still dominates)
 const SALIENCE_FLOOR = 0.6 // a low-salience item still keeps 60% weight — de-noise chatter, NEVER suppress (memory v2 §5)
+const LEX_BYPASS = 10 // the top lexical / author hits may skip the cosine floor (an exact name is evidence)
 
 export interface RetrievedMemory {
   id: string
@@ -36,6 +37,8 @@ export interface RetrieveOpts {
   /** Memory item ids to leave out — the reply excludes THIS turn's own evidence note (C1), which
    *  would otherwise rank first on self-similarity and ground the reply on the message itself. */
   excludeIds?: string[]
+  /** "What did X say …": X's member id — their notes join the fusion as an extra arm (F13). */
+  authorId?: string | null
 }
 
 export interface RetrieveDeps {
@@ -58,10 +61,17 @@ async function runHybrid(
   lexicalQuery: string,
   groupId: string,
   floor: number,
+  authorId: string | null = null,
 ): Promise<ProbeRow[]> {
   const v = `[${vec.join(',')}]` // pgvector text literal, bound + cast to ::vector
+  // Lexical arm = an OR of the question's terms (F14): websearch_to_tsquery ANDed every word, so
+  // "when does zuzka arrive?" only matched a note containing BOTH "zuzka" and "arriv" — natural
+  // questions never lexically matched and recall was semantic-only. ts_rank_cd still ranks a note with
+  // more of the terms first, and only the top LEX_BYPASS lexical hits may skip the cosine floor.
+  // Author arm (F13): "what did Marco say about the budget" — Marco's own notes, cosine-ranked, as a
+  // third RRF list (the caller resolves the name to a member id from the roster; null = no arm).
   const result = await db.execute(sql`
-    WITH q AS (SELECT websearch_to_tsquery('english', ${lexicalQuery}) AS tsq),
+    WITH q AS (SELECT replace(plainto_tsquery('english', ${lexicalQuery})::text, '&', '|')::tsquery AS tsq),
     semantic AS (
       SELECT me.memory_item_id AS id,
              row_number() OVER (ORDER BY me.embedding <=> ${v}::vector) AS rank,
@@ -86,12 +96,34 @@ async function runHybrid(
       ORDER BY ts_rank_cd(mi.content_tsv, q.tsq) DESC
       LIMIT ${CANDIDATES}
     ),
+    author AS (
+      SELECT me.memory_item_id AS id,
+             row_number() OVER (ORDER BY me.embedding <=> ${v}::vector) AS rank,
+             1 - (me.embedding <=> ${v}::vector) AS sim
+      FROM baumy_memory_embeddings me
+      JOIN baumy_memory_items mi ON mi.id = me.memory_item_id
+      WHERE ${authorId}::text IS NOT NULL
+        AND mi.authored_by = ${authorId}
+        AND mi.group_id = ${groupId}
+        AND mi.is_active = true
+        AND mi.trust_level <> 'quarantined'
+        AND me.model = ${EMBED_MODEL}
+      ORDER BY me.embedding <=> ${v}::vector
+      LIMIT ${CANDIDATES}
+    ),
+    arms AS (
+      SELECT id, rank, sim, 's' AS arm FROM semantic
+      UNION ALL SELECT id, rank, NULL::float8 AS sim, 'l' AS arm FROM lexical
+      UNION ALL SELECT id, rank, sim, 'a' AS arm FROM author
+    ),
     fused AS (
-      SELECT COALESCE(s.id, l.id) AS id,
-             COALESCE(1.0 / (${RRF_K} + s.rank), 0) + COALESCE(1.0 / (${RRF_K} + l.rank), 0) AS rrf,
-             COALESCE(s.sim, 0) AS sim,
-             (l.id IS NOT NULL) AS lex_hit
-      FROM semantic s FULL OUTER JOIN lexical l ON s.id = l.id
+      SELECT id,
+             sum(1.0 / (${RRF_K} + rank)) AS rrf,
+             COALESCE(max(sim) FILTER (WHERE arm = 's'), max(sim), 0) AS sim,
+             bool_or(arm = 'l' AND rank <= ${LEX_BYPASS}) AS lex_hit,
+             bool_or(arm = 'a' AND rank <= ${LEX_BYPASS}) AS author_hit
+      FROM arms
+      GROUP BY id
     )
     SELECT mi.id AS id,
            mi.content AS content,
@@ -105,7 +137,7 @@ async function runHybrid(
            f.rrf AS "rrf"
     FROM fused f
     JOIN baumy_memory_items mi ON mi.id = f.id
-    WHERE f.lex_hit = true OR f.sim >= ${floor}
+    WHERE f.lex_hit = true OR f.author_hit = true OR f.sim >= ${floor}
     ORDER BY f.rrf DESC
     LIMIT ${CANDIDATES}
   `)
@@ -160,7 +192,7 @@ export async function retrieve(
   const embedFn = deps?.embed ?? embed
   const vec = await embedFn(query)
   const skip = new Set(opts.excludeIds ?? [])
-  const rows = (await runHybrid(db, vec, query, opts.groupId, opts.floor ?? 0.2)).filter((r) => !skip.has(r.id))
+  const rows = (await runHybrid(db, vec, query, opts.groupId, opts.floor ?? 0.2, opts.authorId ?? null)).filter((r) => !skip.has(r.id))
   return rows
     .map((r) => ({ r, s: compose(r.rrf, r.createdAt, r.salience) }))
     .sort((a, b) => b.s - a.s)
@@ -185,7 +217,7 @@ export async function retrieveExpanded(
   const floor = opts.floor ?? 0.2
   const embedManyFn = deps?.embedMany ?? (deps?.embed ? (ts: string[]) => Promise.all(ts.map(deps.embed!)) : embedMany)
   const vecs = await embedManyFn(probes)
-  const lists = await Promise.all(probes.map((p, i) => runHybrid(db, vecs[i], p, opts.groupId, floor)))
+  const lists = await Promise.all(probes.map((p, i) => runHybrid(db, vecs[i], p, opts.groupId, floor, opts.authorId ?? null)))
 
   // Cross-probe RRF: sum 1/(k + rank) over the probes that surfaced each item.
   const acc = new Map<string, { row: ProbeRow; score: number }>()

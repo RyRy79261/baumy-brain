@@ -154,6 +154,12 @@ describe('renderReplyPrompt — spec §4 turn prompt', () => {
     expect(lines[3]).toBe('  - note · unattributed · 1 Dec 2025: "old news"')
   })
 
+  it('F11: a reflect profile is its own kind — Baumy\'s dated summary, never a housemate\'s words', () => {
+    expect(
+      memoryLine({ kind: 'profile', who: null, saidAt: new Date('2026-09-20T10:00:00Z'), content: "zuzka profile: Charl's sister", isSecure: false, contentEncrypted: null }, TZ, NOW),
+    ).toBe("  - profile · Baumy's summary (not anyone's words) · as of 20 Sep: zuzka profile: Charl's sister")
+  })
+
   it('T2/T3: an event window renders as a range, and a stay is past only once its END has gone', () => {
     const stay = (start: string, end: string) => ({ ...fact("zuzka staying in: charli's room", 'Charli', '2026-09-20T10:00:00Z', start), validTo: new Date(end) })
     // Sat 26 – Sun 27 Sep, all-day (local midnight → end of Sunday): NOW is Sat 26 Sep → not past.

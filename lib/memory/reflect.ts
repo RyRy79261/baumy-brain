@@ -53,24 +53,35 @@ export async function pickPeopleToReflect(
   return rowsOf(res).map((r) => ({ id: String(r.id), name: String(r.name) }))
 }
 
-// The material to reflect on for one person: their current, NON-SECRET facts (a secret
-// value is never fed to synthesis — it must never leak into a profile / digest) plus the
-// attributed notes filed under them, EXCLUDING quarantined (forwarded/bot) content. Note
-// authors are resolved to display names so sentiment stays attributed ("Ryan: …").
+// The material to reflect on for one person: their LIVE, NON-SECRET facts (a secret value is never
+// fed to synthesis — it must never leak into a profile / digest; an event that is over is not who
+// someone is) — each DATED and ATTRIBUTED (F11: the profile used to state an undated, unattributed
+// month-old plan as present-tense truth) — plus the attributed notes filed under them, EXCLUDING
+// quarantined (forwarded/bot) content. Authors are resolved to display names ("Ryan: …").
 export async function gatherPersonMaterial(
   db: Database,
   groupId: string,
   personId: string,
 ): Promise<{ facts: ReflectFact[]; notes: ReflectNote[] }> {
   const factRes = await db.execute(sql`
-    SELECT f.predicate, f.object_value AS value
+    SELECT f.predicate, f.object_value AS value, m.display_name AS by,
+           f.recorded_at AS "saidAt", f.event_at AS "eventAt", f.valid_to AS "validTo"
     FROM baumy_facts f
+    LEFT JOIN baumy_members m ON f.authored_by = m.telegram_user_id
     WHERE f.group_id = ${groupId} AND f.subject_entity_id = ${personId}
       AND ${liveFact('f')} AND NOT f.is_secure AND f.predicate <> ${PROFILE_PREDICATE}
       AND f.object_value IS NOT NULL AND length(f.object_value) > 0
     ORDER BY f.recorded_at DESC
     LIMIT 40`)
-  const facts: ReflectFact[] = rowsOf(factRes).map((r) => ({ predicate: String(r.predicate), value: String(r.value) }))
+  const date = (v: unknown) => (v == null ? null : new Date(v as string))
+  const facts: ReflectFact[] = rowsOf(factRes).map((r) => ({
+    predicate: String(r.predicate),
+    value: String(r.value),
+    by: (r.by ?? null) as string | null,
+    saidAt: date(r.saidAt),
+    eventAt: date(r.eventAt),
+    validTo: date(r.validTo),
+  }))
 
   const noteRes = await db.execute(sql`
     SELECT mi.content, m.display_name AS by

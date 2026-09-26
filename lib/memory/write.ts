@@ -11,6 +11,10 @@ import { now as clockNow } from '@/lib/core/clock'
 // one is treated as a restatement, not a new memory. Near-verbatim only — distinct
 // facts that merely read alike ("bin day friday" vs "…monday") sit well below this.
 const DEDUP_THRESHOLD = 0.97
+// …and only a restatement by the SAME author within this window (F9). Short first-person lines ("I'm
+// away this weekend") are identical across people and weeks: keyed on cosine alone, Charli's statement
+// folded onto Marco's month-old note — attributed to him and dated then.
+const DEDUP_WINDOW_HOURS = 24
 
 // Minimal registration so FK-bound memory writes succeed + display-name capture.
 // Idempotent: registers the member by id and, when the message carries a profile name,
@@ -67,13 +71,13 @@ export async function captureMemory(input: CaptureInput, deps?: Partial<MemoryDe
   const contentEncrypted = sens.isSecure ? encryptSecret(input.content) : null
   const vector = await embedFn(storedContent)
 
-  // Suppress a near-verbatim restatement: bump the original's salience/recency and
-  // return it, instead of storing a duplicate. Skipped for secure items — an
+  // Suppress a near-verbatim restatement by the same person within DEDUP_WINDOW_HOURS: bump the
+  // original's salience and return it, instead of storing a duplicate. Skipped for secure items — an
   // unchanged descriptor can mask a CHANGED secret, and the facts layer owns secret
   // supersede (memory-core #39). Skipped for quarantined (forwarded/bot) input so a
   // planted note can never suppress — and never bump the salience of — a real fact.
   if (!sens.isSecure && input.trustLevel !== 'quarantined') {
-    const dupId = await findDuplicate(db, input.groupId, vector)
+    const dupId = await findDuplicate(db, input.groupId, vector, input.authoredBy)
     if (dupId) {
       // NOTE: accessCount / lastAccessedAt are write-only for now — bumped here on
       // consolidation but read by nothing (recency composition uses createdAt), and
@@ -113,10 +117,12 @@ export async function captureMemory(input: CaptureInput, deps?: Partial<MemoryDe
   return item.id
 }
 
-// The nearest active, non-secure item in the group (current embedding model); its id
-// iff it is within DEDUP_THRESHOLD cosine of the incoming vector, else null.
-async function findDuplicate(db: Database, groupId: string, vector: number[]): Promise<string | null> {
+// The nearest active, non-secure item in the group (current embedding model) by the SAME author
+// (an anonymous post only matches another anonymous one) said within DEDUP_WINDOW_HOURS; its id iff it
+// is within DEDUP_THRESHOLD cosine of the incoming vector, else null.
+async function findDuplicate(db: Database, groupId: string, vector: number[], authoredBy: string | null): Promise<string | null> {
   const v = `[${vector.join(',')}]`
+  const since = new Date(clockNow().getTime() - DEDUP_WINDOW_HOURS * 3_600_000)
   const res = await db.execute(sql`
     SELECT mi.id AS id, 1 - (me.embedding <=> ${v}::vector) AS sim
     FROM baumy_memory_items mi
@@ -125,6 +131,8 @@ async function findDuplicate(db: Database, groupId: string, vector: number[]): P
       AND mi.is_active = true
       AND mi.is_secure = false
       AND mi.trust_level <> 'quarantined'
+      AND mi.authored_by IS NOT DISTINCT FROM ${authoredBy}
+      AND mi.created_at >= ${since.toISOString()}
       AND me.model = ${EMBED_MODEL}
     ORDER BY me.embedding <=> ${v}::vector
     LIMIT 1`)

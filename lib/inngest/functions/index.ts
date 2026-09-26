@@ -9,6 +9,7 @@ import { reflectSweep } from './reflect'
 import { eventSurfacingScan } from './surfacing'
 import { consolidationSweep } from './consolidation'
 import { windowPurge } from './window'
+import { hygieneSweep } from './hygiene'
 
 // All registered Inngest functions.
 export const functions: InngestFunction.Any[] = [
@@ -25,4 +26,5 @@ export const functions: InngestFunction.Any[] = [
   eventSurfacingScan,
   consolidationSweep,
   windowPurge,
+  hygieneSweep,
 ]

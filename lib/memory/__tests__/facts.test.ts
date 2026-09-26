@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, ne } from 'drizzle-orm'
 import { makeTestDb } from './pglite'
 import { entities, facts, memoryItems } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { embedSync } from '@/lib/ai/embed'
-import { reconcileFact, currentFactsForQuery, tagMemoryAboutPerson } from '@/lib/memory/facts'
+import { reconcileFact, reconcileFactDetailed, currentFactsForQuery, tagMemoryAboutPerson } from '@/lib/memory/facts'
 import { withSimulatedTime } from '@/lib/core/clock'
+import { forgetMemory } from '@/lib/memory/forget'
 
 const GROUP = '-100facts'
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 5).toString('base64')
@@ -137,7 +138,7 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
       authoredBy: null,
       trustLevel: t,
     })
-    expect((await edgeOf('go_out')).obj).toBeNull()
+    expect((await edgeOf('collection_day')).obj).toBeNull() // go_out is a synonym of collection_day (spec §7)
   })
 
   it('tags an evidence note with the person it is about (sentiment/notes, §3)', async () => {
@@ -148,8 +149,8 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
       { db, embed: async (t: string) => embedSync(t) },
     )
     const extracted = [{ subject: 'zuzana', subjectKind: 'person' as const, predicate: 'mentioned_by', object: 'ryan' }]
-    await reconcileFact(db, { groupId: GROUP, fact: extracted[0], authoredBy: '100', trustLevel: 'untrusted' })
-    await tagMemoryAboutPerson(db, GROUP, memId, extracted)
+    const r = await reconcileFactDetailed(db, { groupId: GROUP, fact: extracted[0], authoredBy: '100', trustLevel: 'untrusted' })
+    await tagMemoryAboutPerson(db, GROUP, memId, r.subjectEntityId)
 
     const [zuzana] = await db.select({ id: entities.id }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'zuzana')))
     const [mem] = await db.select({ about: memoryItems.aboutEntityId }).from(memoryItems).where(eq(memoryItems.id, memId))
@@ -171,12 +172,16 @@ describe('fact reconcile (trust-gated knowledge graph)', () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     await reconcileFact(db, { groupId: GROUP, fact: F('landlord', 'phone', '0300'), authoredBy: null, trustLevel: 'trusted' })
-    // an untrusted (group / planted) contradiction is rejected, not applied
+    // an untrusted (group / planted) contradiction is NOT applied — it is kept as a non-current
+    // CONFLICT row pointing at the trusted fact (spec §7, F5: surfaced, never silently dropped)
     expect(
       await reconcileFact(db, { groupId: GROUP, fact: F('landlord', 'phone', '0666'), authoredBy: null, trustLevel: 'untrusted' }),
-    ).toBe('rejected')
+    ).toBe('conflict')
     const hits = await currentFactsForQuery(db, GROUP, 'landlord phone?')
-    expect(hits[0]?.content).toContain('0300') // the trusted value stands
+    expect(hits.map((h) => h.content)).toEqual([expect.stringContaining('0300')]) // the trusted value stands, alone
+    const [trusted] = await db.select({ id: facts.id }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.objectValue, '0300')))
+    const [conflict] = await db.select().from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.objectValue, '0666')))
+    expect(conflict).toMatchObject({ isCurrent: false, conflictsWithFactId: trusted.id })
   })
 
   it('quarantined (forwarded/bot) content never becomes a fact', async () => {
@@ -211,7 +216,7 @@ describe('fact lineage (origin + familial timeline)', () => {
     const [row] = await db
       .select({ src: facts.sourceMemoryItemId, author: facts.authoredBy })
       .from(facts)
-      .where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'arriving')))
+      .where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'arrives_on'))) // "arriving" → the canonical arrives_on
     expect(row.src).toBe(memId) // fact → its origin note
     expect(row.author).toBe('100') // ...stated by whom
   })
@@ -229,25 +234,41 @@ describe('fact lineage (origin + familial timeline)', () => {
     expect(oldAfter.sup).toBe(newRow.id) // old → new (existing forward pointer) — chain both ways
   })
 
-  it('chains a progression across predicates + people and surfaces the lineage', async () => {
+  it('lineage is a REAL relation only (F8): a correction shows what it replaced; an unrelated fact has no parent', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     await upsertMember(db, GROUP, '10', 'Ryan', 'member')
     await upsertMember(db, GROUP, '20', 'Marco', 'member')
-    // Ryan: "Zuzka is coming today"
-    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'arriving', object: 'today' }, authoredBy: '10', trustLevel: 'untrusted' })
-    const [first] = await db.select({ id: facts.id }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'arriving')))
-    // Marco: "Zuzka has arrived" — DIFFERENT predicate → an ADD that DERIVES from the prior fact about her
-    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'status', object: 'arrived' }, authoredBy: '20', trustLevel: 'untrusted' })
-    const [second] = await db.select({ derived: facts.derivedFromFactId }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'status')))
-    expect(second.derived).toBe(first.id) // familial link across predicates + authors
+    // Ryan: "Zuzka arrives Friday"; Marco, later: "Zuzka's getting in Saturday" — under a SYNONYM predicate.
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'arrives_on', object: 'Friday' }, authoredBy: '10', trustLevel: 'untrusted' })
+    expect(
+      await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'arrival_date', object: 'Saturday' }, authoredBy: '20', trustLevel: 'untrusted' }),
+    ).toBe('update') // arrival_date IS arrives_on (F3) → it supersedes
+    // A different predicate about her is NOT a child of the arrival — no invented "(follows from …)".
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'sibling_of', object: 'charl' }, authoredBy: '10', trustLevel: 'untrusted' })
+    const [sib] = await db.select({ derived: facts.derivedFromFactId }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'sibling_of')))
+    expect(sib.derived).toBeNull()
 
-    // the reply-grounding lookup surfaces the fact WITH its lineage parent + who authored each
-    const hits = await currentFactsForQuery(db, GROUP, 'has zuzka arrived?')
-    const arrived = hits.find((h) => h.content.includes('arrived'))
-    expect(arrived?.authoredBy).toBe('20') // stated by Marco
-    expect(arrived?.priorContent).toContain('arriving') // follows from the "arriving today" fact
-    expect(arrived?.priorAuthoredBy).toBe('10') // ...which Ryan stated
+    const hits = await currentFactsForQuery(db, GROUP, 'when does zuzka arrive?')
+    const arrival = hits.find((h) => h.content.includes('arrives on'))
+    expect(arrival?.content).toContain('Saturday')
+    expect(hits.some((h) => h.content.includes('Friday') && !h.priorContent)).toBe(false) // the old value is not current
+    expect(arrival?.authoredBy).toBe('20') // stated by Marco
+    expect(arrival?.priorContent).toContain('Friday') // …replacing what Ryan said
+    expect(arrival?.priorAuthoredBy).toBe('10')
+  })
+
+  it('a SOFT-FORGOTTEN fact never comes back as a lineage parent (F8)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    const zuzka = (object: string) => ({ subject: 'zuzka', subjectKind: 'person' as const, predicate: 'stays_in', object })
+    await reconcileFact(db, { groupId: GROUP, fact: zuzka("marco's room"), authoredBy: null, trustLevel: 'untrusted' })
+    const [row] = await db.select({ id: facts.id }).from(facts).where(and(eq(facts.groupId, GROUP), eq(facts.predicate, 'stays_in')))
+    await forgetMemory(db, GROUP, { factIds: [row.id], scrubValues: [], noteIds: [], aliasHits: [], mode: 'soft' })
+    expect(await reconcileFact(db, { groupId: GROUP, fact: zuzka('the cave'), authoredBy: null, trustLevel: 'untrusted' })).toBe('add')
+    const hits = await currentFactsForQuery(db, GROUP, 'where is zuzka staying')
+    expect(hits.map((h) => h.content)).toEqual(['zuzka stays in: the cave'])
+    expect(hits[0].priorContent).toBeNull()
   })
 
   it('never surfaces a SECRET lineage parent in the progression', async () => {
@@ -268,7 +289,10 @@ describe('the time model — expiry and new occurrences', () => {
   const zuzka = { subject: 'zuzka', subjectKind: 'person' as const, predicate: 'staying_in', object: "charli's room", objectKind: 'place' as const }
   const march = { eventAt: new Date('2026-03-13T23:00:00Z'), validTo: new Date('2026-03-15T22:59:59.999Z') } // Sat 14 – Sun 15 Mar
   const october = { eventAt: new Date('2026-10-02T22:00:00Z'), validTo: new Date('2026-10-04T21:59:59.999Z') } // Sat 3 – Sun 4 Oct
-  const rowsOf = (db: Awaited<ReturnType<typeof makeTestDb>>) => db.select().from(facts).where(eq(facts.groupId, GROUP))
+  // The facts under test — not the structural possessor edge ("charli's room" —belongs_to→ charli, F1)
+  // that creating the possessive room node records.
+  const rowsOf = (db: Awaited<ReturnType<typeof makeTestDb>>) =>
+    db.select().from(facts).where(and(eq(facts.groupId, GROUP), ne(facts.predicate, 'belongs_to')))
 
   it('T2: a stay that is over no longer grounds "who is staying" — but it is kept (still is_current history)', async () => {
     const db = await makeTestDb()
@@ -351,9 +375,9 @@ describe('the time model — expiry and new occurrences', () => {
     expect(live).toHaveLength(1)
     expect(live[0]).toMatchObject({ objectValue: 'fixed', validTo: null }) // holds until superseded …
     expect(live[0].eventAt?.toISOString()).toBe(yesterday.eventAt.toISOString()) // … and keeps WHEN it changed
-    // Still trust-gated: a lower-trust past-dated change cannot overwrite a trusted state.
+    // Still trust-gated: a lower-trust past-dated change cannot overwrite a trusted state (kept as a conflict).
     await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: F('boiler', 'status', 'working'), authoredBy: null, trustLevel: 'trusted' }))
-    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: F('boiler', 'status', 'broken'), authoredBy: null, trustLevel: 'untrusted', ...yesterday }))).toBe('rejected')
+    expect(await withSimulatedTime(at, () => reconcileFact(db, { groupId: GROUP, fact: F('boiler', 'status', 'broken'), authoredBy: null, trustLevel: 'untrusted', ...yesterday }))).toBe('conflict')
   })
 
   it('a dated fact given no end still expires (the timed default: start + 6h)', async () => {

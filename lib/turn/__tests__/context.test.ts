@@ -65,6 +65,29 @@ describe('describeOutcome — THIS TURN', () => {
     const r = describeOutcome({ captured: { memoryItemId: 'n', factIds: [], learned: [], rejected: [summarizeFact({ subject: 'rent', predicate: 'is', object: '650' }, null)] } }, 'Europe/Berlin')
     expect(r).toContain('NOT stored (conflicts with something more trusted) — rent · is · 650')
   })
+  it('a conflict names both sides and asks; a removal says what no longer holds (spec §7)', () => {
+    const s = describeOutcome(
+      {
+        captured: {
+          memoryItemId: 'n',
+          factIds: [],
+          learned: [{ ...summarizeFact({ subject: 'house', predicate: 'has_guest', object: 'marta' }, null), removed: true }],
+          rejected: [],
+          conflicts: [
+            {
+              fact: summarizeFact({ subject: 'zuzka', predicate: 'stays_in', object: 'the cave' }, null),
+              current: { object: "charli's room", by: 'Charli', saidAt: '2026-09-25T10:00:00.000Z' },
+            },
+          ],
+        },
+      },
+      'Europe/Berlin',
+    )
+    expect(s).toBe(
+      "noted that these NO LONGER hold — house · has guest · marta; CONFLICT, not stored as current — this message says zuzka · stays in · the cave, but Charli said zuzka · stays in · charli's room, said Fri 25 Sep; ask which is right",
+    )
+    expect(s).not.toContain('filed the message')
+  })
   it('a secret in a learned fact is a descriptor, never the value (the ack cannot echo it)', () => {
     const f = summarizeFact({ subject: 'wifi', predicate: 'password', object: 'hunter2' }, null)
     expect(f.secure).toBe(true)

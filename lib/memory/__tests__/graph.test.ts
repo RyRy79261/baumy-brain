@@ -39,7 +39,7 @@ describe('fact-graph traversal (human-like multi-hop knowledge)', () => {
     expect(rel).not.toContain('charl owns cave') // 2 hops away — beyond maxHops:1
   })
 
-  it('reconstructs a subject timeline including superseded (past) entries, chronologically', async () => {
+  it('reconstructs a subject timeline including superseded (past) entries, newest first (F10)', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     await reconcileFact(db, { groupId: GROUP, fact: F('bins', 'go_out', 'friday'), authoredBy: null, trustLevel: t })
@@ -48,7 +48,7 @@ describe('fact-graph traversal (human-like multi-hop knowledge)', () => {
     const contents = (await entityTimeline(db, GROUP, bins.id)).map((e) => e.content)
     expect(contents.some((c) => c.includes('friday') && c.includes('past'))).toBe(true) // old value, marked past
     expect(contents.some((c) => c.includes('monday') && !c.includes('past'))).toBe(true) // current value
-    expect(contents.findIndex((c) => c.includes('friday'))).toBeLessThan(contents.findIndex((c) => c.includes('monday'))) // oldest → newest
+    expect(contents.findIndex((c) => c.includes('monday'))).toBeLessThan(contents.findIndex((c) => c.includes('friday'))) // newest → oldest
   })
 
   it('never leaks a secret value in a timeline (descriptor only)', async () => {
@@ -102,7 +102,34 @@ describe('graph + time', () => {
       const edges = await connectedEdges(db, GROUP, [zuzka.id])
       expect(edges.map((e) => e.predicate)).toEqual(['sibling of']) // the March stay is not a current connection
       const tl = await entityTimeline(db, GROUP, zuzka.id)
-      expect(tl.map((e) => e.content)).toEqual(['zuzka staying in: the cave (past, Sat 14 Mar 2026)', 'zuzka sibling of: charl'])
+      expect(tl.map((e) => e.content)).toEqual(['zuzka sibling of: charl', 'zuzka stays in: the cave (past, Sat 14 Mar 2026)']) // newest first; staying_in → stays_in
     })
+  })
+})
+
+// F10: a busy subject's timeline is its LATEST progression (it used to be the oldest 8, so "left on
+// Sunday" never reached the deep tier).
+describe('entityTimeline — newest first', () => {
+  it('keeps the newest entries of a subject with more facts than the limit', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    for (let i = 1; i <= 10; i++)
+      await withSimulatedTime(new Date(Date.parse('2026-09-01T10:00:00Z') + i * 60_000), () =>
+        reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: `note_${i}`, object: `v${i}` }, authoredBy: null, trustLevel: t }),
+      )
+    const [ent] = await db.select({ id: entities.id }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'zuzka')))
+    const tl = (await entityTimeline(db, GROUP, ent.id)).map((e) => e.content)
+    expect(tl).toHaveLength(8)
+    expect(tl[0]).toBe('zuzka note 10: v10')
+    expect(tl.some((c) => c.endsWith(': v1'))).toBe(false)
+  })
+
+  it('seeds on the most specific NAMED entity, not the house hub (F4)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'the house', predicate: 'collection_day', object: 'friday' }, authoredBy: null, trustLevel: t })
+    await reconcileFact(db, { groupId: GROUP, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'stays_in', object: 'the cave', objectKind: 'place' }, authoredBy: null, trustLevel: t })
+    const [zuzka] = await db.select({ id: entities.id }).from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'zuzka')))
+    expect((await resolveSeedEntities(db, GROUP, 'is zuzka staying at our house?'))[0]).toBe(zuzka.id)
   })
 })

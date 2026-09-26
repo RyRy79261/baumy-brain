@@ -333,6 +333,72 @@ context only — it never writes facts and is never shown to anyone.
   and rank below direct facts (F11); per-chat ordered ingest via an Inngest concurrency key (F16); a
   nightly contradiction + entity-dedupe sweep (F12).
 
+**As implemented (phase 4):**
+- `lib/memory/predicates.ts` is the vocabulary: `CANONICAL_PREDICATES` (cardinality + a gloss for the
+  prompt + question cue words), `PREDICATE_SYNONYMS`, `normalizePredicate` (snake_case → synonym →
+  as-is). Beyond the list above: `location`, `status` (single) and `belongs_to` (the structural
+  possessor edge). The extractor prompt lists the vocabulary and the `removes` flag; the fact schema
+  has `removes?: boolean`. Reconcile: a multi-valued incumbent is the live row with the SAME value
+  (another value is a sibling → add); `removes` closes the matching live value (trust-gated; nothing
+  matching → noop) and the turn reports it as "no longer". Values compare article/case-insensitively.
+- Entity resolution: a trigram merge needs the LEAST of both `strict_word_similarity` directions
+  ≥ 0.7 and the same word count; persons and possessives never trigram-merge; a single bare head
+  resolves to the one non-possessive qualified node ending in it ("the sink" → "kitchen sink"), never
+  the reverse. A NEW possessive node gets `X —belongs_to→ owner` at `system` trust, no author (the owner
+  is a person when the name is a housemate's). Exact/alias lookups skip inactive (merged) nodes.
+  `ensureSpeakerEntity` (run by capture for the authenticated author): the member-linked person node,
+  else one claimed by full / unique first name, else a new one (canonical = first name unless another
+  housemate shares it), with the full + first name as aliases unless another node owns that form.
+  `reconcileFactDetailed` returns the resolved `subjectEntityId`/`subjectKind`; the note is tagged with
+  the first person subject's id.
+- Lookup (`lib/memory/lookup.ts`, pure): the question is word-normalised (whole words, plural-tolerant,
+  curly quotes straightened), first person → the sender's first name (`lookupText(query, speaker)`,
+  speaker from `ctx.authorId` + `ctx.sender.firstName`), plus a possessive-dropped half. Entity match
+  kinds: `named` · `hub` (house/home/flat…) · `fuzzy` (trigram ≥ 0.6 for names ≥ 4 chars sharing no
+  whole word with the text, or a qualified name's head noun) · `part` (only inside a longer matched name
+  — "room" in "marco's room", "charli" in "charli's room"). `currentFactsForQuery(db, g, q, limit,
+  exclude, { speaker, authorId })` candidates: subject/object in the matched set, the value named in the
+  question, a cued predicate, the asked-about author; scored named subject 100+ > named object 80+ >
+  value 75 > hub 40 > cue 35 > fuzzy 30 > part 28, +8 for a cued predicate, +30 for the author; cue-only
+  and part-only rows are dropped once anything is named directly; a non-named subject contributes at
+  most max(3, limit/2) rows; a profile is capped at 20 (always last); the structural `belongs_to` edge
+  is never a hit. `askedAuthor` needs a say-verb and exactly one roster name (full, or a first name no
+  one else has; "did I" = the sender). Retrieval: the lexical arm is `plainto_tsquery` with `&`→`|`,
+  and only its top 10 hits bypass the cosine floor; an `authorId` adds the author's notes as a third
+  RRF arm (same four filters).
+- Trust gate: `mayOverride` = rank ≥ incumbent, or (incumbent not `system` and) the same author, or the
+  owner (`authorIsOwner` from `ctx.sender.role`). Otherwise the write is a CONFLICT: a non-current row
+  with `conflicts_with_fact_id` = the incumbent (`object_json {removes:true}` for a refused removal), one
+  per (incumbent, value). Capture reports `conflicts[]` ({fact, current: {object, by, saidAt}}); THIS TURN
+  renders "CONFLICT, not stored as current — … but Charli said …; ask which is right"; the planner's
+  `statement-conflict` row → `clarify` for a statement (directed or not — an ambient row that speaks,
+  because a silently ignored correction is worse) and for an undirected info-carrying request that would
+  otherwise be silent; in any other mode the reply prompt still says to raise a CONFLICT. Migration 0021.
+- Lineage (F8): parent = the superseded incumbent, or the previous (expired) occurrence of the same key;
+  else null. The read joins only a parent that is not forgotten and not a conflict, rendered "(earlier:
+  …, per X)". Migration 0022 renamed legacy predicates through the synonym map and nulled stored parents
+  with a different predicate (the old false links). Entity timeline: newest first, no conflict rows.
+- Consolidation (F9): same `authored_by` (IS NOT DISTINCT FROM) and within 24h.
+- Reflect (F11): material = live facts with author name, recorded date and event window + TODAY; the
+  prompt keeps changeable things dated and attributed; the stored profile grounds as kind `profile`
+  ("Baumy's summary (not anyone's words) · as of <day>"), ranked last.
+- F16: `handleTelegramMessage` has `concurrency: [{ key: 'event.data.chatId', limit: 1 }]`.
+- F12 (`lib/memory/hygiene.ts`, cron `memory-hygiene` 03:40 Berlin; the sandbox drives it too):
+  (A) rename predicates; (B) merge nodes that are provably one — same normalised name, one's name is the
+  other's alias, both linked to the same member — never two nodes linked to different members, never a
+  person with a place; audited `memory.entity_merge`, the dropped node deactivated with its names kept as
+  aliases; (C) candidate look-alike pairs (non-person, unlinked, non-possessive, same word count, trigram
+  0.45–0.7) go to `proposeEntityMerges` (`ENTITY_DEDUPE_SYSTEM`) — only offered indexes are taken and
+  every guard is re-read before the merge (the node with more facts is kept); (D) several live rows of a
+  single-valued key are replayed in order through the trust gate (winner supersedes, a refused newer
+  row becomes a conflict); a multi-valued key drops exact duplicate values; (E) conflict rows are
+  soft-deleted once their incumbent is no longer live, or after 14 days.
+- Not done / deferred: existing speaker entities get their aliases lazily (on the member's next
+  captured message) and legacy "X's thing" nodes that were merged into their owner before this phase
+  stay merged (their alias is on the owner; splitting them needs the source notes re-extracted); the
+  LLM proposal never judges people — a nickname split ("charl" / "charli") stays two nodes unless one
+  name becomes the other's alias (e.g. through `ensureSpeakerEntity`), after which the sweep merges them.
+
 ## 8. Intake & actions (phase 5)
 
 - **Edits (I1):** `baumy_messages` maps (chat, message_id) → produced note/facts/reminders. An edit

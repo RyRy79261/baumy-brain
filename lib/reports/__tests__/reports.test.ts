@@ -138,7 +138,7 @@ describe('guestReport', () => {
     await guestReport(db, GROUP, new Date('2026-09-29T10:00:00Z'))
     const p = captured.prompt ?? ''
     expect(p).not.toMatch(/zuzka/) // a visit that is over is not a guest
-    expect(p).toContain('iman staying in: the cave (Sat 3 Oct – Sun 4 Oct)')
+    expect(p).toContain('iman stays in: the cave (Sat 3 Oct – Sun 4 Oct)') // staying_in → the canonical stays_in (spec §7)
   })
 
   it('says the house is guest-free (no model call) when nothing is on the books', async () => {

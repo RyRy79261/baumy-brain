@@ -185,7 +185,8 @@ export const POLICY: Record<string, TablePolicy> = {
     invalidatedAt: prov('when it stopped being current'),
     deletedAt: prov('soft delete'),
     sourceMemoryItemId: prov('the evidence note this was extracted from'),
-    derivedFromFactId: prov('backward pointer of the supersession chain'),
+    derivedFromFactId: prov('backward pointer of the supersession chain — set only on a real supersession or a new occurrence of the same fact'),
+    conflictsWithFactId: prov('set ⇒ a correction the trust gate refused (not current, never grounds a reply); points at the live fact it contradicts. The hygiene sweep retires it'),
   },
 
   reminders: {

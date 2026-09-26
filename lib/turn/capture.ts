@@ -1,13 +1,13 @@
 import { DateTime } from 'luxon'
 import { createHttpDb } from '@/db/client'
 import { captureMemory } from '@/lib/memory/write'
-import { reconcileFactDetailed, tagMemoryAboutPerson } from '@/lib/memory/facts'
+import { ensureSpeakerEntity, reconcileFactDetailed, tagMemoryAboutPerson } from '@/lib/memory/facts'
 import { extractFacts } from '@/lib/ai/extract'
 import { memberDisplayNames } from '@/lib/identity/roster'
 import { eventWindowFromModel, eventWindowFromPhrase, type EventWindow } from '@/lib/core/when'
 import { formatEventWindow } from '@/lib/core/calendar'
 import { scanSensitivity } from '@/lib/core/sensitivity'
-import { summarizeFact, type FactSummary, type TurnContext, type TurnOutcome } from './context'
+import { summarizeFact, type FactConflict, type FactSummary, type TurnContext, type TurnOutcome } from './context'
 import type { TurnStep } from './step'
 
 // Capture (evidence + facts) for one turn. Returns WHAT was written — the evidence note id, the ids
@@ -44,22 +44,30 @@ export async function runCapture(step: TurnStep, ctx: TurnContext): Promise<NonN
     const factIds: string[] = []
     const learned: FactSummary[] = []
     const rejected: FactSummary[] = []
+    const conflicts: FactConflict[] = []
     let secure: string | null = null
-    // The speaker's name lets first-person references resolve ("my room" → their room).
-    const speaker = ctx.authorId ? ((await memberDisplayNames(db)).get(ctx.authorId) ?? null) : null
+    let aboutPerson: string | null = null
+    const names = await memberDisplayNames(db)
+    // The speaker's name lets first-person references resolve ("my room" → their room), and every form
+    // of it (full + first name) resolves to their ONE person node (F6).
+    const speaker = ctx.authorId ? (names.get(ctx.authorId) ?? null) : null
+    if (ctx.authorId && speaker) await ensureSpeakerEntity(db, ctx.houseScope, ctx.authorId, speaker)
     const { facts } = await extractFacts(ctx.text, speaker, { at: ctx.sentAt, tz: ctx.tz })
     for (const f of facts) {
       // The same scan reconcile runs on the triple (the secret marker usually lives in the subject /
       // predicate): the message carried a secret even when its raw text did not scan.
       const sens = scanSensitivity(`${f.subject} ${f.predicate} ${f.object}`)
       if (sens.isSecure) secure ??= sens.descriptor
-      const window = eventWindow(f, ctx)
+      const window = f.removes ? null : eventWindow(f, ctx)
       // trust = the lane's: a member DM is 'trusted' and MAY supersede a group 'untrusted' fact,
-      // never a 'system' reflect fact. memoryItemId links the fact back to THIS note (lineage).
+      // never a 'system' reflect fact. The SAME author, or the owner, may correct a fact from any lane
+      // (F5) — identity from the authenticated turn, never the text. memoryItemId links the fact back
+      // to THIS note (lineage).
       const r = await reconcileFactDetailed(db, {
         groupId: ctx.houseScope,
         fact: f,
         authoredBy: ctx.authorId,
+        authorIsOwner: ctx.authorId != null && ctx.sender.role === 'owner',
         trustLevel: ctx.trust,
         memoryItemId,
         eventAt: window?.eventAt ?? null,
@@ -69,12 +77,29 @@ export async function runCapture(step: TurnStep, ctx: TurnContext): Promise<NonN
       if ((r.result === 'add' || r.result === 'update') && r.factId) {
         factIds.push(r.factId)
         learned.push(summarizeFact(f, when))
-      } else if (r.result === 'rejected') rejected.push(summarizeFact(f, when))
+      } else if (r.result === 'removed') learned.push({ ...summarizeFact(f, null), removed: true })
+      else if (r.result === 'rejected') rejected.push(summarizeFact(f, when))
+      else if (r.result === 'conflict' && r.conflict) {
+        // Refused by the trust gate: stored NOT current, and the turn says so — Baumy asks which is
+        // right instead of a silent ✍ on something it did not take (F5).
+        const c = r.conflict
+        conflicts.push({
+          fact: summarizeFact(f, when),
+          current: {
+            object: c.object ?? '(secret — stored encrypted)',
+            by: c.authoredBy ? (names.get(c.authoredBy) ?? null) : null,
+            saidAt: c.recordedAt ? new Date(c.recordedAt).toISOString() : null,
+          },
+        })
+      }
+      // The person this note is about = the first PERSON subject reconcile resolved (F15: by id, so an
+      // alias-merged "charli" still files under the "charli smith" node).
+      if (!aboutPerson && r.subjectKind === 'person' && r.subjectEntityId) aboutPerson = r.subjectEntityId
     }
     // Tag this note with the person it's about (memory v2 §3) — attributed, never scored.
-    await tagMemoryAboutPerson(db, ctx.houseScope, memoryItemId, facts)
-    return { factIds, learned, rejected, secure }
-  })) as { factIds: string[]; learned: FactSummary[]; rejected: FactSummary[]; secure: string | null }
+    await tagMemoryAboutPerson(db, ctx.houseScope, memoryItemId, aboutPerson)
+    return { factIds, learned, rejected, conflicts, secure }
+  })) as { factIds: string[]; learned: FactSummary[]; rejected: FactSummary[]; conflicts: FactConflict[]; secure: string | null }
 
   return { memoryItemId, ...facts }
 }

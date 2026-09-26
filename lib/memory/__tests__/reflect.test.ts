@@ -151,4 +151,25 @@ describe('sleep-time reflection (memory v2 §4)', () => {
       expect(await pickPeopleToReflect(db, GROUP, 8)).toHaveLength(0) // one live fact — nothing to consolidate
     })
   })
+
+  it('F11: the material is DATED and ATTRIBUTED (who said it, when, when it happens)', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 100)
+    await upsertMember(db, GROUP, '100', 'Charli', 'member')
+    await withSimulatedTime(new Date('2026-09-12T10:00:00Z'), () =>
+      reconcileFact(db, {
+        groupId: GROUP,
+        fact: person('zuzana', 'stays_in', "charli's room"),
+        authoredBy: '100',
+        trustLevel: 'untrusted',
+        eventAt: new Date('2026-09-25T22:00:00Z'),
+        validTo: new Date('2026-09-27T21:59:59.999Z'),
+      }),
+    )
+    const [z] = await db.select().from(entities).where(and(eq(entities.groupId, GROUP), eq(entities.canonicalName, 'zuzana')))
+    const m = await withSimulatedTime(new Date('2026-09-20T10:00:00Z'), () => gatherPersonMaterial(db, GROUP, z.id))
+    expect(m.facts[0]).toMatchObject({ predicate: 'stays_in', by: 'Charli' })
+    expect(m.facts[0].saidAt?.toISOString()).toBe('2026-09-12T10:00:00.000Z')
+    expect(m.facts[0].eventAt?.toISOString()).toBe('2026-09-25T22:00:00.000Z')
+  })
 })

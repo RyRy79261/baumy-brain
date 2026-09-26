@@ -271,6 +271,10 @@ export const facts = pgTable(
     // people ("you said Zuzka's coming" → "Marco said she arrived"). Both nullable.
     sourceMemoryItemId: uuid('source_memory_item_id').references(() => memoryItems.id, { onDelete: 'set null' }),
     derivedFromFactId: uuid('derived_from_fact_id').references((): AnyPgColumn => facts.id, { onDelete: 'set null' }),
+    // A correction the trust gate refused (docs/spec/chat-understanding-v2.md §7, F5): kept NOT current,
+    // pointing at the live fact it contradicts, so the turn can ask which is right. NULL for every
+    // ordinary fact. The nightly hygiene sweep retires it once the incumbent is no longer live.
+    conflictsWithFactId: uuid('conflicts_with_fact_id').references((): AnyPgColumn => facts.id, { onDelete: 'set null' }),
   },
   (t) => [
     index('baumy_facts_group_current_idx').on(t.groupId, t.isCurrent),

@@ -20,7 +20,10 @@ replies included, reach triage and the reply), and phase 3 (the time model — T
 `time/` and `time-skeptic/` repros are gone, `actions/reminders.test.ts` keeps only the open A5 case, and
 the F9 consolidation repro moved to `memory/consolidation-attribution.test.ts`; see
 `lib/core/__tests__/when.test.ts`, `lib/reminders/__tests__/{digest,recurrence}.test.ts`,
-`scenarios/time.scenario.test.ts`). Their correct behaviour is pinned next to the code
+`scenarios/time.scenario.test.ts`), and phase 4 (the fact model — F1–F16: `memory/graph.test.ts`,
+`memory/consolidation-attribution.test.ts`, `reply/speaker.test.ts` and the intake consolidation case are
+gone; see `lib/memory/__tests__/{fact-model,predicates,lookup,hygiene,retrieve-arms}.test.ts` and
+`scenarios/facts.scenario.test.ts`). Their correct behaviour is pinned next to the code
 (`lib/turn/__tests__`, `lib/ai/__tests__/reply.test.ts`, `lib/inngest/functions/__tests__/ingest-turn.test.ts`)
 and in `scenarios/` (phase 2: `lib/turn/__tests__/window.test.ts`, `scenarios/window.scenario.test.ts`).
 

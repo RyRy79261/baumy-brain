@@ -18,8 +18,8 @@ SCENARIOS_SHOW_GAPS=1 pnpm test:scenarios   # run known gaps as ordinary tests t
   `setModelOverride` seam in `lib/ai/registry.ts`.
   - It works out which call it is serving from the system prompt, by matching it against the
     constants in `lib/ai/prompts.ts`. The roles are triage, extract, reminder, list, forget, reply,
-    reply-text, voice, reflect, headsup, expand, rerank, websearch, weekly, guests, issue and
-    deliberate.
+    reply-text, voice, reflect, headsup, expand, rerank, websearch, weekly, guests, issue,
+    deliberate and dedupe (the nightly hygiene sweep's entity-merge proposal; default: no merges).
   - It answers from the scenario's `fixtures`, which are functions of the message text. Any role
     without a fixture gets a safe default.
   - It records every call as `{ role, tier, system, prompt, text, output }`.
@@ -98,7 +98,8 @@ converts them to the schemas the code validates today.
 - Since phase 1 the classifier schema IS the spec §2 shape, so the triage adapter is the identity;
   since phase 3 facts and reminders are the spec §6 shapes too. A fact's `when` may be the resolved
   `{ start, end?, allDay }` (local ISO) or just the verbatim phrase (`when: 'this weekend'` — the model
-  resolved nothing, so the code's chrono fallback reads it). A reminder fixture returns one
+  resolved nothing, so the code's chrono fallback reads it), and `removes: true` marks a value that no
+  longer holds (spec §7). A reminder fixture returns one
   `reminder({ content, when, fireAt?, recurrence?, forWhom? })`, an array of them (A6), or null; without
   `fireAt` the fallback reads `when`.
 - Explicit reminders fire at their own instant in `advance()` (the production sleepUntil path — job

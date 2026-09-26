@@ -66,11 +66,11 @@ describe('reconcileFactDetailed / exclusion seams', () => {
     const a = await reconcileFactDetailed(db, { groupId: G, fact: f, authoredBy: null, trustLevel: 'untrusted' })
     expect(a.result).toBe('add')
     expect(a.factId).toBeTruthy()
-    expect(await reconcileFactDetailed(db, { groupId: G, fact: f, authoredBy: null, trustLevel: 'untrusted' })).toEqual({ result: 'noop', factId: a.factId })
+    expect(await reconcileFactDetailed(db, { groupId: G, fact: f, authoredBy: null, trustLevel: 'untrusted' })).toMatchObject({ result: 'noop', factId: a.factId })
     const u = await reconcileFactDetailed(db, { groupId: G, fact: { ...f, object: 'monday' }, authoredBy: null, trustLevel: 'untrusted' })
     expect(u.result).toBe('update')
     expect(u.factId).not.toBe(a.factId)
-    expect(await reconcileFactDetailed(db, { groupId: G, fact: f, authoredBy: null, trustLevel: 'quarantined' })).toEqual({ result: 'rejected', factId: null })
+    expect(await reconcileFactDetailed(db, { groupId: G, fact: f, authoredBy: null, trustLevel: 'quarantined' })).toMatchObject({ result: 'rejected', factId: null })
   })
 
   it('currentFactsForQuery leaves out excluded ids and carries recorded_at / event_at (T1)', async () => {

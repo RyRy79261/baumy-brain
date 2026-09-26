@@ -304,8 +304,12 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   }
 }
 
+// Per-chat ORDERED ingest (spec §7, F16): one run at a time per chat, so "Zuzka arrives Friday" and a
+// "sorry, Saturday" seconds later are reconciled in the order they were said — without it, whichever
+// run finished last won, and a correction could be superseded by the message it corrected. Keyed on the
+// inbound chat (the house group, or one member's DM); different chats still run in parallel.
 export const handleTelegramMessage = inngest.createFunction(
-  { id: 'handle-telegram-message', retries: 3 },
+  { id: 'handle-telegram-message', retries: 3, concurrency: [{ key: 'event.data.chatId', limit: 1 }] },
   { event: 'telegram/message.received' },
   ({ event, step }) => runIngest(event, step as unknown as IngestStep),
 )

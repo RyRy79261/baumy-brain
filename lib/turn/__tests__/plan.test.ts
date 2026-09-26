@@ -276,3 +276,30 @@ describe('planResponse — reactions are always Bot-API-valid', () => {
     for (const e of ['✍', '👍', '👎', '👀']) expect(PLANNER_EMOJI).toContain(e)
   })
 })
+
+// Spec §7 (F5): a correction the trust gate refused is kept as a conflict — Baumy asks which is right,
+// directed or not, never a ✍ that claims it was taken. Pause still silences the group.
+describe('planResponse — fact conflict', () => {
+  const conflict: TurnOutcome = {
+    captured: {
+      ...CAPTURED!,
+      conflicts: [
+        {
+          fact: { subject: 'zuzka', predicate: 'stays in', object: 'the cave', when: null, secure: false },
+          current: { object: "charli's room", by: 'Charli', saidAt: '2026-09-25T10:00:00.000Z' },
+        },
+      ],
+    },
+  }
+  it('undirected and directed statements → clarify', () => {
+    expect(plan({ verdict: V({ intent: 'statement', worthRemembering: true }), outcome: conflict })).toEqual({ kind: 'words', mode: 'clarify', row: 'statement-conflict' })
+    expect(plan({ why: 'mention', verdict: V({ intent: 'statement', worthRemembering: true }), outcome: conflict })).toMatchObject({ mode: 'clarify', row: 'statement-conflict' })
+    expect(plan({ lane: 'member_dm', verdict: V({ intent: 'statement', worthRemembering: true }), outcome: conflict })).toMatchObject({ mode: 'clarify' })
+  })
+  it('an undirected info-carrying request with a conflict asks too (never silent)', () => {
+    expect(plan({ verdict: V({ intent: 'request', worthRemembering: true, asksBaumy: false }), outcome: conflict })).toMatchObject({ mode: 'clarify', row: 'statement-conflict' })
+  })
+  it('paused → none; quarantined never gets here (no facts)', () => {
+    expect(plan({ policy: PAUSED, verdict: V({ intent: 'statement' }), outcome: conflict })).toMatchObject({ kind: 'none', row: 'paused' })
+  })
+})

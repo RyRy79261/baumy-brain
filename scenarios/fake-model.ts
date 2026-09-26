@@ -19,6 +19,7 @@ import {
   WEEKLY_REPORT_SYSTEM,
   GUEST_REPORT_SYSTEM,
   ISSUE_ENRICH_SYSTEM,
+  ENTITY_DEDUPE_SYSTEM,
 } from '@/lib/ai/prompts'
 import { DELIBERATE_SYSTEM } from '@/lib/ai/deliberate'
 import { toTriageOutput, toExtractedFact, toReminderOutput, chatter, type Verdict, type FactSpec, type ReminderSpec } from './shapes'
@@ -53,6 +54,7 @@ export type CallRole =
   | 'guests'
   | 'issue'
   | 'deliberate'
+  | 'dedupe'
   | 'unknown'
 
 export interface ModelCall {
@@ -94,6 +96,7 @@ export const ROLE_PROMPTS: [CallRole, string][] = (
     ['guests', GUEST_REPORT_SYSTEM],
     ['issue', ISSUE_ENRICH_SYSTEM],
     ['deliberate', DELIBERATE_SYSTEM],
+    ['dedupe', ENTITY_DEDUPE_SYSTEM],
   ] as [CallRole, string][]
 ).sort((a, b) => b[1].length - a[1].length)
 
@@ -161,6 +164,9 @@ export interface Fixtures {
   reflect?: (call: ModelCall) => string
   websearch?: (text: string, call: ModelCall) => string
   report?: (call: ModelCall) => string
+  /** The nightly hygiene sweep's entity-merge proposal: indexes of the offered pairs judged the same
+   *  thing. Default: none (code merges only what is provably one). */
+  dedupe?: (call: ModelCall) => number[]
   /** Deep-tier query expansion (paraphrases + a HyDE sentence). Default: none. */
   expand?: (text: string, call: ModelCall) => { variants: string[]; hypothetical: string }
 }
@@ -246,6 +252,8 @@ function answerFor(call: ModelCall, fx: Fixtures): string {
       return 'ok 😼'
     case 'deliberate':
       return 'ok'
+    case 'dedupe':
+      return json({ same: fx.dedupe ? fx.dedupe(call) : [] })
     case 'unknown':
       throw new FakeModelError(
         `[scenarios/fake-model] unrecognised system prompt — add its constant to ROLE_PROMPTS in scenarios/fake-model.ts:\n${call.system.slice(0, 200)}`,

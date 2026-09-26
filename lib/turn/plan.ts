@@ -34,6 +34,7 @@ export type PlanRow =
   | 'ask-undirected'
   | 'ask-undirected-below-floor'
   | 'ask-housemates'
+  | 'statement-conflict'
   | 'statement-directed'
   | 'statement-captured'
   | 'banter-directed'
@@ -133,6 +134,8 @@ function planMain(ctx: TurnContext, policy: ResponsePolicy, directed: boolean): 
         if (ctx.directed.why === 'console_topic' && !v.asksBaumy) return none('ask-console-housemates')
         return words('answer', 'ask-directed', { onMiss: 'words' })
       }
+      // An info-carrying request whose fact was refused as a conflict: ask, never silence (spec §7).
+      if (o.captured?.conflicts?.length) return words('clarify', 'statement-conflict')
       if (!v.asksBaumy) return none('ask-housemates') // housemates talking to each other (C6)
       // An unaddressed question to the house: only when the owner's reply floor + muted topics allow,
       // and an honest miss is a quiet 👎 — never a line of "no idea" into the group.
@@ -140,6 +143,10 @@ function planMain(ctx: TurnContext, policy: ResponsePolicy, directed: boolean): 
         ? words('answer', 'ask-undirected', { onMiss: '👎' })
         : none('ask-undirected-below-floor')
     case 'statement':
+      // It contradicts a fact the speaker may not override (spec §7, F5): the correction was kept but
+      // NOT made current, so Baumy asks which is right — never a ✍ that claims it was taken. This is
+      // one of the few rows that speaks undirected: silently ignoring a correction is the worse failure.
+      if (o.captured?.conflicts?.length) return words('clarify', 'statement-conflict')
       if (directed) return words('ack', 'statement-directed')
       if (o.captured) return react(NOTED, 'statement-captured')
       return v.vibe ? react(v.vibe, 'vibe') : none('otherwise')
