@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { reminders } from '@/db/schema'
+import { reminders, memoryItems } from '@/db/schema'
 import { createReminder } from '@/lib/reminders/store'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { embedSync } from '@/lib/ai/embed'
@@ -173,6 +173,54 @@ describe('sandbox — talk as anyone, move time, watch what happens', () => {
     answerMock.mockResolvedValue({ text: 'meow', answered: true })
     const said = await sendAs(sb, 'Madeleine', 'you there?')
     expect(spoken(said)).toEqual(['meow'])
+  })
+})
+
+// The transport facts later scenarios drive (C7/C8/C9/C12/I8): the harness supplies them exactly as
+// the webhook would, and the REAL pipeline decides directedness and trust from them.
+describe('sandbox — reply / mention / anonymous-admin transport options', () => {
+  beforeEach(() => {
+    for (const m of [classifyMock, extractFactsMock, extractReminderMock, answerMock, writeHeadsUpMock]) m.mockReset()
+    classifyMock.mockResolvedValue(CHATTER)
+    extractFactsMock.mockResolvedValue({ facts: [] })
+    answerMock.mockResolvedValue({ text: 'meow', answered: true })
+    process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 13).toString('base64')
+    delete process.env.BAUMY_HOUSE_CHAT_ID
+  })
+
+  it('replyToBaumy: a bare "yes" answering Baumy reaches triage (C7) and is directed', async () => {
+    const sb = await freshSandbox('2026-07-01T09:00:00Z')
+    classifyMock.mockResolvedValue(QUESTION)
+    const said = await sendAs(sb, 'Charl', 'yes', { replyToBaumy: 'want me to remind the house?' })
+    expect(classifyMock).toHaveBeenCalledWith('yes')
+    expect(spoken(said)).toEqual(['meow'])
+  })
+
+  it('replyTo another bot / the topic root is NOT directed (C8/C9)', async () => {
+    const sb = await freshSandbox('2026-07-01T09:00:00Z')
+    classifyMock.mockResolvedValue({ ...CHATTER, intent: 'question' })
+    await sendAs(sb, 'Charl', 'lol same', { replyTo: { fromId: 5555, isBot: true, text: 'Poll closes at 9' } })
+    await sendAs(sb, 'Charl', 'Zuzka arriving Sat', { threadId: 44, replyTo: { fromId: 1087968824, isBot: true, isTopicRoot: true } })
+    expect(answerMock).not.toHaveBeenCalled()
+  })
+
+  it('mention: the @baumy_bot token makes it directed but never reaches memory (C12)', async () => {
+    const sb = await freshSandbox('2026-07-01T09:00:00Z')
+    classifyMock.mockResolvedValue(FACT)
+    await sendAs(sb, 'Charl', 'the plumber comes monday', { mention: true })
+    expect(classifyMock).toHaveBeenCalledWith('the plumber comes monday')
+    const rows = await sb.db.select().from(memoryItems).where(eq(memoryItems.groupId, sb.houseChatId))
+    expect(rows.map((r: { content: string }) => r.content)).toEqual(['the plumber comes monday'])
+  })
+
+  it('anonymousAdmin: house text, untrusted, unattributed — facts ARE extracted (I8)', async () => {
+    const sb = await freshSandbox('2026-07-01T09:00:00Z')
+    classifyMock.mockResolvedValue(FACT)
+    await sendAs(sb, 'Madeleine', 'rent goes up to 650 from October', { anonymousAdmin: true })
+    expect(extractFactsMock).toHaveBeenCalledTimes(1)
+    const [row] = await sb.db.select().from(memoryItems).where(eq(memoryItems.groupId, sb.houseChatId))
+    expect(row.trustLevel).toBe('untrusted')
+    expect(row.authoredBy).toBeNull()
   })
 })
 

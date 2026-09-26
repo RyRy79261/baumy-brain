@@ -2,6 +2,7 @@ import { generateObject, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { resolveModel } from './registry'
 import { EXTRACT_REMINDER_SYSTEM } from './prompts'
+import { degradeOnMalformed } from './errors'
 
 // Reminder detection + slot extraction (task-graph R1 / llm-pipeline T14).
 // The message is untrusted DATA; the structured schema constrains the output.
@@ -20,8 +21,8 @@ export async function extractReminder(
   text: string,
   model: LanguageModel = resolveModel('assess'),
 ): Promise<ReminderExtraction> {
-  // BEST-EFFORT: a malformed object (AI_NoObjectGeneratedError) must never crash-loop
-  // ingest — worst case we miss one reminder; the reply/reaction still fires.
+  // BEST-EFFORT on a malformed object (AI_NoObjectGeneratedError): never crash-loop ingest —
+  // worst case we miss one reminder. A transient API error rethrows so the step retries (I2).
   try {
     const { object } = await generateObject({
       model,
@@ -31,7 +32,6 @@ export async function extractReminder(
     })
     return object
   } catch (err) {
-    console.error('extractReminder failed — treating as not-a-reminder:', err)
-    return NOT_A_REMINDER
+    return degradeOnMalformed(err, 'extractReminder', NOT_A_REMINDER)
   }
 }

@@ -2,6 +2,7 @@ import { generateObject, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { resolveModel } from './registry'
 import { EXTRACT_FACTS_SYSTEM } from './prompts'
+import { isMalformedObjectError } from './errors'
 
 // NO ceiling on how many facts one message can teach — if it states 50, we store 50.
 // A "full" page (>= PROBE_AGAIN new facts) might not be the whole story, so we PAGINATE:
@@ -65,9 +66,10 @@ export async function extractFacts(
       : ''
     let page: ExtractedFacts['facts']
     try {
-      // BEST-EFFORT: a schema/model hiccup must NEVER throw the ingest function (that
-      // once crash-looped capture and stopped Baumy learning). On failure we keep every
-      // fact earlier passes already found and stop — the evidence item is still stored.
+      // BEST-EFFORT on a malformed object: it must NEVER throw the ingest function (that
+      // once crash-looped capture and stopped Baumy learning). We keep every fact earlier
+      // passes already found and stop — the evidence item is still stored. A TRANSIENT API
+      // error rethrows instead, so the capture step retries rather than memoizing "no facts" (I2).
       const { object } = await generateObject({
         model,
         schema: extractedFacts,
@@ -76,7 +78,8 @@ export async function extractFacts(
       })
       page = object.facts
     } catch (err) {
-      console.error(`extractFacts pass ${pass} failed — keeping ${all.length} facts captured so far:`, err)
+      if (!isMalformedObjectError(err)) throw err
+      console.error(`extractFacts pass ${pass} malformed — keeping ${all.length} facts captured so far:`, err)
       break
     }
     const fresh = page.filter((f) => {

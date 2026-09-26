@@ -2,6 +2,7 @@ import { generateObject, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { resolveModel } from './registry'
 import { EXTRACT_LIST_SYSTEM } from './prompts'
+import { degradeOnMalformed } from './errors'
 
 // House shopping-list op extraction (docs/spec/shopping-list.md). The cheap classifier FLAGS a
 // message as a list op (routing only); this pulls the concrete op + item names. The message is
@@ -16,9 +17,9 @@ export const listExtraction = z.object({
 })
 export type ListExtraction = z.infer<typeof listExtraction>
 
-// Safe result when extraction fails OR the message isn't really a list op — degrade to `none` so
-// ingest falls through to the normal capture/reply path instead of crash-looping or blackholing
-// the message (MEMORY.md: every hot-path generateObject must be best-effort).
+// Safe result when the object is malformed OR the message isn't really a list op — degrade to
+// `none` so ingest falls through to the normal capture/reply path instead of crash-looping (every
+// hot-path generateObject is best-effort). A transient API error rethrows so the step retries (I2).
 const NOT_A_LIST_OP: ListExtraction = { op: 'none', items: [] }
 
 export async function extractListOp(text: string, model: LanguageModel = resolveModel('assess')): Promise<ListExtraction> {
@@ -31,7 +32,6 @@ export async function extractListOp(text: string, model: LanguageModel = resolve
     })
     return object
   } catch (err) {
-    console.error('extractListOp failed — treating as not-a-list-op:', err)
-    return NOT_A_LIST_OP
+    return degradeOnMalformed(err, 'extractListOp', NOT_A_LIST_OP)
   }
 }

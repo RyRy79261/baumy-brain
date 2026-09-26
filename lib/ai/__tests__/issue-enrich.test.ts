@@ -29,9 +29,9 @@ describe('enrichIssue + formatIssueBody', () => {
     expect(body).toContain('Reported by Ryan via Baumy')
   })
 
-  it('is BEST-EFFORT: a model failure falls back to a plain template (never lost)', async () => {
+  it('is BEST-EFFORT: a malformed object falls back to a plain template (never lost)', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
-    gen.mockRejectedValueOnce(new Error('model hiccup'))
+    gen.mockRejectedValueOnce(new Error('No object generated: response did not match schema'))
     const e = await enrichIssue('the thing is totally broken', 'bug')
     expect(e.type).toBe('bug')
     expect(e.title).toContain('broken')

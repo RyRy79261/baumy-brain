@@ -60,7 +60,11 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   `privileged: false`, always.
 - **Trust tiers:** forwarded / bot-origin content → `quarantined`; it is never attributed to a
   housemate and never grounds a reply or writes a fact. Native group text is `untrusted`
-  (grounds replies, never privileged). Member DM text is `trusted`.
+  (grounds replies, never privileged). Member DM text is `trusted`. One exception: an
+  **anonymous-admin post** (`from` = @GroupAnonymousBot, `sender_chat.id` = the house itself) is
+  native `untrusted` house text, never attributed and never registered as a member (I8).
+  **Directedness** (a reply to Baumy) is `reply_to_message.from.id === Baumy's bot id` — never
+  `is_bot` alone, never the forum topic-root service message (`chat-understanding-v2.md` §1).
 - **DM queries (`member_dm` lane, `docs/spec/dm-queries-and-house-scoping.md`):** a member can
   DM Baumy to **read** house memory (answered privately) and **write** facts through to shared
   house memory at `trusted`. The **scope** a message reads/writes is `houseScopeForOrigin(origin,
@@ -84,6 +88,9 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   auto-commit** (`ingest.ts` reminder step + `list` step): a reminder only posts text to the fixed
   house group, and a list op only mutates the house's own group-scoped list (reversible,
   low-privilege). Both are the capture tier. Do not re-add a confirm step to either.
+- **LLM errors (I2):** only a *malformed object* degrades to a safe default
+  (`lib/ai/errors.ts` `isMalformedObjectError`); a transient provider error (429/529/timeout)
+  **rethrows** so the Inngest step retries — never swallow it into a memoized degraded value.
 - **Fixed send destination:** `sendToHouse` targets a **code-resolved** chat id only. Replies
   are a **two-target allow-list** — the house group, or the authenticated DM sender's own chat
   (`origin.chatId`); reminders/digests → the fixed house group. The LLM never picks a recipient.

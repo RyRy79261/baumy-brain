@@ -115,23 +115,6 @@ async function postUpdate(update: unknown) {
 }
 
 describe('webhook: what reaches ingest', () => {
-  it('replyToBot is true for a reply to ANY bot (not Baumy), and the replied-to text is never forwarded', async () => {
-    const data = await postUpdate({
-      update_id: 9001,
-      message: {
-        message_id: 5,
-        date: 0,
-        chat: { id: Number(HOUSE.replace('-100', '-100')) || -100123, type: 'supergroup' },
-        from: { id: MARCO, is_bot: false, first_name: 'Marco' },
-        text: 'lol same',
-        reply_to_message: { message_id: 4, date: 0, chat: { id: -100123, type: 'supergroup' }, from: { id: 5555, is_bot: true, first_name: 'SomeOtherBot' }, text: 'Poll closes at 9' },
-      },
-    })
-    expect(data!.replyToBot).toBe(true) // → isDirectedAtBaumy(…, true) short-circuits to directed
-    expect(JSON.stringify(data)).not.toContain('Poll closes at 9') // no reply context forwarded
-    expect(Object.keys(data!)).not.toContain('replyToText')
-  })
-
   it('an edited_message is forwarded as a brand-new telegram/message.received (new update id → full re-run)', async () => {
     const data = await postUpdate({
       update_id: 9002,
@@ -151,13 +134,6 @@ describe('webhook: what reaches ingest', () => {
 })
 
 describe('ingest: directed-ness and follow-ups', () => {
-  it('A6: "yes" sent as a reply to Baumy is dropped by the prefilter before directed-ness is even computed', async () => {
-    const res = await runIngest(ev({ text: 'yes', replyToBot: true }), step)
-    expect(res.decision).toBe('drop')
-    expect(calls).toHaveLength(0)
-    expect(sendToHouse).not.toHaveBeenCalled()
-  })
-
   it('third-person mentions of Baumy count as "directed" (always answered): "Baumy\'s reminders are annoying lol"', () => {
     expect(isDirectedAtBaumy("Baumy's reminders are annoying lol", false, 'baumy_bot')).toBe(true)
     expect(isDirectedAtBaumy('Marco, ask baumy, it knows', false, 'baumy_bot')).toBe(true)

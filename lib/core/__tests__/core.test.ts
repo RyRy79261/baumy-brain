@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { resolveOrigin, type Roster } from '@/lib/core/origin'
 import { allowedActions, isAllowed } from '@/lib/core/policy'
-import { scanSensitivity } from '@/lib/core/sensitivity'
+import { scanSensitivity, isSecretQuestion } from '@/lib/core/sensitivity'
 import type { TelegramUpdate } from '@/lib/telegram/schema'
 
 const HOUSE = '-1001234567890'
@@ -101,6 +101,38 @@ describe('resolveOrigin', () => {
     const o = resolveOrigin(supergroupMsg(NEW_LIVE, 100, 'hi'), roster, OLD_SCOPE, [OLD_SCOPE])
     expect(o.lane).toBe('ignore')
   })
+
+  // I8: an admin posting anonymously arrives from=@GroupAnonymousBot (is_bot) with sender_chat =
+  // the house group itself — a housemate speaking as the group, so untrusted house text.
+  const GROUP_ANON_BOT = 1087968824
+  const anonMsg = (senderChatId: number | undefined): TelegramUpdate =>
+    ({
+      update_id: 13,
+      message: {
+        message_id: 13,
+        date: 0,
+        chat: { id: Number(HOUSE), type: 'supergroup' },
+        from: { id: GROUP_ANON_BOT, is_bot: true, first_name: 'Group' },
+        ...(senderChatId != null ? { sender_chat: { id: senderChatId, type: 'supergroup', title: 'House' } } : {}),
+        text: 'rent goes up to 650 from October',
+      },
+    }) as unknown as TelegramUpdate
+
+  it('an anonymous-admin post (sender_chat = the house) is untrusted house text, flagged anonymous — not quarantined', () => {
+    const o = resolveOrigin(anonMsg(Number(HOUSE)), roster, HOUSE)
+    expect(o.lane).toBe('house')
+    expect(o.memoryTrust).toBe('untrusted')
+    expect(o.privileged).toBe(false)
+    expect(o.anonymous).toBe(true)
+    expect(o.source).toBe('member') // never the owner — the from id is a shared bot identity
+  })
+
+  it('a bot post with a FOREIGN sender_chat (linked channel auto-forward) stays quarantined', () => {
+    const o = resolveOrigin(anonMsg(-100777), roster, HOUSE)
+    expect(o.memoryTrust).toBe('quarantined')
+    expect(o.anonymous).toBeUndefined()
+    expect(resolveOrigin(anonMsg(undefined), roster, HOUSE).memoryTrust).toBe('quarantined')
+  })
 })
 
 describe('allowedActions — the action↔origin policy', () => {
@@ -144,5 +176,15 @@ describe('scanSensitivity', () => {
   it('does not flag ordinary house chatter', () => {
     expect(scanSensitivity('we are out of oat milk').isSecure).toBe(false)
     expect(scanSensitivity('Marta arrives Friday, 5 nights').isSecure).toBe(false)
+  })
+
+  // I9: a question that mentions a secret is not a secret.
+  it('isSecretQuestion: a question naming a secret, never a statement of one', () => {
+    expect(isSecretQuestion("what's the wifi password again?", 'question')).toBe(true)
+    expect(isSecretQuestion('anyone know the door code', 'question')).toBe(true)
+    expect(isSecretQuestion("what's the wifi password again?", 'chatter')).toBe(true) // degraded verdict: the "?" backstop
+    expect(isSecretQuestion('the wifi password is hunter2', 'fact')).toBe(false)
+    expect(isSecretQuestion('wifi password is hunter2 now, ok?', 'fact')).toBe(false)
+    expect(isSecretQuestion('when do the bins go out?', 'question')).toBe(false) // no secret involved
   })
 })

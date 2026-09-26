@@ -42,6 +42,7 @@ vi.mock('@/lib/telegram/client', () => ({
   sendToHouse: (...a: unknown[]) => sendToHouse(...a),
   reactToMessage: (...a: unknown[]) => reactToMessage(...a),
   getBotUsername: async () => 'baumybot',
+  getBotId: async () => null,
   sendConfirmCard: async () => {},
 }))
 vi.mock('@/lib/ai/reply', async (importOriginal) => {

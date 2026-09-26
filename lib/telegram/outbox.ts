@@ -16,7 +16,7 @@ export interface OutboundMessage {
   kind: 'message' | 'confirm-card' | 'dm' | 'reaction' | 'edit' | 'callback-answer'
   chatId: string
   text: string | null
-  /** Set for reactions ('👀', '🧠', null = cleared) and for confirm cards (the action id). */
+  /** Set for reactions ('👀', '✍', null = cleared) and for confirm cards (the action id). */
   meta?: string | null
   at: Date
 }

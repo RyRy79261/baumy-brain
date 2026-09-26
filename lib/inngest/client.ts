@@ -18,7 +18,18 @@ type Events = {
       text: string | null
       isBot: boolean
       isForwarded: boolean
+      // COMPAT ONLY: "the replied-to author is SOME bot" — the pre-v2 coarse signal (C8). Ingest
+      // decides reply-to-Baumy from `replyToMessage` below and falls back to this only for an
+      // event enqueued by an older webhook (replyToMessage absent).
       replyToBot: boolean
+      // The message this one replies to (null = not a reply), from Telegram-authenticated fields.
+      // `fromId` is compared to Baumy's own bot id (C8); `isTopicRoot` marks the forum topic's
+      // creation service message, which Telegram sets as reply_to_message on EVERY message in a
+      // topic and must never count as a reply (C9); `text` is its text or caption (context only).
+      replyToMessage?: { fromId: number | null; isBot: boolean; text: string | null; isTopicRoot: boolean } | null
+      // message.sender_chat.id — an admin posting anonymously ("as the group") sends
+      // from=@GroupAnonymousBot with sender_chat = the house; that is house text, not bot content (I8).
+      senderChatId?: string | null
       // Forum-topic thread this message sits in (null = General / not a forum). Lets the owner point
       // reminders at a topic via /notifyhere, and lets a reply thread back into the right topic.
       messageThreadId?: number | null

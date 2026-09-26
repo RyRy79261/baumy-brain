@@ -45,3 +45,17 @@ export function scanSensitivity(text: string | null | undefined): SensitivityRes
   }
   return { isSecure: false, matched: -1, descriptor: '' }
 }
+
+// A QUESTION that merely mentions a secret ("what's the wifi password again?") is not a secret.
+// scanSensitivity is pattern-based, so capturing it stored the QUESTION encrypted under the
+// descriptor "the wifi password" — every repeat added another fake "secret", and at reply time
+// grounding decrypted them to "the wifi password: what's the wifi password again?", crowding out
+// the real value (I9). Such a message is NOT captured at all: storing it in plaintext instead
+// could leak a value embedded in the question ("is the wifi password still hunter2?").
+// `intent` is the classifier's; a trailing "?" is the deterministic backstop for a degraded verdict
+// (never overriding an explicit 'fact' — "wifi password is hunter2 now, ok?" is still a statement).
+export function isSecretQuestion(text: string | null | undefined, intent: string): boolean {
+  if (!text) return false
+  const asks = intent === 'question' || (intent !== 'fact' && /\?\s*$/.test(text.trim()))
+  return asks && scanSensitivity(text).isSecure
+}

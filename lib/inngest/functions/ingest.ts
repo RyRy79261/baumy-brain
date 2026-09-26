@@ -36,20 +36,25 @@ import { now } from '@/lib/core/clock'
 import { handleCommand } from '@/lib/identity/commands'
 import { decryptSecret } from '@/lib/core/crypto'
 import { loadResponsePolicy, replyAllowed } from '@/lib/policy'
-import { isDirectedAtBaumy } from '@/lib/pipeline/directed'
-import { sendToHouse, sendConfirmCard, getBotUsername, reactToMessage } from '@/lib/telegram/client'
+import { isDirectedAtBaumy, repliesToBaumy, stripBotMention } from '@/lib/pipeline/directed'
+import { isSecretQuestion } from '@/lib/core/sensitivity'
+import { NOTED } from '@/lib/turn/emoji'
+import { sendToHouse, sendConfirmCard, getBotUsername, getBotId, reactToMessage } from '@/lib/telegram/client'
 
 // A minimal structural view of the Inngest step tools — the handler only uses step.run.
 // Typed generically so every step.run<T> call site keeps its inferred return type.
 type IngestStep = { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> }
 
-// The reactive ingest pipeline (architecture D10): record-inbound → pre-filter →
-// origin (real roster) → member-DM commands OR classify → write-gate → act.
+// The reactive ingest pipeline (architecture D10): record-inbound → origin (real roster) →
+// directedness → pre-filter → commands OR classify → write-gate → act.
 // Exported as a plain function so a test can drive the WHOLE handler with a fake step and a
 // synthetic event — proving the routing/wiring end-to-end, not just the seams. The Inngest
 // wrapper below only forwards its context.
 export async function runIngest(event: { data: TelegramMessageData }, step: IngestStep) {
-    const { updateId, messageId, chatId, fromId, text, chatType, isBot, isForwarded, replyToBot } = event.data
+    const { updateId, messageId, chatId, fromId, chatType, isBot, isForwarded, replyToBot } = event.data
+    // The message exactly as sent — commands and directedness read THIS. Everything Baumy reasons
+    // over (classify / capture / retrieval / extraction) reads `text` below, the @mention stripped.
+    const rawText = event.data.text ?? ''
     const messageThreadId = event.data.messageThreadId ?? null
     // Prefer the human name (first[+last]); fall back to @username. Backfills members
     // that were only ever seen as a raw id (so Baumy can attribute a name, not digits).
@@ -72,20 +77,28 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
       await db.insert(telegramUpdates).values({ updateId, chatId }).onConflictDoNothing()
       // Register under the stable SCOPE id (not the inbound chat) so a post-migration supergroup
       // message still writes its member/chat rows to the original scope, never a new orphan group.
-      if (acceptIds.includes(chatId)) await ensureRegistered(db, houseChatId, fromId, fromName)
+      // A BOT sender (GroupAnonymousBot for an anonymous admin, a poll bot) is never registered as
+      // a housemate (I8) — only the chat row is ensured.
+      if (acceptIds.includes(chatId)) await ensureRegistered(db, houseChatId, isBot ? null : fromId, isBot ? null : fromName)
     })
 
-    const pf = prefilter(text)
-    if (!pf.keep) return { updateId, decision: 'drop' as const, reason: pf.reason }
+    if (!rawText.trim()) return { updateId, decision: 'drop' as const, reason: 'empty' as const }
 
     // Real roster (fail-closed) + deterministic origin — before any LLM call.
     const roster = await loadRoster(createHttpDb())
     const origin = resolveOriginParts(
-      { chatId, fromId, text: text ?? null, isPrivate: chatType === 'private', isBot, isForwarded },
+      { chatId, fromId, text: rawText, isPrivate: chatType === 'private', isBot, isForwarded, senderChatId: event.data.senderChatId ?? null },
       roster,
       houseChatId,
       acceptIds,
     )
+    // Out of scope (a foreign group, an unknown DM sender) → nothing at all, BEFORE any branch that
+    // can reply. The report commands used to run ahead of this check and post house memory into
+    // any group a housemate typed /guests in (A12).
+    if (origin.lane === 'ignore') return { updateId, decision: 'drop' as const, reason: 'out-of-scope' }
+    // Who the words are attributed to: the authenticated sender — never for quarantined content,
+    // and never the shared GroupAnonymousBot identity behind an anonymous-admin post (I8).
+    const authorId = origin.memoryTrust === 'quarantined' || origin.anonymous || fromId == null ? null : String(fromId)
     // The house whose SHARED memory this message reads/writes — the SCOPE, distinct from the
     // reply DESTINATION (chatId). In the house group they're equal; in a member DM the scope is
     // still the house (so a DM query grounds on house memory and a DM fact writes THROUGH to it)
@@ -99,11 +112,30 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     const houseThreadId = origin.lane === 'house' ? (messageThreadId ?? undefined) : undefined
     const sayHouse = (body: string, opts?: { silent?: boolean }) => sendToHouse(chatId, body, { ...opts, threadId: houseThreadId })
 
+    // "Directed at Baumy" uses the bot's REAL @username and id (getMe, cached), not a guess. A reply
+    // counts only when the replied-to author IS Baumy (C8) and it isn't the forum topic-root service
+    // message (C9). A message in the dedicated ask-Baumy topic counts as directed too — that's what
+    // makes Baumy fully conversational there (answer without an @mention). This only affects
+    // VERBOSITY, never trust: every input is a Telegram-authenticated field; the text stays untrusted.
+    // Computed BEFORE the noise pre-filter, so "yes" answering Baumy is never dropped as noise (C7).
+    const botUsername = await getBotUsername()
+    const replyTo = event.data.replyToMessage
+    const needsBotId = replyTo != null && !replyTo.isTopicRoot && replyTo.isBot
+    const replyToBaumy = repliesToBaumy(replyTo, needsBotId ? await getBotId() : null, replyToBot === true)
+    const inConsoleTopic = origin.lane === 'house' && consoleThreadId != null && messageThreadId === consoleThreadId
+    const directed = inConsoleTopic || isDirectedAtBaumy(rawText, replyToBaumy, botUsername)
+    // What Baumy reasons over: the @mention stripped (C12) — directedness above already used it.
+    const text = stripBotMention(rawText, botUsername)
+
+    const pf = prefilter(text, { directed, dm: origin.lane === 'member_dm' })
+    if (!pf.keep) return { updateId, decision: 'drop' as const, reason: pf.reason }
+
     // Bug/feature report (/bug, /feature) → enrich into a clean GitHub
     // issue and file it on a confirm tap. Explicit slash command, works in the house group
-    // OR a member DM, from an authenticated house member only. Runs before the DM-command
-    // path (so /bug in a DM isn't "Unknown command") and independent of the pause switch.
-    const report = parseReportCommand(text ?? '')
+    // OR a member DM (the lane check above already dropped every other chat — A12), from an
+    // authenticated house member only. Runs before the DM-command path (so /bug in a DM isn't
+    // "Unknown command") and independent of the pause switch.
+    const report = parseReportCommand(rawText)
     if (report && fromId != null && roster.isMember(fromId)) {
       await step.run('report', async () => {
         const db = createHttpDb()
@@ -132,24 +164,27 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
 
     // House reports (/weekly, /guests) → post a memory-grounded report. Read-only, no
     // confirm, works in the house group OR a member DM, from a member. Independent of pause.
-    const reportView = parseHouseReport(text ?? '')
+    const reportView = parseHouseReport(rawText)
     if (reportView && fromId != null && roster.isMember(fromId)) {
       await step.run('house-report', async () => {
         const db = createHttpDb()
         await reactToMessage(chatId, messageId, '👀') // seen — putting it together
-        // READ scope is always the house group (all memory/facts are keyed there) — in a
+        // READ scope is always the house (houseScope — all memory/facts are keyed there); in a
         // member DM, chatId is the private chat, which holds nothing. Reply to chatId.
-        const scope = houseChatId || chatId
-        const md =
-          reportView === 'guests'
-            ? await guestReport(db, scope)
-            : reportView === 'reminders'
-              ? await upcomingRemindersReport(db, scope, houseTz())
-              : reportView === 'recent'
-                ? await recentLearningsReport(db, scope)
-                : await weeklyReport(db, scope)
-        await sayHouse(md)
-        await reactToMessage(chatId, messageId, null)
+        try {
+          const md =
+            reportView === 'guests'
+              ? await guestReport(db, houseScope)
+              : reportView === 'reminders'
+                ? await upcomingRemindersReport(db, houseScope, houseTz())
+                : reportView === 'recent'
+                  ? await recentLearningsReport(db, houseScope)
+                  : await weeklyReport(db, houseScope)
+          await sayHouse(md)
+        } finally {
+          // A transient model error rethrows (I2) so the step retries — never strand the 👀.
+          await reactToMessage(chatId, messageId, null)
+        }
       })
       return { updateId, decision: 'report-view' as const }
     }
@@ -159,7 +194,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     // authenticated message_thread_id, NEVER message text (injection wall intact). Auto-commits at
     // the capture tier: it only routes low-privilege reminder posts to a topic WITHIN the fixed house
     // group (no exfiltration surface — same spirit as reminders/list being confirm-exempt). Audited.
-    const notify = parseNotifyCommand(text ?? '')
+    const notify = parseNotifyCommand(rawText)
     if (notify && origin.lane === 'house' && fromId != null && roster.isOwner(fromId)) {
       await step.run('notify-config', async () => {
         const db = createHttpDb()
@@ -185,7 +220,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     // Same guarantees as /notifyhere: identity = authenticated owner id, value = authenticated
     // message_thread_id, never text. Auto-commit config; it only widens VERBOSITY in that topic (Baumy
     // answers freely there) — it grants NO trust or privilege, so the injection wall is untouched. Audited.
-    const console_ = parseConsoleCommand(text ?? '')
+    const console_ = parseConsoleCommand(rawText)
     if (console_ && origin.lane === 'house' && fromId != null && roster.isOwner(fromId)) {
       await step.run('console-config', async () => {
         const db = createHttpDb()
@@ -211,57 +246,64 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     }
 
     // Member-DM commands (house-management). Deterministic; no classify/LLM.
-    if (origin.lane === 'member_dm' && (text ?? '').trim().startsWith('/')) {
-      await step.run('command', async () => handleCommand(origin, text ?? ''))
+    if (origin.lane === 'member_dm' && rawText.trim().startsWith('/')) {
+      await step.run('command', async () => handleCommand(origin, rawText))
       return { updateId, decision: 'command' as const }
     }
-    if (origin.lane === 'ignore') return { updateId, decision: 'drop' as const, reason: 'out-of-scope' }
+    // Any OTHER slash command in the house group (/pause, /help, /start, a non-owner /notifyhere…)
+    // is ignored outright (I7): never classified, captured or answered. Otherwise "/pause" typed in
+    // the group was filed as a memory and could get a conversational reply claiming to have paused.
+    if (origin.lane === 'house' && /^\/[A-Za-z0-9_]+(?:@\w+)?(?:\s|$)/.test(rawText.trim())) {
+      return { updateId, decision: 'drop' as const, reason: 'unknown-command' as const }
+    }
 
     // Cheap nano classify (memoized) → write-gate decision.
-    const verdict = (await step.run('classify', async () => classify(text ?? ''))) as ClassifierVerdict
+    const verdict = (await step.run('classify', async () => classify(text))) as ClassifierVerdict
     const decision = decide(origin, verdict)
-
-    // "Directed at Baumy" uses the bot's REAL @username (getMe, cached), not a guess. A message in the
-    // dedicated ask-Baumy topic counts as directed too — that's what makes Baumy fully conversational
-    // there (answer without an @mention). This only affects VERBOSITY, never trust: the topic id is a
-    // Telegram-authenticated field and the message is still untrusted house text.
-    const inConsoleTopic = origin.lane === 'house' && consoleThreadId != null && messageThreadId === consoleThreadId
-    const directed = inConsoleTopic || isDirectedAtBaumy(text ?? null, replyToBot === true, await getBotUsername())
 
     // Capture (evidence + facts) — ORTHOGONAL to the reply/reminder/task action, so a
     // reminder that also states a fact ("Zuzana arrives 10pm, staying in my room") is
     // still remembered (previously it was silently forgotten). Returns whether a durable
-    // FACT was learned (add/update) — that earns a 🧠 acknowledgement below.
+    // FACT was learned (add/update) — that earns a ✍ acknowledgement below.
     let learnedFact = false
     // Never capture a "forget X" request — storing "delete Madeleine Goujon" would just
     // re-add the very thing being deleted. The forget flow handles it below instead.
-    // `worthCapturing` (an evidence note was stored) drives the 🧠 "noted it" acknowledgement
+    // `worthCapturing` (an evidence note was stored) drives the ✍ "noted it" acknowledgement
     // below even when no structured {subject,predicate,object} fact was distilled — an
     // informative statement Baumy files away is still "remembered", not something to 👍.
-    const worthCapturing = shouldCapture(origin, verdict) && verdict.intent !== 'forget'
+    // A QUESTION that mentions a secret ("what's the wifi password?") is never captured — it would
+    // be stored as a fake encrypted "secret" that later grounds replies as the password (I9).
+    const worthCapturing = shouldCapture(origin, verdict) && verdict.intent !== 'forget' && !isSecretQuestion(text, verdict.intent)
     if (worthCapturing) {
-      learnedFact = (await step.run('capture', async () => {
+      // Never attribute quarantined (forwarded/bot) content — or an anonymous admin — to a housemate.
+      const authoredBy = authorId
+      // The evidence note and the fact extraction are SEPARATE memoized steps: extraction calls the
+      // model and a transient error there now rethrows (I2) so Inngest retries — splitting them means
+      // the retry re-runs ONLY the extraction, never re-stores the note (a secure note skips
+      // consolidation, so a re-run capture would have duplicated it).
+      const memoryItemId = (await step.run('capture', async () => {
         const db = createHttpDb()
-        // Never attribute quarantined (forwarded/bot) content to a housemate.
-        const authoredBy = origin.memoryTrust === 'quarantined' || fromId == null ? null : String(fromId)
         // Salience from the classifier signal (no extra LLM call): durable facts matter
         // most, reminders/tasks next, questions middling, chatter least (memory v2 §5).
         const salience =
           verdict.intent === 'fact' ? 0.85 : verdict.intent === 'reminder' || verdict.intent === 'task' ? 0.7 : verdict.intent === 'question' ? 0.5 : 0.35
-        const memoryItemId = await captureMemory(
+        return captureMemory(
           // Scope = the house (houseScope), NOT the inbound chat: a member DM writes THROUGH to
           // shared house memory (a private "boiler code is 1234" updates the house), and never
           // to a dead private-chat silo. In the house lane houseScope === chatId (no change).
-          { groupId: houseScope, content: text ?? '', memoryType: verdict.intent, authoredBy, trustLevel: origin.memoryTrust, salience },
+          { groupId: houseScope, content: text, memoryType: verdict.intent, authoredBy, trustLevel: origin.memoryTrust, salience },
           { db },
         )
-        // M2: distil structured facts + trust-gated reconcile into the knowledge
-        // graph. Quarantined content never writes a fact (injection wall). The
-        // speaker's name lets first-person references resolve ("my room" → their room).
-        let learned = false
-        if (origin.memoryTrust !== 'quarantined') {
+      })) as string
+      // M2: distil structured facts + trust-gated reconcile into the knowledge
+      // graph. Quarantined content never writes a fact (injection wall). The
+      // speaker's name lets first-person references resolve ("my room" → their room).
+      if (origin.memoryTrust !== 'quarantined') {
+        learnedFact = (await step.run('extract-facts', async () => {
+          const db = createHttpDb()
+          let learned = false
           const speaker = authoredBy ? ((await memberDisplayNames(db)).get(authoredBy) ?? null) : null
-          const { facts } = await extractFacts(text ?? '', speaker)
+          const { facts } = await extractFacts(text, speaker)
           for (const f of facts) {
             // Resolve a dated fact's time phrase to an absolute event_at NOW, while "tomorrow" is
             // still unambiguous (it can't be resolved later at scan time). Non-dated / unparseable
@@ -276,9 +318,9 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
           }
           // Tag this note with the person it's about (memory v2 §3) — attributed, never scored.
           await tagMemoryAboutPerson(db, houseScope, memoryItemId, facts)
-        }
-        return learned
-      })) as boolean
+          return learned
+        })) as boolean
+      }
     }
 
     // House shopping list (docs/spec/shopping-list.md): a member adds items / checks them off /
@@ -302,7 +344,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         | { handled: true; op: 'checkoff'; dm: boolean; checkedOff: string[]; notFound: string[] }
       const mut: ListMutation = await step.run('list', async (): Promise<ListMutation> => {
         const db = createHttpDb()
-        const ex = await extractListOp(text ?? '')
+        const ex = await extractListOp(text)
         if (ex.op === 'none') return { handled: false } // classifier over-flagged → fall through
         if ((ex.op === 'add' || ex.op === 'checkoff') && ex.items.length === 0) return { handled: false }
         // Destination belt: exactly the two TRANSPORT-authenticated targets — the house group, or
@@ -312,7 +354,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         if (!isHouseReply && !isDmReply) return { handled: false }
         // Attribution = the AUTHENTICATED sender, never a name in the text (quarantine already
         // excluded by the gate; keep the null-safety in lockstep with the capture step).
-        const actor = origin.memoryTrust === 'quarantined' || fromId == null ? null : String(fromId)
+        const actor = authorId
         const dm = origin.lane === 'member_dm'
         if (ex.op === 'query') return { handled: true, op: 'query' }
         if (ex.op === 'add') {
@@ -325,12 +367,28 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
 
       if (mut.handled) {
         // Group add/check-off → a quiet reaction (don't add to the scroll — the point of the DM
-        // lane). Idempotent, and the mutation memoized above, so a retry never re-mutates.
-        // 🧠 = learned what to buy; 👍 = got it / done.
-        if ((mut.op === 'add' || mut.op === 'checkoff') && !mut.dm) {
-          await reactToMessage(chatId, messageId, mut.op === 'add' ? '🧠' : '👍')
+        // lane), chosen from the STORE OUTCOME, never the op alone (K4): a 👍 on a check-off that
+        // matched nothing told the house the milk was bought while it stayed on the list.
+        //   add:      something new went on → ✍ (noted);  all of it was already there → 👀 (seen,
+        //             nothing new — the list is already right, so no words needed).
+        //   checkoff: everything named was ticked → 👍 (done);  anything NOT found → WORDS
+        //             (checkoffAck: what was ticked, what wasn't on the list, what's left) — a
+        //             miss is information an emoji can't carry, and silence lets someone buy twice.
+        // Idempotent, and the mutation memoized above, so a retry never re-mutates.
+        const groupReaction =
+          mut.op === 'query' || mut.dm
+            ? null
+            : mut.op === 'add'
+              ? mut.added.length > 0
+                ? NOTED
+                : '👀'
+              : mut.notFound.length === 0 && mut.checkedOff.length > 0
+                ? '👍'
+                : null
+        if (groupReaction) {
+          await reactToMessage(chatId, messageId, groupReaction)
         } else {
-          // WORDS (a query either lane, or a DM add/check-off): render the current list + ack and
+          // WORDS (a query either lane, a DM add/check-off, or a group check-off that missed): render the current list + ack and
           // send exactly-once. currentList is an IDEMPOTENT read — if it or the send throws, only
           // THIS step re-runs; the memoized mutation is never recomputed, so the ack stays true.
           // Claim/send/release-on-error mirrors the reply path (one send per inbound).
@@ -363,7 +421,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     if (decision === 'reminder' && policy.global_enabled) {
       reminderSet = await step.run('reminder', async () => {
         const db = createHttpDb()
-        const ex = await extractReminder(text ?? '')
+        const ex = await extractReminder(text)
         if (!ex.isReminder || !ex.content.trim()) return false // empty content would post a bare "⏰"
         const parsed = parseWhen(ex.whenText, houseTz(), DateTime.fromJSDate(now())) // resolve "9am" in the house timezone
         if (!parsed) return false
@@ -373,7 +431,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
           content: ex.content,
           // Fire near the requested time, but never in the 02:00–06:00 dead zone (no 3am pings).
           fireAt: clampToWakingHours(parsed.fireAt, houseTz()),
-          createdBy: fromId != null ? String(fromId) : null,
+          createdBy: authorId,
         })
         // Best-effort arm; the sweeper backstops delivery, so a hand-off failure
         // here never retries the step into a duplicate reminder.
@@ -400,11 +458,11 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     // A member DM is addressed TO Baumy: answer any question / ask / forget with WORDS, privately.
     // A direct 1:1 ask bypasses the GROUP noise filters (confidence floor, muted topics) — those
     // exist to spare the group, not to gate a question someone typed straight to Baumy. A DM that
-    // is a plain statement (a fact to remember) is NOT a wantAnswer — it captures + gets a 🧠 ack.
+    // is a plain statement (a fact to remember) is NOT a wantAnswer — it captures + gets a ✍ ack.
     const wantAnswer = isDm
       ? decision === 'forget' || verdict.respond === 'answer' || verdict.intent === 'question' || directed
       : houseCanSpeak &&
-        (directed || decision === 'forget' || (verdict.respond === 'answer' && replyAllowed(policy, verdict.confidence, text ?? '')))
+        (directed || decision === 'forget' || (verdict.respond === 'answer' && replyAllowed(policy, verdict.confidence, text)))
 
     if (wantAnswer) {
       await step.run('reply', async () => {
@@ -435,8 +493,8 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         // the confirm button — functions/callback.ts). The LLM only describes what to
         // forget; this code resolves it to concrete rows for the human to review.
         if (decision === 'forget') {
-          const speaker = fromId != null ? ((await memberDisplayNames(db)).get(String(fromId)) ?? null) : null
-          const ex = await extractForget(text ?? '', speaker)
+          const speaker = authorId ? ((await memberDisplayNames(db)).get(authorId) ?? null) : null
+          const ex = await extractForget(text, speaker)
           if (ex.isForget) {
             const matches = await findMemoryToForget(db, houseScope, { values: ex.values, subject: ex.subject, attribute: ex.attribute })
             await reactToMessage(chatId, messageId, null)
@@ -467,7 +525,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
                 aliasHits: matches.aliasHits,
                 summary: ex.values.join(', ') || [ex.subject, ex.attribute].filter(Boolean).join(' ') || 'that',
               },
-              requestedBy: fromId != null ? String(fromId) : null,
+              requestedBy: authorId,
             })
             const lines: string[] = matches.facts.map((c) => `• ${c.label}`)
             if (mode === 'purge') {
@@ -491,22 +549,22 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         if (deep) {
           let expansions: string[] = []
           try {
-            expansions = await expandQuery(text ?? '')
+            expansions = await expandQuery(text)
           } catch {
             /* fall back to the raw query */
           }
           memories = expansions.length
-            ? await retrieveExpanded(text ?? '', expansions, { groupId: houseScope, k: 30, floor: 0.05 }, { db })
-            : await retrieve(text ?? '', { groupId: houseScope, k: 30, floor: 0.05 }, { db })
+            ? await retrieveExpanded(text, expansions, { groupId: houseScope, k: 30, floor: 0.05 }, { db })
+            : await retrieve(text, { groupId: houseScope, k: 30, floor: 0.05 }, { db })
           try {
-            memories = await rerank(text ?? '', memories)
+            memories = await rerank(text, memories)
           } catch {
             /* keep the fusion order */
           }
         } else {
-          memories = await retrieve(text ?? '', { groupId: houseScope, k: 8, floor: 0.2 }, { db })
+          memories = await retrieve(text, { groupId: houseScope, k: 8, floor: 0.2 }, { db })
         }
-        const factHits = await currentFactsForQuery(db, houseScope, text ?? '', deep ? 15 : 5)
+        const factHits = await currentFactsForQuery(db, houseScope, text, deep ? 15 : 5)
         // Deep tier: WALK the fact graph from the query's entities — cross-subject connections
         // ("Charl's sister → the cave") + the top subject's full timeline — so a multi-hop
         // question reaches knowledge no single lookup returns. Best-effort enrichment: any error
@@ -514,7 +572,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         let graphItems: GraphContextItem[] = []
         if (deep) {
           try {
-            graphItems = await gatherGraphContext(db, houseScope, text ?? '')
+            graphItems = await gatherGraphContext(db, houseScope, text)
           } catch {
             /* graph traversal is enrichment only — never fail the reply on it */
           }
@@ -555,7 +613,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
         // receive decrypted secrets — feed it the non-secret memory only (pre-decrypt
         // `combined`, secure rows dropped), so a "google my wifi password" can't leak it.
         if (verdict.webSearch) {
-          const ws = await webSearchAnswer(text ?? '', combined.filter((m) => !m.isSecure))
+          const ws = await webSearchAnswer(text, combined.filter((m) => !m.isSecure))
           if (ws.searched && ws.text) {
             await sayHouse(ws.text)
             await reactToMessage(chatId, messageId, null) // 👀 → gone; the words are the reply
@@ -563,7 +621,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
           }
         }
         // Always starts on Sonnet; the model self-escalates to Opus only if it needs to.
-        const { text: reply, answered } = await answer(text ?? '', grounding)
+        const { text: reply, answered } = await answer(text, grounding)
         // Graduated honest-miss: send WORDS when it answered, or when the miss is
         // itself informative (grounding was blank → "we've never mentioned that"). A bare
         // 👎 is only for an AMBIENT miss (adjacent-but-unhelpful memory) — a message that
@@ -584,13 +642,14 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     } else if (canSpeak && (learnedFact || verdict.respond === 'react')) {
       // ONE acknowledgement for a statement/mention (Baumy wasn't told to DO anything), in order:
       //   • a genuine vibe the classifier felt (🔥 / 🎉 / 🤯) — real emotion, let it through;
-      //   • else if Baumy LEARNED something (a durable fact OR an informative note it stored) → 🧠;
+      //   • else if Baumy LEARNED something (a durable fact OR an informative note it stored) → ✍;
       //   • else 👀 "seen it" — it noticed the message but there was nothing new to file away.
       // Never 👍 here: a thumbs-up on a bare statement reads as "agreeing to" something Baumy is
-      // only noticing or remembering. 👍 means "I'll do it", 🧠 means "I learned it", 👀 means "I saw it".
+      // only noticing or remembering. 👍 means "I'll do it", ✍ means "noted", 👀 means "I saw it".
+      // (✍, not the old brain emoji: that is not a Bot API reaction and never rendered — K1, lib/turn/emoji.ts.)
       const vibe = verdict.respond === 'react' && verdict.reaction && verdict.reaction !== '👍' ? verdict.reaction : null
       const remembered = learnedFact || worthCapturing
-      await reactToMessage(chatId, messageId, vibe ?? (remembered ? '🧠' : '👀'))
+      await reactToMessage(chatId, messageId, vibe ?? (remembered ? NOTED : '👀'))
     }
 
     return { updateId, decision, directed, respond: verdict.respond, reminderSet, source: origin.source }

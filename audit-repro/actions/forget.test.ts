@@ -1,7 +1,7 @@
 // AUDIT REPRO (action flows: forget + confirm-tap). A PASSING test == the finding is confirmed
 // (each asserts the CURRENT, buggy behaviour). Offline: PGlite + embedSync; Telegram mocked.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { and, eq } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { facts, houseConfig } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
@@ -10,32 +10,15 @@ import { embedSync } from '@/lib/ai/embed'
 import { reconcileFact } from '@/lib/memory/facts'
 import { findMemoryToForget, forgetMemory } from '@/lib/memory/forget'
 import { retrieve } from '@/lib/memory/retrieve'
-import { createPendingAction } from '@/lib/confirm/store'
 
 const dbh: { db: any } = { db: null }
-const answerCallback = vi.fn(async (..._a: unknown[]) => {})
-const editMessageText = vi.fn(async (..._a: unknown[]) => {})
-
 vi.mock('@/db/client', async (o) => ({ ...(await o<typeof import('@/db/client')>()), createHttpDb: () => dbh.db }))
-vi.mock('@/lib/telegram/client', () => ({
-  answerCallback: (...a: unknown[]) => answerCallback(...a),
-  editMessageText: (...a: unknown[]) => editMessageText(...a),
-}))
-// Make inngest.createFunction hand back the raw handler so the test can invoke it directly.
-vi.mock('@/lib/inngest/client', async (o) => {
-  const actual = await o<typeof import('@/lib/inngest/client')>()
-  return { ...actual, inngest: { ...actual.inngest, createFunction: (_a: unknown, _b: unknown, h: unknown) => h } }
-})
 
-const { handleCallbackQuery } = (await import('@/lib/inngest/functions/callback')) as unknown as {
-  handleCallbackQuery: (ctx: { event: { data: Record<string, unknown> }; step: unknown }) => Promise<Record<string, unknown>>
-}
+// (The confirm-tap-scope suite — A1 — is fixed: see lib/inngest/functions/__tests__/callback.test.ts.)
 
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64')
 const HOUSE = '-100actforget'
 const CHARLI = 777
-const CHARLI_DM = String(CHARLI)
-const step = { run: (_id: string, fn: () => Promise<unknown>) => fn() }
 const emb = async (t: string) => embedSync(t)
 
 beforeEach(async () => {
@@ -44,8 +27,6 @@ beforeEach(async () => {
   await ensureRegistered(dbh.db, HOUSE, null)
   await dbh.db.insert(houseConfig).values({ id: true, houseGroupChatId: HOUSE }).onConflictDoNothing()
   await upsertMember(dbh.db, HOUSE, String(CHARLI), 'Charli', 'owner')
-  answerCallback.mockClear()
-  editMessageText.mockClear()
 })
 
 async function seedZuzkaFact() {
@@ -58,39 +39,6 @@ async function seedZuzkaFact() {
   const [f] = await dbh.db.select().from(facts).where(eq(facts.groupId, HOUSE))
   return f
 }
-
-describe('forget confirm-tap executes against the TAPPED chat, not the house scope', () => {
-  it('DM forget: card proposed with groupId=house, but the tap runs forgetMemory(chatId=DM) → 0 rows, fact still current, "Forgotten — 0 facts"', async () => {
-    const f = await seedZuzkaFact()
-    // What ingest.ts:459-471 stores for a DM forget: scope = house.
-    const pid = await createPendingAction(dbh.db, {
-      groupId: HOUSE,
-      actionType: 'memory.forget',
-      payload: { mode: 'soft', factIds: [f.id], scrubValues: [], noteIds: [], aliasHits: [], summary: 'zuzka staying' },
-      requestedBy: String(CHARLI),
-    })
-    // Charli taps ✅ on the card Baumy sent into her DM (webhook sets chatId = cq.message.chat.id = her DM).
-    const res = await handleCallbackQuery({ event: { data: { callbackId: 'cb1', fromId: CHARLI, chatId: CHARLI_DM, messageId: 5, data: `c:${pid}` } }, step })
-    expect(res.forgot).toBe(0)
-    const [after] = await dbh.db.select().from(facts).where(eq(facts.id, f.id))
-    expect(after.isCurrent).toBe(true) // NOT forgotten
-    expect(String(editMessageText.mock.calls.at(-1)?.[2])).toContain('Forgotten — 0 facts') // user told it worked
-  })
-
-  it('post-supergroup-migration: tap in the live -100… chat (≠ scope id) also forgets nothing', async () => {
-    const f = await seedZuzkaFact()
-    const pid = await createPendingAction(dbh.db, {
-      groupId: HOUSE,
-      actionType: 'memory.forget',
-      payload: { mode: 'soft', factIds: [f.id], scrubValues: [], noteIds: [], aliasHits: [], summary: 'x' },
-      requestedBy: String(CHARLI),
-    })
-    const res = await handleCallbackQuery({ event: { data: { callbackId: 'cb2', fromId: CHARLI, chatId: '-1009999live', messageId: 6, data: `c:${pid}` } }, step })
-    expect(res.forgot).toBe(0)
-    const [after] = await dbh.db.select().from(facts).where(eq(facts.id, f.id))
-    expect(after.isCurrent).toBe(true)
-  })
-})
 
 describe('forget resolution / soft mode gaps', () => {
   it('"forget Zuzka" (value = the name) never matches facts whose SUBJECT is Zuzka — only object values are searched', async () => {

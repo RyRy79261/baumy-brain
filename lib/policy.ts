@@ -8,7 +8,7 @@ import { houseConfig } from '@/db/schema'
 // How readily Baumy VOLUNTEERS a worded reply in the group. Baumy's whole point is to
 // remember without polluting the chat, so this tunes the confidence bar an *unaddressed*
 // message must clear to earn words — a direct @mention/reply always answers regardless.
-// A reaction (🧠/👀/…) is never gated by this: it's cheap and doesn't pollute.
+// A reaction (✍/👀/…) is never gated by this: it's cheap and doesn't pollute.
 export type ReplyFrequency = 'quiet' | 'balanced' | 'chatty'
 // The confidence floor per level. 'balanced' == the historical 0.7 default, so existing
 // houses are unchanged. 'quiet' only speaks when it's clearly meaningful new information;
@@ -120,7 +120,17 @@ export async function removeMutedTopic(db: Database, topic: string): Promise<voi
 export function replyAllowed(policy: ResponsePolicy, confidence: number, text: string): boolean {
   if (!policy.global_enabled) return false
   if (!(confidence >= replyConfidenceFloor(policy))) return false
-  const t = text.toLowerCase()
-  if (policy.muted_topics.some((m) => m && t.includes(m.toLowerCase()))) return false
+  if (policy.muted_topics.some((m) => mentionsTopic(text, m))) return false
   return true
+}
+
+// Does `text` mention the muted topic as a WHOLE word/phrase (I10)? A raw substring match made
+// "bin" also mute "cabinet" and "robin". Unicode-aware boundaries (letters/digits on either side
+// break the match), case-insensitive; a multi-word topic matches with any run of whitespace, and a
+// plain plural still counts ("bin" mutes "bins", not "binary").
+export function mentionsTopic(text: string, topic: string): boolean {
+  const m = topic.trim().toLowerCase()
+  if (!m) return false
+  const esc = m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+  return new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?:e?s)?(?![\\p{L}\\p{N}])`, 'iu').test(text)
 }

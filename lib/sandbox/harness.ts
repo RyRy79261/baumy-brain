@@ -10,6 +10,7 @@ import { upsertMember } from '@/lib/identity/roster'
 import { houseConfig } from '@/db/schema'
 import { withSimulatedTime } from '@/lib/core/clock'
 import { captureOutbound, type OutboundMessage } from '@/lib/telegram/outbox'
+import { SANDBOX_BOT_ID, SANDBOX_BOT_USERNAME } from '@/lib/telegram/client'
 
 // The sandbox (docs/spec/sandbox-console.md Phase 2): a disposable house you can talk to as
 // anyone, fast-forward, and watch.
@@ -87,19 +88,35 @@ export interface SendOptions {
   dm?: boolean
   /** Mark the message as forwarded — the quarantine path. */
   forwarded?: boolean
-  /** Mark it as a reply to Baumy (makes it "directed"). */
+  /** @deprecated alias of `replyToBaumy: true`. */
   replyToBot?: boolean
+  /** Reply to one of BAUMY's messages (makes it "directed"). A string is the text of the Baumy
+   *  message being replied to (forwarded as context, like Telegram's reply_to_message). */
+  replyToBaumy?: boolean | string
+  /** Reply to someone else's message: a sandbox person (`who`), or a raw transport author (`fromId`
+   *  / `isBot`, e.g. another bot in the group — C8), optionally the forum topic-root service
+   *  message (`isTopicRoot` — C9: Telegram sets it on every message in a topic). */
+  replyTo?: { who?: string | number; fromId?: number | null; isBot?: boolean; text?: string | null; isTopicRoot?: boolean }
+  /** @-mention Baumy: prefixes the text with "@baumy_bot " (C12 — the token must never reach memory). */
+  mention?: boolean
+  /** Post as an anonymous group admin: from = @GroupAnonymousBot, sender_chat = the house (I8). */
+  anonymousAdmin?: boolean
+  /** Forum topic the message sits in (message_thread_id). */
+  threadId?: number
 }
+
+/** Telegram's fixed identity for anonymous-admin posts. */
+export const GROUP_ANONYMOUS_BOT_ID = 1087968824
 
 /**
  * Say something as one of the sandbox's people, at the current simulated time, and return
  * everything Baumy did in response.
  */
 export async function sendAs(sb: Sandbox, who: string | number, text: string, opts: SendOptions = {}): Promise<TranscriptEntry[]> {
-  const person = sb.people.find((p) => p.id === who || p.name.toLowerCase() === String(who).toLowerCase())
-  if (!person) throw new Error(`[sandbox] no such person: ${who}. Known: ${sb.people.map((p) => p.name).join(', ')}`)
+  const person = findPerson(sb, who)
 
   const updateId = sb.seq++
+  const anon = opts.anonymousAdmin === true && !opts.dm
   const event: { data: TelegramMessageData } = {
     data: {
       updateId,
@@ -108,14 +125,16 @@ export async function sendAs(sb: Sandbox, who: string | number, text: string, op
       // transport facts, exactly like Telegram would, and never asserts a trust level directly.
       chatId: opts.dm ? String(person.id) : sb.houseChatId,
       chatType: opts.dm ? 'private' : 'supergroup',
-      fromId: person.id,
-      fromFirstName: person.name,
+      fromId: anon ? GROUP_ANONYMOUS_BOT_ID : person.id,
+      fromFirstName: anon ? 'Group' : person.name,
       fromLastName: null,
-      fromUsername: null,
-      text,
-      isBot: false,
+      fromUsername: anon ? 'GroupAnonymousBot' : null,
+      text: opts.mention ? `@${SANDBOX_BOT_USERNAME} ${text}` : text,
+      messageThreadId: opts.dm ? null : (opts.threadId ?? null),
+      isBot: anon,
       isForwarded: opts.forwarded ?? false,
-      replyToBot: opts.replyToBot ?? false,
+      senderChatId: anon ? sb.houseChatId : null,
+      ...replyFields(sb, opts),
     },
   }
 
@@ -123,6 +142,33 @@ export async function sendAs(sb: Sandbox, who: string | number, text: string, op
   const entries = sent.map((m) => ({ ...m, cause: `${person.name}: ${text}` }))
   sb.transcript.push(...entries)
   return entries
+}
+
+function findPerson(sb: Sandbox, who: string | number): SandboxPerson {
+  const person = sb.people.find((p) => p.id === who || p.name.toLowerCase() === String(who).toLowerCase())
+  if (!person) throw new Error(`[sandbox] no such person: ${who}. Known: ${sb.people.map((p) => p.name).join(', ')}`)
+  return person
+}
+
+// The reply_to_message transport facts, exactly as the webhook forwards them (C8/C9).
+function replyFields(sb: Sandbox, opts: SendOptions): Pick<TelegramMessageData, 'replyToBot' | 'replyToMessage'> {
+  const toBaumy = opts.replyToBaumy ?? opts.replyToBot
+  if (toBaumy) {
+    return {
+      replyToBot: true,
+      replyToMessage: { fromId: SANDBOX_BOT_ID, isBot: true, text: typeof toBaumy === 'string' ? toBaumy : null, isTopicRoot: false },
+    }
+  }
+  if (opts.replyTo) {
+    const r = opts.replyTo
+    const target = r.who != null ? findPerson(sb, r.who) : null
+    const isBot = target ? false : (r.isBot ?? false)
+    return {
+      replyToBot: isBot,
+      replyToMessage: { fromId: target ? target.id : (r.fromId ?? null), isBot, text: r.text ?? null, isTopicRoot: r.isTopicRoot ?? false },
+    }
+  }
+  return { replyToBot: false, replyToMessage: null }
 }
 
 // The scheduled work, as (local time → core) pairs. This is the Inngest cron table restated for a

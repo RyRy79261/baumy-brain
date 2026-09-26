@@ -134,9 +134,9 @@ describe('Charli scenario — what the reply model actually receives', () => {
     expect(replyCalls()).toHaveLength(1)
     const p = replyCalls()[0].prompt
     assertCharliBug(p)
-    // the words go out (directed ⇒ always words even when answered=false) — the 🧠 ack is lost
+    // the words go out (directed ⇒ always words even when answered=false) — the ✍ ack is lost
     expect(sendToHouse).toHaveBeenCalledTimes(1)
-    expect(reactToMessage.mock.calls.map((c) => c[2])).not.toContain('🧠')
+    expect(reactToMessage.mock.calls.map((c) => c[2])).not.toContain('✍')
     // eslint-disable-next-line no-console
     console.log('\n===== (a) REPLY PROMPT =====\n' + p + '\n============================\n')
   })
@@ -147,7 +147,7 @@ describe('Charli scenario — what the reply model actually receives', () => {
     expect(res.directed).toBe(true)
     expect(replyCalls()).toHaveLength(1)
     assertCharliBug(replyCalls()[0].prompt)
-    expect(sendToHouse).toHaveBeenCalledTimes(1) // words, not 🧠
+    expect(sendToHouse).toHaveBeenCalledTimes(1) // words, not ✍
   })
 
   it('(b2) /baumyhere topic: Marco asking CHARLI a question is answered by Baumy', async () => {
@@ -159,7 +159,7 @@ describe('Charli scenario — what the reply model actually receives', () => {
   })
 
   it('(c) DM statement: the classifier is never told this is a DM; "answer" OR a reply-to-Baumy sends it to the reply path', async () => {
-    // Plain DM statement with the realistic react verdict → 🧠 only (no reply) — OK.
+    // Plain DM statement with the realistic react verdict → ✍ only (no reply) — OK.
     await runIngest(ev({ chatId: String(CHARLI), chatType: 'private' }), step)
     expect(replyCalls()).toHaveLength(0)
     const triage = calls.find((c) => c.system === TRIAGE_SYSTEM)!
@@ -171,7 +171,7 @@ describe('Charli scenario — what the reply model actually receives', () => {
     assertCharliBug(replyCalls()[0].prompt)
   })
 
-  it('(d) undirected group statement misread as respond=answer → reply model gets it as a QUESTION; answered=false ⇒ 👎 on an informative statement, 🧠 lost', async () => {
+  it('(d) undirected group statement misread as respond=answer → reply model gets it as a QUESTION; answered=false ⇒ 👎 on an informative statement, ✍ lost', async () => {
     triageVerdict = { ...STATEMENT, respond: 'answer', confidence: 0.9 }
     const res = await runIngest(ev({}), step)
     expect(res.directed).toBe(false)

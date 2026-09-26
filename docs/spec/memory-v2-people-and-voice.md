@@ -121,12 +121,14 @@ The **blank** state is what makes "how much it doesn't know" real: Baumy can tel
 | Signal | Means | Emitted by |
 |---|---|---|
 | 👀 | seen — checking memory (transient) | code |
-| 🧠 | **learned that, it's stored** — no reply needed | code (fires when `shouldCapture` captured a durable fact and it isn't otherwise replying) |
+| ✍ | **learned that, it's stored** — no reply needed | code (fires when `shouldCapture` captured a durable fact and it isn't otherwise replying) |
 | 👎 | asked, but I've got nothing on that | code (fires on the **blank** retrieval state) |
 | 👍 🔥 🎉 🤯 | social read — noted / hell yeah / party / wild | the model (vibe of the moment) |
 | **words** | only when it *knows*, the *blank is informative*, or it's *directly addressed* | code + model |
 
-**🧠 makes learning visible** — it fixes the "did Baumy actually remember that?" anxiety (the Zuzana incident): the house watches it capture in real time, zero scroll cost. The **functional signals (🧠/👎/👀) are deterministic**, emitted by code from what actually happened (a fact captured, retrieval empty, thinking); the **vibe reactions are the model's** read of the social moment. Reactions are *free* (participate liberally, no scroll); **words are earned** (only when they carry info) — this is the existing "emoji by default" voice, extended.
+> **Superseded (chat-understanding-v2 D5 / K1):** this was specified as 🧠, which is **not** a Bot API reaction — Telegram rejected it on every call, so it never rendered. The ack is ✍; the allowed set is `PLANNER_EMOJI` (`lib/turn/emoji.ts`, unit-tested against grammY's `ReactionTypeEmoji`).
+
+**✍ makes learning visible** — it fixes the "did Baumy actually remember that?" anxiety (the Zuzana incident): the house watches it capture in real time, zero scroll cost. The **functional signals (🧠/👎/👀) are deterministic**, emitted by code from what actually happened (a fact captured, retrieval empty, thinking); the **vibe reactions are the model's** read of the social moment. Reactions are *free* (participate liberally, no scroll); **words are earned** (only when they carry info) — this is the existing "emoji by default" voice, extended.
 
 > Note: `classify` currently emits a `reaction` enum `['👍','🔥','🎉','🤯']` (no 👎). 👎 and 🧠 are **not** added to that model-picked enum — they're emitted deterministically in the ingest VOICE section from the capture/retrieval outcome.
 

@@ -126,3 +126,19 @@ describe('recentLearningsReport (introspection — deterministic, secret-safe)',
     expect(await recentLearningsReport(db, GROUP)).toMatch(/haven't picked up|nothing/i)
   })
 })
+
+// I2: a transient provider error must propagate (the report step retries) — only unusable output
+// degrades to the deterministic fallback.
+describe('report model failures', () => {
+  it('a transient error rethrows; a malformed output degrades to the deterministic digest', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await captureMemory({ groupId: GROUP, content: 'the boiler got serviced', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' }, { db, embed })
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    genText.mockRejectedValueOnce(new Error('Overloaded'))
+    await expect(weeklyReport(db, GROUP)).rejects.toThrow('Overloaded')
+    genText.mockRejectedValueOnce(new Error('No object generated: response did not match schema'))
+    await expect(weeklyReport(db, GROUP)).resolves.not.toBe('REPORT OK')
+    err.mockRestore()
+  })
+})

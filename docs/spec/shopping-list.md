@@ -48,7 +48,9 @@ separately, because capture runs orthogonally, before the list op).
    handling (never crash-loops, never blackholes — MEMORY.md best-effort rule).
 4. **Dispose (code):** `addListItems` / `checkOffItems` / `currentList` (`lib/lists/store.ts`) run
    against the group-scoped table. Deterministic acks (`lib/lists/format.ts`) — DM → words, group →
-   a quiet 🧠 (add) / 👍 (check off) reaction.
+   a quiet reaction chosen from the **store outcome** (K4, chat-understanding-v2 §3): add → ✍ when
+   something new went on, 👀 when it was all already listed; check-off → 👍 only when everything named
+   was ticked, otherwise the `checkoffAck` words (what wasn't on the list, what's left).
 
 A fully-compromised model can at most return an op enum + item strings; it can never name the scope,
 the attribution, or a row id.

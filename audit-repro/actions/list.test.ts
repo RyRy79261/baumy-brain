@@ -5,8 +5,7 @@ import { and, eq } from 'drizzle-orm'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
-import { houseConfig, memoryItems, listItems } from '@/db/schema'
-import { addListItems } from '@/lib/lists/store'
+import { houseConfig, memoryItems } from '@/db/schema'
 import { TRIAGE_SYSTEM, EXTRACT_FACTS_SYSTEM, EXTRACT_LIST_SYSTEM, REPLY_SYSTEM } from '@/lib/ai/prompts'
 import type { ClassifierVerdict } from '@/lib/ai/classify'
 import type { TelegramMessageData } from '@/lib/inngest/client'
@@ -73,34 +72,14 @@ beforeEach(async () => {
 })
 
 describe('list early-return swallows the rest of the message', () => {
-  it('"@baumy add milk to the list — and what\'s the wifi password?" → milk added, 🧠, the question is never answered', async () => {
+  it('"@baumy add milk to the list — and what\'s the wifi password?" → milk added, ✍, the question is never answered', async () => {
     triage = V({ list: 'add', intent: 'question', needsReply: true, respond: 'answer' })
     listObj = { op: 'add', items: ['milk'] }
     const res = await runIngest(ev({ text: "@baumy_bot add milk to the list — and what's the wifi password?" }), step)
     expect(res.decision).toBe('list')
     expect(systems).not.toContain(REPLY_SYSTEM) // reply path never runs
     expect(sendToHouse).not.toHaveBeenCalled()
-    expect(reactToMessage.mock.calls.at(-1)?.[2]).toBe('🧠')
-  })
-})
-
-describe('group list reactions ignore the outcome', () => {
-  it('"got the bin bags" when bin bags were never on the list → 👍 anyway (notFound is discarded in the group)', async () => {
-    await addListItems(dbh.db, { groupId: HOUSE, items: ['milk'], addedBy: null })
-    triage = V({ list: 'checkoff' })
-    listObj = { op: 'checkoff', items: ['bin bags'] }
-    await runIngest(ev({ text: 'got the bin bags' }), step)
-    expect(reactToMessage.mock.calls.at(-1)?.[2]).toBe('👍')
-    expect(sendToHouse).not.toHaveBeenCalled()
-  })
-  it('"got the milk" extracted as "the milk" vs list "milk" → exact-normalized miss, still 👍, milk stays on the list', async () => {
-    await addListItems(dbh.db, { groupId: HOUSE, items: ['milk'], addedBy: null })
-    triage = V({ list: 'checkoff' })
-    listObj = { op: 'checkoff', items: ['the milk'] }
-    await runIngest(ev({ text: 'got the milk' }), step)
-    expect(reactToMessage.mock.calls.at(-1)?.[2]).toBe('👍')
-    const open = await dbh.db.select().from(listItems).where(and(eq(listItems.groupId, HOUSE)))
-    expect(open[0].checkedAt).toBeNull() // "the milk" ≠ "milk"
+    expect(reactToMessage.mock.calls.at(-1)?.[2]).toBe('✍') // K1 fixed the emoji; A10 (question dropped) is still open
   })
 })
 

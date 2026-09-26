@@ -10,11 +10,12 @@ import { currentFactsForQuery } from '@/lib/memory/facts'
 import { buildDigest } from '@/lib/reports/digest'
 import { houseToday } from '@/lib/core/clock'
 import { houseTz } from '@/lib/env'
+import { isMalformedObjectError } from '@/lib/ai/errors'
 
 // On-demand house reports (owner feature): a slash command generates a formatted report
 // from house memory. LLM-formatted (the data is free-form facts + notes) but grounded
-// STRICTLY in what's stored — never invents — and degrades to a deterministic list on any
-// model failure. Secure values + quarantined (forwarded/bot) content are excluded.
+// STRICTLY in what's stored — never invents — and degrades to a deterministic list when the
+// model's output is unusable. A transient provider error rethrows so the report step retries (I2). Secure values + quarantined (forwarded/bot) content are excluded.
 export type HouseReport = 'weekly' | 'guests' | 'reminders' | 'recent'
 
 // Detect a report slash command (/weekly, /guests, /reminders, /recent) at the start of a message.
@@ -32,7 +33,7 @@ function rowsOf(res: unknown): Record<string, unknown>[] {
 const fmtDate = (d: Date | string) => DateTime.fromJSDate(new Date(d)).setZone(houseTz()).toISODate() ?? '' // house-local date, not UTC
 
 // "What's been happening": recent notes + what's coming up (reminders), written as a short
-// friendly digest. Falls back to the deterministic buildDigest on any model failure.
+// friendly digest. Falls back to the deterministic buildDigest when the model's output is unusable.
 export async function weeklyReport(db: Database, groupId: string, now: Date = new Date()): Promise<string> {
   const horizon = new Date(now.getTime() + 14 * 86_400_000)
   const upcoming = await db
@@ -63,13 +64,14 @@ export async function weeklyReport(db: Database, groupId: string, now: Date = ne
     const t = text.trim()
     return t || (await buildDigest(db, groupId, now))
   } catch (err) {
-    console.error('weeklyReport: model failed — deterministic digest:', err)
+    if (!isMalformedObjectError(err)) throw err
+    console.error('weeklyReport: model output unusable — deterministic digest:', err)
     return buildDigest(db, groupId, now)
   }
 }
 
 // "Who's in which room over the next month": guest/room/stay facts + notes, assembled into
-// a room-by-room / person-by-person report. Falls back to the raw list on model failure.
+// a room-by-room / person-by-person report. Falls back to the raw list when the model's output is unusable.
 export async function guestReport(db: Database, groupId: string, now: Date = new Date()): Promise<string> {
   // Directly pull facts about staying / rooms / arrivals (the structured half).
   const stayFacts = rowsOf(
@@ -109,7 +111,8 @@ export async function guestReport(db: Database, groupId: string, now: Date = new
     })
     return text.trim() || `Here's what I've got on guests:\n${grounding}`
   } catch (err) {
-    console.error('guestReport: model failed — raw list:', err)
+    if (!isMalformedObjectError(err)) throw err
+    console.error('guestReport: model output unusable — raw list:', err)
     return `Here's what I've got on guests:\n${grounding}`
   }
 }

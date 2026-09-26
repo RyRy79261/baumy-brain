@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { sql } from 'drizzle-orm'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import type { ClassifierVerdict } from '@/lib/ai/classify'
-import { prefilter } from '@/lib/pipeline/prefilter'
 
 // AUDIT REPRO (spec-gap sweep): deterministic routing divergences from docs/spec.
 const dbh: { db: any } = { db: null }
@@ -48,15 +47,6 @@ describe('spec-gap: deterministic chat routing', () => {
     answerMock.mockResolvedValue({ text: 'ok!', answered: true })
     process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 13).toString('base64')
     delete process.env.BAUMY_HOUSE_CHAT_ID
-  })
-
-  it('A6: "yes"/"no" sent as a REPLY TO BAUMY is dropped by the prefilter before the directed check', async () => {
-    expect(prefilter('yes').keep).toBe(false)
-    expect(prefilter('no').keep).toBe(false)
-    const sb = await fresh()
-    const out = await sendAs(sb, 'Charli', 'yes', { replyToBot: true })
-    expect(out).toEqual([]) // Baumy asked e.g. "want me to remind the house?" — the answer vanishes
-    expect(classifyMock).not.toHaveBeenCalled()
   })
 
   it('D16 / spec telegram.md:47, llm-pipeline.md:696: an EDIT re-runs as a brand-new message (duplicate note + duplicate reply), no supersede', async () => {

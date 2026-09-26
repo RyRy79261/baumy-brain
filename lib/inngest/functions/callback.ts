@@ -1,6 +1,7 @@
 import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { loadRoster } from '@/lib/identity/roster'
+import { resolveHouseIds } from '@/lib/identity/house'
 import { resolvePendingAction } from '@/lib/confirm/store'
 import { forgetMemory, type ForgetMode, type AliasHit } from '@/lib/memory/forget'
 import { createIssue } from '@/lib/github/issues'
@@ -55,6 +56,18 @@ export const handleCallbackQuery = inngest.createFunction(
       // The TAP is the wall: the delete targets the exact fact ids + value strings resolved
       // at propose time (payload), scoped to this house, and runs only now. Facts are
       // removed; source messages are only surgically scrubbed on a purge, never deleted.
+      //
+      // SCOPE = the pending action's STORED groupId (the house scope ingest resolved from the
+      // authenticated lane at propose time) — NEVER the chat the button was tapped in (A1). A
+      // card DMed to a member, or tapped in the migrated -100… supergroup, has a chatId that
+      // owns no memory rows, so scoping by it deleted nothing while reporting "Forgotten".
+      // Belt: the stored scope must still be THE house scope; otherwise fail closed.
+      const { scopeId } = await resolveHouseIds(db)
+      if (!scopeId || action.groupId !== scopeId) {
+        await answerCallback(callbackId, 'This no longer applies.')
+        if (messageId) await editMessageText(chatId, messageId, '✖️ Not applied — this card no longer matches the house.')
+        return { ignored: 'scope-mismatch' }
+      }
       const p = action.payload as {
         mode: ForgetMode
         factIds: string[]
@@ -64,7 +77,7 @@ export const handleCallbackQuery = inngest.createFunction(
         summary: string
       }
       const res = await step.run('forget', () =>
-        forgetMemory(db, chatId, {
+        forgetMemory(db, action.groupId, {
           factIds: p.factIds ?? [],
           scrubValues: p.scrubValues ?? [],
           noteIds: p.noteIds ?? [],

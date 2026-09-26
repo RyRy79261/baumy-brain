@@ -117,13 +117,13 @@ describe('E18 — reminder content loses WHO', () => {
 })
 
 describe('E19 — unparseable / missing time is dropped silently', () => {
-  it('"remind us when Zuzka lands" → no reminder, no follow-up question, just a 🧠', async () => {
+  it('"remind us when Zuzka lands" → no reminder, no follow-up question, just a ✍', async () => {
     reminderObj = { isReminder: true, whenText: 'when Zuzka lands', content: 'pick up Zuzka' }
     const res = await run(ev({ text: 'remind us to pick up Zuzka when she lands' }))
     expect(res.reminderSet).toBe(false)
     expect(await rows()).toHaveLength(0)
     expect(sendToHouse).not.toHaveBeenCalled()
-    expect(reactToMessage.mock.calls.at(-1)?.[2]).toBe('🧠') // reads as "noted", reminder never exists
+    expect(reactToMessage.mock.calls.at(-1)?.[2]).toBe('✍') // reads as "noted", reminder never exists (K1 fixed the emoji only)
   })
   it('no time at all ("remind us to buy a birthday card for Marco") → whenText "" → dropped silently', async () => {
     reminderObj = { isReminder: true, whenText: '', content: 'buy a birthday card for Marco' }

@@ -58,11 +58,11 @@ describe('extractFacts — speaker-aware (resolves first person)', () => {
     expect(gen).toHaveBeenCalledTimes(3)
   })
 
-  it('is BEST-EFFORT: keeps partial progress if a later page fails, never throws', async () => {
+  it('is BEST-EFFORT: keeps partial progress if a later page is MALFORMED, never throws', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
     gen
       .mockResolvedValueOnce({ object: { facts: facts('s', 12) } }) // full → probe
-      .mockRejectedValueOnce(new Error('model hiccup mid-pagination'))
+      .mockRejectedValueOnce(new Error('No object generated: response did not match schema'))
     const out = await extractFacts('dense then a hiccup')
     expect(out.facts).toHaveLength(12) // pass 1 kept despite pass 2 failing
     err.mockRestore()
@@ -73,5 +73,10 @@ describe('extractFacts — speaker-aware (resolves first person)', () => {
     gen.mockRejectedValueOnce(new Error('schema mismatch / model hiccup'))
     await expect(extractFacts('anything at all')).resolves.toEqual({ facts: [] })
     err.mockRestore()
+  })
+
+  it('a TRANSIENT error mid-pagination rethrows (the capture step retries from scratch — I2)', async () => {
+    gen.mockResolvedValueOnce({ object: { facts: facts('s', 12) } }).mockRejectedValueOnce(new Error('fetch failed'))
+    await expect(extractFacts('dense then a network blip')).rejects.toThrow('fetch failed')
   })
 })

@@ -1,7 +1,8 @@
-import { generateObject, generateText, NoObjectGeneratedError, TypeValidationError, type LanguageModel } from 'ai'
+import { generateObject, generateText, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { resolveModel } from './registry'
 import { REPLY_SYSTEM, REPLY_SYSTEM_TEXT } from './prompts'
+import { isMalformedObjectError } from './errors'
 import { houseToday } from '@/lib/core/clock'
 import type { RetrievedMemory } from '@/lib/memory/retrieve'
 
@@ -34,11 +35,7 @@ export async function groundedReply(
     // ONLY a malformed structured object (model wraps it under an extra key, etc.) should
     // fall back — a transient API/network error must rethrow so the caller can retry rather
     // than waste a second paid call that fails the same way.
-    const isObjectError =
-      NoObjectGeneratedError.isInstance(err) ||
-      TypeValidationError.isInstance(err) ||
-      (err instanceof Error && /no object generated|did not match schema|type validation/i.test(err.message))
-    if (!isObjectError) throw err
+    if (!isMalformedObjectError(err)) throw err
     // Fall back to plain text with the same grounding; forgo self-escalation. Treat as
     // answered (we got words — send them; never downgrade a malformed-object fallback to 👎).
     const { text } = await generateText({ model, system: REPLY_SYSTEM_TEXT, prompt })

@@ -138,3 +138,39 @@ describe('telegram webhook — the fast-ack spine', () => {
     expect(send).not.toHaveBeenCalled()
   })
 })
+
+// C8/C9/I8: the transport facts the pipeline needs to decide directedness and trust.
+describe('telegram webhook — reply + sender_chat forwarding', () => {
+  const sentData = () => (send.mock.calls[0]?.[0] as { data: Record<string, unknown> }).data
+  const msg = (over: Record<string, unknown>) => ({
+    update_id: 20,
+    message: { message_id: 20, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 100 }, text: 'lol same', ...over },
+  })
+
+  it('forwards the replied-to author id, bot flag and text (or caption) — directedness is decided downstream by bot id', async () => {
+    await POST(req(msg({ reply_to_message: { message_id: 7, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 5555, is_bot: true, first_name: 'Poll' }, text: 'Poll closes at 9' } })))
+    expect(sentData().replyToMessage).toEqual({ fromId: 5555, isBot: true, text: 'Poll closes at 9', isTopicRoot: false })
+    send.mockClear()
+    await POST(req(msg({ reply_to_message: { message_id: 8, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 42, is_bot: false, first_name: 'Ana' }, caption: 'the new sofa' } })))
+    expect(sentData().replyToMessage).toMatchObject({ fromId: 42, isBot: false, text: 'the new sofa' })
+  })
+
+  it('flags the forum topic-root service message (every topic message "replies" to it)', async () => {
+    const root = { message_id: 44, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 1087968824, is_bot: true, first_name: 'Group' }, forum_topic_created: { name: 'Guests', icon_color: 1 } }
+    await POST(req(msg({ is_topic_message: true, message_thread_id: 44, reply_to_message: root })))
+    expect(sentData().replyToMessage).toMatchObject({ isTopicRoot: true })
+    expect(sentData().messageThreadId).toBe(44)
+  })
+
+  it('a non-reply forwards replyToMessage: null', async () => {
+    await POST(req(msg({})))
+    expect(sentData().replyToMessage).toBeNull()
+    expect(sentData().senderChatId).toBeNull()
+  })
+
+  it('forwards sender_chat (an anonymous admin posting as the group)', async () => {
+    await POST(req(msg({ from: { id: 1087968824, is_bot: true, first_name: 'Group' }, sender_chat: { id: Number(HOUSE), type: 'supergroup', title: 'House' } })))
+    expect(sentData().senderChatId).toBe(HOUSE)
+    expect(sentData().isBot).toBe(true)
+  })
+})

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
-import { loadResponsePolicy, setGlobalEnabled, setReplyFrequency, setReminderFrequency, replyAllowed, type ResponsePolicy } from '@/lib/policy'
+import { loadResponsePolicy, setGlobalEnabled, setReplyFrequency, setReminderFrequency, replyAllowed, mentionsTopic, type ResponsePolicy } from '@/lib/policy'
 
 const base: ResponsePolicy = { global_enabled: true, categories: {}, confidence_threshold: 0.7, muted_topics: [], reply_frequency: 'balanced', reminder_frequency: 'twice' }
 
@@ -48,5 +48,26 @@ describe('response policy (kill-switch + reply gate)', () => {
     expect((await loadResponsePolicy(db)).reply_frequency).toBe('balanced')
     await setReplyFrequency(db, 'chatty')
     expect((await loadResponsePolicy(db)).reply_frequency).toBe('chatty')
+  })
+})
+
+// I10: muted topics match whole words, not substrings.
+describe('mentionsTopic — muted topics are whole-word matches', () => {
+  it('"bin" mutes the bins, not the cabinet or Robin', () => {
+    expect(mentionsTopic('when do the bin bags go out', 'bin')).toBe(true)
+    expect(mentionsTopic('when do the BINS go out', 'bin')).toBe(true) // plain plural
+    expect(mentionsTopic('the cabinet door is loose', 'bin')).toBe(false)
+    expect(mentionsTopic('is Robin moving in?', 'bin')).toBe(false)
+    expect(mentionsTopic('binary options lol', 'bin')).toBe(false)
+  })
+  it('multi-word topics and punctuation boundaries', () => {
+    expect(mentionsTopic('who pays the rent money?', 'rent money')).toBe(true)
+    expect(mentionsTopic('rent\nmoney', 'rent money')).toBe(true)
+    expect(mentionsTopic('(bin)', 'bin')).toBe(true)
+    expect(mentionsTopic('anything', '  ')).toBe(false)
+  })
+  it('replyAllowed honours it', () => {
+    expect(replyAllowed({ ...base, muted_topics: ['bin'] }, 0.9, 'is Robin moving in?')).toBe(true)
+    expect(replyAllowed({ ...base, muted_topics: ['bin'] }, 0.9, 'bin day?')).toBe(false)
   })
 })

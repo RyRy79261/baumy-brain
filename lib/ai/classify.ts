@@ -2,6 +2,7 @@ import { generateObject, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { resolveModel } from './registry'
 import { TRIAGE_SYSTEM } from './prompts'
+import { degradeOnMalformed } from './errors'
 
 // The cheap high-volume triage/router (task-graph I1). One Haiku pass decides the
 // action-classification AND how Baumy responds + which model tier an answer needs.
@@ -52,9 +53,9 @@ export async function classify(
     })
     return object
   } catch (err) {
-    // Triage must NEVER blackhole the pipeline over a malformed object (the AI SDK
-    // already retries transient API errors before this). Degrade to the safe verdict.
-    console.error('[baumy/classify] falling back to safe verdict:', err)
-    return SAFE_VERDICT
+    // Triage must NEVER blackhole the pipeline over a malformed object — degrade to the safe
+    // verdict. A transient API error (429/529/timeout) RETHROWS so the Inngest step retries
+    // instead of memoizing a degraded verdict forever (I2).
+    return degradeOnMalformed(err, 'classify', SAFE_VERDICT)
   }
 }

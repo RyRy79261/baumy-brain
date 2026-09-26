@@ -2,6 +2,7 @@ import { Api } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import { record, isCapturing } from '@/lib/telegram/outbox'
 import { now } from '@/lib/core/clock'
+import type { PlannerEmoji } from '@/lib/turn/emoji'
 
 // grammY typed Bot API client (transport layer). grammY owns the Bot API surface
 // — methods, params, error handling, the bot's own identity — so we don't
@@ -74,18 +75,19 @@ export async function editMessageText(chatId: string, messageId: number, text: s
   await api().editMessageText(chatId, messageId, text, NO_PREVIEW)
 }
 
-// Best-effort emoji reaction — Baumy's lightweight ack (👀 seen, 🧠 learned it, 👎 no
-// idea) on a message instead of always sending a line. Pass null to CLEAR the reaction
-// (swap the eyes out once it answers). Takes a plain string so functional signals like
-// 🧠 (not in Telegram's default reaction set) can be attempted; if the group doesn't
-// allow that emoji Telegram just 400s and this swallows it. Never breaks the pipeline.
-export async function reactToMessage(chatId: string, messageId: number, emoji: string | null): Promise<void> {
+// Best-effort emoji reaction — Baumy's lightweight ack (👀 seen, ✍ noted it, 👎 no idea) on a
+// message instead of always sending a line. Pass null to CLEAR the reaction (swap the eyes out
+// once it answers). Typed to PLANNER_EMOJI (lib/turn/emoji.ts), all Bot-API-valid reactions — the
+// old free-string signature let an off-list brain emoji through, which Telegram 400'd on every call (K1).
+// Cosmetic, so a failure (no permission, a group that restricts reactions) must never break the
+// pipeline — but it is LOGGED, never silently swallowed: a silent catch is how K1 went unseen.
+export async function reactToMessage(chatId: string, messageId: number, emoji: PlannerEmoji | null): Promise<void> {
   if (record({ kind: 'reaction', chatId, text: null, meta: emoji }, now())) return
   try {
     const reactions = emoji ? [{ type: 'emoji' as const, emoji: emoji as ReactionTypeEmoji['emoji'] }] : []
     await api().setMessageReaction(chatId, messageId, reactions)
-  } catch {
-    // reactions are cosmetic; a failure (perms, unsupported emoji) must not throw
+  } catch (err) {
+    console.warn(`[baumy/telegram] reaction ${emoji ?? '(clear)'} rejected on ${chatId}/${messageId}:`, err instanceof Error ? err.message : err)
   }
 }
 
@@ -107,17 +109,42 @@ export async function getGroupAdminIds(chatId: string): Promise<Set<string>> {
   }
 }
 
-// Baumy's own @username (from getMe), cached for the process — so directed-at-
-// Baumy detection uses the bot's REAL name, never a hardcoded guess.
+// Baumy's own identity (from getMe), cached for the process — so directed-at-Baumy detection uses
+// the bot's REAL name and id, never a hardcoded guess. The sandbox never calls getMe (no network)
+// and never poisons the cache; it answers with fixed stand-ins the harness also uses.
+export const SANDBOX_BOT_USERNAME = 'baumy_bot'
+export const SANDBOX_BOT_ID = 7_000_000_001
+
 let cachedUsername: string | null = null
 export async function getBotUsername(): Promise<string> {
-  if (isCapturing()) return cachedUsername ?? 'baumy_bot' // sandbox: never call getMe, never poison the cache
+  if (isCapturing()) return cachedUsername ?? SANDBOX_BOT_USERNAME
   if (cachedUsername) return cachedUsername // only a NON-empty success is cached
   try {
-    const u = ((await getMe()).username ?? '').toLowerCase()
+    const me = await getMe()
+    const u = (me.username ?? '').toLowerCase()
     if (u) cachedUsername = u // cache on success only — never poison-cache '' from a transient getMe failure
+    if (me.id) cachedBotId = me.id
     return u
   } catch {
     return '' // transient — leave the cache empty so the next call retries
+  }
+}
+
+// Baumy's own numeric user id — what a reply's reply_to_message.from.id must equal for the reply
+// to count as "to Baumy" (C8: is_bot alone made a reply to ANY bot directed). getMe, cached; if
+// getMe is unreachable, the token's numeric prefix IS the bot id (Bot API token format
+// "<bot_id>:<secret>"), so a transient Telegram hiccup never makes a real reply undirected.
+let cachedBotId: number | null = null
+export async function getBotId(): Promise<number | null> {
+  if (isCapturing()) return SANDBOX_BOT_ID
+  if (cachedBotId) return cachedBotId
+  try {
+    const me = await getMe()
+    if (me.id) cachedBotId = me.id
+    if (me.username && !cachedUsername) cachedUsername = me.username.toLowerCase()
+    return me.id ?? null
+  } catch {
+    const prefix = Number((process.env.TELEGRAM_BOT_TOKEN ?? '').split(':')[0])
+    return Number.isSafeInteger(prefix) && prefix > 0 ? prefix : null
   }
 }
