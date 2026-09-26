@@ -225,8 +225,11 @@ describe('renderReplyPrompt — spec §4 turn prompt', () => {
     for (const mode of ['answer:', 'ack:', 'confirm:', 'clarify:', 'banter:']) expect(REPLY_SYSTEM).toContain(mode)
     expect(REPLY_SYSTEM).toMatch(/NEVER refer to them in the third person/)
     expect(REPLY_SYSTEM).toMatch(/never say you did something .* unless THIS TURN says it happened/)
-    // C14: a miss offers to remember instead of a curt shrug
+    // C14: the spec's secretary persona — a miss offers to remember instead of a curt shrug, being told
+    // something is acknowledged ("noted", saying it back), and old / already-past memory is flagged.
     expect(REPLY_SYSTEM).toMatch(/offer to remember it/)
+    expect(REPLY_SYSTEM).toMatch(/When someone TELLS you something, show you caught it/)
+    expect(REPLY_SYSTEM).toMatch(/say when something is old or already past/)
   })
 })
 

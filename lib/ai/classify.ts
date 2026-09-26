@@ -18,8 +18,12 @@ export const classifierVerdict = z.object({
   asksBaumy: z.boolean(),
   // Durable house info worth keeping. Never true for a pure question.
   worthRemembering: z.boolean(),
-  // DEFINED (I6): confidence in `intent`.
+  // DEFINED (I6): confidence in `intent`. Never a reason to speak.
   confidence: z.number().min(0).max(1),
+  // DEFINED (I6, second half): how useful it would be for Baumy to VOLUNTEER an answer to this if
+  // nobody addressed it — the reply-frequency floor reads THIS, never `confidence` (a rhetorical
+  // "who ate my yogurt lol?" is a sure question and a useless one to answer).
+  replyValue: z.number().min(0).max(1),
   // A genuine vibe worth a reaction on chatter ('think' tier and the old free reaction are gone).
   vibe: z.enum(['🔥', '🎉', '🤯', '😁']).nullable(),
   // Retrieval depth an answer needs: quick = direct lookup, deep = broad history search (C13).
@@ -44,6 +48,7 @@ export const SAFE_VERDICT: ClassifierVerdict = {
   asksBaumy: false,
   worthRemembering: false,
   confidence: 0,
+  replyValue: 0,
   vibe: null,
   tier: 'quick',
   webSearch: false,

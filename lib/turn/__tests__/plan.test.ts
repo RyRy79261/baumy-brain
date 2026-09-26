@@ -25,6 +25,7 @@ const V = (o: Partial<ClassifierVerdict> = {}): ClassifierVerdict => ({
   asksBaumy: false,
   worthRemembering: false,
   confidence: 0.9,
+  replyValue: 0.9,
   vibe: null,
   tier: 'quick',
   webSearch: false,
@@ -168,7 +169,7 @@ describe('planResponse — list (K4 store outcome, A10 continue to the question)
       emoji: '✍',
       row: 'list',
     })
-    expect(plan({ verdict: V({ intent: 'question', asksBaumy: true, confidence: 0.5, list: 'add' }), outcome: { list: list({ added: ['coffee'] }) } })).toMatchObject({
+    expect(plan({ verdict: V({ intent: 'question', asksBaumy: true, replyValue: 0.5, list: 'add' }), outcome: { list: list({ added: ['coffee'] }) } })).toMatchObject({
       kind: 'react',
       emoji: '✍',
     })
@@ -248,13 +249,29 @@ describe('planResponse — questions and requests', () => {
       expect(plan({ why: 'console_topic', verdict: V({ intent, asksBaumy: false }) })).toEqual({ kind: 'none', row: 'ask-console-housemates' })
     })
     it(`${intent}, undirected, asksBaumy, clears the floor → answer with an ambient miss as 👎`, () => {
-      expect(plan({ verdict: V({ intent, asksBaumy: true, confidence: 0.9 }) })).toEqual({ kind: 'words', mode: 'answer', row: 'ask-undirected', onMiss: '👎' })
+      expect(plan({ verdict: V({ intent, asksBaumy: true, replyValue: 0.9 }) })).toEqual({ kind: 'words', mode: 'answer', row: 'ask-undirected', onMiss: '👎' })
     })
     it(`${intent}, undirected, asksBaumy, below the reply floor or a muted topic → none`, () => {
-      expect(plan({ verdict: V({ intent, asksBaumy: true, confidence: 0.8 }) })).toEqual({ kind: 'none', row: 'ask-undirected-below-floor' })
-      expect(plan({ verdict: V({ intent, asksBaumy: true, confidence: 0.8 }), policy: { ...POLICY, reply_frequency: 'chatty' } })).toMatchObject({ kind: 'words' })
+      expect(plan({ verdict: V({ intent, asksBaumy: true, replyValue: 0.8 }) })).toEqual({ kind: 'none', row: 'ask-undirected-below-floor' })
+      expect(plan({ verdict: V({ intent, asksBaumy: true, replyValue: 0.8 }), policy: { ...POLICY, reply_frequency: 'chatty' } })).toMatchObject({ kind: 'words' })
       expect(plan({ verdict: V({ intent, asksBaumy: true }), text: 'when are the bins?', policy: { ...POLICY, muted_topics: ['bins'] } })).toMatchObject({
         kind: 'none',
+      })
+    })
+    // I6, second half: the floor measures how useful a volunteered answer would be (triage replyValue),
+    // never the certainty of the intent label — the audit's two cases, now the right way round.
+    it(`${intent}, undirected: the floor reads replyValue, never confidence (I6)`, () => {
+      // a rhetorical question triage is SURE about is still not worth volunteering an answer to
+      expect(plan({ verdict: V({ intent, asksBaumy: true, confidence: 0.95, replyValue: 0.2 }), text: 'who even ate my yogurt lol?' })).toEqual({
+        kind: 'none',
+        row: 'ask-undirected-below-floor',
+      })
+      // a genuinely useful question with an ambiguous label is answered (default 'quiet' floor, 0.85)
+      expect(plan({ verdict: V({ intent, asksBaumy: true, confidence: 0.6, replyValue: 0.9 }), text: 'is the plumber still coming or' })).toEqual({
+        kind: 'words',
+        mode: 'answer',
+        row: 'ask-undirected',
+        onMiss: '👎',
       })
     })
     it(`${intent}, undirected, not asksBaumy (housemates talking) → none (C6)`, () => {

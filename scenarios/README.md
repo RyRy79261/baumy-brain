@@ -42,6 +42,30 @@ Set `SCENARIOS_LIVE=1` (the `test:scenarios:live` script does this) and provide
 - Each `expectWords({ judge })` rubric is graded by an Anthropic LLM judge (`judge.ts`).
 - Scenarios marked `offlineOnly` (e.g. a scripted outage) or `knownGap` are skipped.
 - Live runs cost money and are not deterministic, so run them by hand. They are not part of CI.
+  Run them after any prompt or schema change (triage, extractors, reply): the offline suite proves the
+  pipeline does the right thing with a given model output; only live mode shows the real model produces
+  it. A judge failure prints the rubric, the words and the judge's reason.
+- `pnpm test:scenarios:live scenarios/time.scenario.test.ts` runs one file; `-t '<name>'` one scenario.
+
+## What is covered
+
+Every phase of `docs/spec/chat-understanding-v2.md` ships its user-visible behaviour as scenarios here,
+each with a judge rubric wherever Baumy speaks. **No known gaps remain** — every phase-tagged gap was
+flipped when its phase landed.
+
+| File | Covers |
+|---|---|
+| `charli.scenario.test.ts` | the motivating bug: a statement is acked (not quoted back), and grounds a later question, attributed and dated (C1–C4, T1) |
+| `voice.scenario.test.ts` | directedness by name (C10), ask-Baumy topic addressee (C6), re-addressed statements (K2), secrets in acks (C15), reply threading (C11), questions not stored (I3) |
+| `routing.scenario.test.ts` | the planner table: ✍ vs words vs silence, housemates' questions, DM acks (K3), "yes" to Baumy (C7), reply-to context as data (C5), the volunteered-reply floor reading `replyValue` (I6) |
+| `window.scenario.test.ts` | the 48h conversation window: follow-ups, secrets never persisted, 48h purge, DM isolation, forwards labelled (C5, §5) |
+| `time.scenario.test.ts` | the time model: expiry (T2), bare hours (T9), "friday around 10pm" (T4), recurrence (A6), "the 9th" (T8), heads-ups written at delivery (T11), /weekly (T5) |
+| `facts.scenario.test.ts` | the fact model: multi-valued predicates (F2), synonyms (F3), possessives (F1), object-side lookup (F7), the trust gate + conflicts (F5) |
+| `reminders.scenario.test.ts` | confirm / clarify modes and the clarify follow-through (A2, A3), undirected reminders (A9), edits (I1), pause |
+| `lists.scenario.test.ts` | list acks from the store outcome, article/plural-tolerant check-off (K4), list op + question (A10), list ops not notes (A11) |
+| `forget.scenario.test.ts` | propose → card → tap in the stored house scope (A1), window clearing |
+| `intake.scenario.test.ts` / `intake-actions.scenario.test.ts` | forwarded content (I5/D4), captions (I4), edits (I1), personal/DM reminders (A4, A5/D2), soft forget (A7, A8), new housemates (K6), a transient model error failing the ingest (I2) |
+| `deep.scenario.test.ts` | the deep tier: expansion + re-rank + a graph hop into MEMORY |
 
 ## Writing a scenario
 
@@ -95,6 +119,8 @@ Write fixtures in the **spec's** shapes, using `verdict()`/`statement()`/`questi
 converts them to the schemas the code validates today.
 
 - When a phase changes a schema, update `shapes.ts`. No scenario should need to change.
+- `verdict()` defaults `confidence` and `replyValue` to 0.9 — a clear, useful question. Set `replyValue`
+  low for a rhetorical / pointless unaddressed question (it is what the owner's reply floor reads — I6).
 - Since phase 1 the classifier schema IS the spec §2 shape, so the triage adapter is the identity;
   since phase 3 facts and reminders are the spec §6 shapes too. A fact's `when` may be the resolved
   `{ start, end?, allDay }` (local ISO) or just the verbatim phrase (`when: 'this weekend'` — the model
@@ -112,7 +138,8 @@ them) but not on Baumy's roster — how a new housemate who never spoke in the g
 
 ### Known gaps
 
-Sometimes the code doesn't yet do what the spec says. In that case, still write the scenario, with
+There are none today. Sometimes the code doesn't yet do what the spec says. In that case, still write
+the scenario, with
 `knownGap: { refs: 'C1 C3', phase: 1, failsAt: 4 }` — `failsAt` is the 1-based step it is blocked at.
 
 - It runs as `it.fails`, so it stays green while broken.

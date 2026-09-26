@@ -1,6 +1,10 @@
 # Chat understanding v2 — the turn, the planner, time, and the fact model
 
-**Status:** approved design (2026-09-26), implemented in phases 0–5 below (all landed; I6's second half open).
+**Status:** approved design (2026-09-26), **fully implemented** — phases 0–5 below all landed, and the
+final verification pass (2026-09-26) closed the last open items (I6's second half — the reply floor reads
+triage's `replyValue`; K4's article/plural-tolerant check-off; T13's wall-clock guard test). Every one of
+the 72 audit findings is fixed or, where noted in its section, fixed with a documented residual; no
+reproduction test in `audit-repro/` still asserts a bug (see `audit-repro/README.md`).
 **Why:** the 2026-09-26 chat-handling audit (72 findings, reproductions in `audit-repro/`) traced
 Baumy's "I don't know, Charli said Zuzka's staying" failures to five root causes: (1) no model of the
 current *turn* (who is speaking, where, why it is for Baumy, what just happened), (2) memory without
@@ -79,6 +83,7 @@ reads as addressed to a person — and in phase 2 the last few turns) plus the m
   asksBaumy: boolean,     // is a question/request aimed at Baumy (vs at another housemate)?
   worthRemembering: boolean, // durable house info (statements/facts only — never true for a pure question)
   confidence: number,     // DEFINED: confidence in `intent` (I6)
+  replyValue: number,     // DEFINED: how useful a VOLUNTEERED answer would be (I6, 2nd half) — the reply floor reads this
   vibe: '🔥'|'🎉'|'🤯'|'😁'|null,
   tier: 'quick'|'deep',   // 'think' removed (C13)
   webSearch: boolean,
@@ -146,9 +151,12 @@ the Bot API `ReactionTypeEmoji` union (unit test asserts it).
   chat + requester, never tap-able). The requester's next directed message in that chat consumes it
   one-shot and the extractor is shown it (+ the Baumy question replied to), so "at 8pm" in reply to
   "when should I remind you?" creates the reminder.
-- **Known deviation — I6, second half (open, unscheduled):** the undirected-question row still gates
-  on `replyAllowed(policy, verdict.confidence)`, i.e. certainty of the *intent*, not how useful a
-  reply would be. Kept as a labelled repro in `audit-repro/intake/webhook-and-units.test.ts`.
+- **I6, second half (closed in the verification pass):** the undirected-question row gates on
+  `replyAllowed(policy, verdict.replyValue)` — triage's own, defined "how useful would it be for Baumy
+  to chip in with an answer" (0..1), compared against the owner's `reply_frequency` floor — never on
+  `confidence` (certainty of the intent label, which let a sure-but-rhetorical "who ate my yogurt lol?"
+  through and silenced a useful but fuzzily-labelled "is the plumber still coming or"). The degraded
+  verdict's `replyValue` is 0. Tests: `lib/turn/__tests__/plan.test.ts`, `scenarios/routing.scenario.test.ts`.
 - **Directedness by name** accepts a trailing name only after punctuation or a thanks-word
   ("…, baumy?"); a bare "did you ask baumy?" is undirected (the classifier's `asksBaumy` still routes
   a genuine unaddressed ask through the undirected row).
@@ -479,9 +487,7 @@ context only — it never writes facts and is never shown to anyone.
   restricted-but-member) is upserted (audited `member.verified`) and served; fail-closed, "no" cached 10
   min in-process. Not done: a departed member who rejoins and speaks in the GROUP is still only reactivated
   by a chat_member update or their next DM (ensureRegistered never touches `is_active`).
-- **Still open — I6, second half** (§3 "known deviation"): the undirected-question floor still compares the
-  triage confidence to the reply-frequency thresholds. Fixing it needs a product signal for "how useful
-  would a volunteered reply be" (a classifier field or a policy change); the repro stays in `audit-repro/`.
+- **I6, second half** — closed after phase 5: triage returns `replyValue` and the floor reads it (§3).
 
 ## 9. Scenario testing (`scenarios/`)
 

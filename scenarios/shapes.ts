@@ -18,6 +18,8 @@ export interface Verdict {
   worthRemembering: boolean
   /** Confidence in `intent` (I6). */
   confidence: number
+  /** How useful a VOLUNTEERED answer would be — what the reply floor reads (I6, second half). */
+  replyValue: number
   vibe: Vibe | null
   tier: 'quick' | 'deep'
   webSearch: boolean
@@ -29,6 +31,9 @@ export function verdict(v: Partial<Verdict> & { intent: Intent }): Verdict {
     asksBaumy: false,
     worthRemembering: v.intent === 'statement',
     confidence: 0.9,
+    // Default: a useful question (clears even the 'quiet' 0.85 floor). A scenario about a rhetorical
+    // or pointless unaddressed question sets it low.
+    replyValue: 0.9,
     vibe: null,
     tier: 'quick',
     webSearch: false,

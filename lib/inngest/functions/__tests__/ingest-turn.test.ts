@@ -94,6 +94,7 @@ const V = (o: Partial<ClassifierVerdict> = {}): ClassifierVerdict => ({
   asksBaumy: false,
   worthRemembering: false,
   confidence: 0.9,
+  replyValue: 0.9,
   vibe: null,
   tier: 'quick',
   webSearch: false,

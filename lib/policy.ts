@@ -7,12 +7,13 @@ import { now as clockNow } from '@/lib/core/clock'
 // Untrusted group text can NEVER write this (enforced upstream by the write-gate);
 // only the owner (/pause, /resume) or the dashboard.
 // How readily Baumy VOLUNTEERS a worded reply in the group. Baumy's whole point is to
-// remember without polluting the chat, so this tunes the confidence bar an *unaddressed*
-// message must clear to earn words — a direct @mention/reply always answers regardless.
+// remember without polluting the chat, so this tunes the bar an *unaddressed* question's
+// triage `replyValue` (how useful an answer would be) must clear to earn words — a direct
+// @mention/reply always answers regardless.
 // A reaction (✍/👀/…) is never gated by this: it's cheap and doesn't pollute.
 export type ReplyFrequency = 'quiet' | 'balanced' | 'chatty'
-// The confidence floor per level. 'balanced' == the historical 0.7 default, so existing
-// houses are unchanged. 'quiet' only speaks when it's clearly meaningful new information;
+// The floor per level. 'balanced' == the historical 0.7 default, so existing
+// houses are unchanged. 'quiet' only speaks when an answer is clearly worth giving;
 // 'chatty' jumps in more readily.
 export const REPLY_FLOORS: Record<ReplyFrequency, number> = { quiet: 0.85, balanced: 0.7, chatty: 0.5 }
 
@@ -43,7 +44,7 @@ const DEFAULT: ResponsePolicy = {
   reminder_frequency: 'twice',
 }
 
-// The effective confidence floor a volunteered reply must clear — driven by reply_frequency.
+// The effective floor a volunteered reply's replyValue must clear — driven by reply_frequency.
 export function replyConfidenceFloor(policy: ResponsePolicy): number {
   return REPLY_FLOORS[policy.reply_frequency] ?? policy.confidence_threshold
 }
@@ -118,9 +119,12 @@ export async function removeMutedTopic(db: Database, topic: string): Promise<voi
 // Deterministic reply filter layered on top of the write-gate: the paused
 // kill-switch silences everything; below the reply-frequency floor or a muted topic → quiet.
 // (A direct @mention/reply bypasses this in the caller — this only gates VOLUNTEERED replies.)
-export function replyAllowed(policy: ResponsePolicy, confidence: number, text: string): boolean {
+// `replyValue` is triage's "how useful would a volunteered answer be" (lib/ai/classify.ts) — NOT its
+// confidence in the intent, which measured certainty of the label and let a sure-but-rhetorical
+// question through while silencing a useful ambiguous one (I6, second half).
+export function replyAllowed(policy: ResponsePolicy, replyValue: number, text: string): boolean {
   if (!policy.global_enabled) return false
-  if (!(confidence >= replyConfidenceFloor(policy))) return false
+  if (!(replyValue >= replyConfidenceFloor(policy))) return false
   if (policy.muted_topics.some((m) => mentionsTopic(text, m))) return false
   return true
 }

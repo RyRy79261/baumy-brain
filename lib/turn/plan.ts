@@ -172,8 +172,10 @@ function planMain(ctx: TurnContext, policy: ResponsePolicy, directed: boolean): 
       if (o.captured?.conflicts?.length) return words('clarify', 'statement-conflict')
       if (!v.asksBaumy) return none('ask-housemates') // housemates talking to each other (C6)
       // An unaddressed question to the house: only when the owner's reply floor + muted topics allow,
-      // and an honest miss is a quiet 👎 — never a line of "no idea" into the group.
-      return replyAllowed(policy, v.confidence, ctx.text)
+      // and an honest miss is a quiet 👎 — never a line of "no idea" into the group. The floor reads
+      // how useful triage thinks an answer would be (`replyValue`), never its certainty about the
+      // intent (I6, second half).
+      return replyAllowed(policy, v.replyValue, ctx.text)
         ? words('answer', 'ask-undirected', { onMiss: '👎' })
         : none('ask-undirected-below-floor')
     case 'statement':

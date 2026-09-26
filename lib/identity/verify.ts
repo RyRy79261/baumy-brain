@@ -4,6 +4,7 @@ import { getChatMemberStatus } from '@/lib/telegram/client'
 import { isCapturing } from '@/lib/telegram/outbox'
 import { upsertMember } from '@/lib/identity/roster'
 import { writeAudit } from '@/lib/audit'
+import { now } from '@/lib/core/clock'
 
 // New housemates (docs/spec/chat-understanding-v2.md §8, K6). Baumy learns the roster from group
 // activity (ensureRegistered) and chat_member updates — but Telegram only sends chat_member to a bot
@@ -27,7 +28,7 @@ const notMembers = new Map<string, number>() // `${chat}:${user}` → cached-unt
 export type MembershipCheck = 'member' | 'not_member' | 'error'
 
 /** Is `userId` an active member of the house group (Telegram's answer)? Never throws. */
-export async function checkHouseMembership(houseSendId: string, userId: number, at: number = Date.now()): Promise<MembershipCheck> {
+export async function checkHouseMembership(houseSendId: string, userId: number, at: number = now().getTime()): Promise<MembershipCheck> {
   if (!houseSendId) return 'not_member'
   const key = `${houseSendId}:${userId}`
   // No caching inside a sandbox: its answers come from the harness and must not leak into real traffic.

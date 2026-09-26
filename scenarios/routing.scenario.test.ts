@@ -8,6 +8,7 @@ import {
   expectSilent,
   expectReaction,
   expectFact,
+  expectNoPrompt,
 } from './dsl'
 import { memoryLines } from './fake-model'
 import { statement, question, banter, chatter, fact } from './shapes'
@@ -137,6 +138,40 @@ describe('scenario: routing — words, reactions, silence', () => {
       say('Charli', 'true?', { mention: true, replyTo: { who: 'Marco', forwarded: true, text: 'the landlord: rent goes up 20% in October' } }),
       expectPrompt('reply', (c) => !c.prompt.includes('rent goes up'), 'the forwarded text is not shown'),
       expectPrompt('reply', /REPLYING TO: a message Marco forwarded \(not shown/, 'never presented as Marco\'s own words'),
+    ],
+  })
+
+  scenario('an unaddressed question: Baumy chips in only when an answer is worth giving (I6)', {
+    people: HOUSE,
+    startAt: start,
+    // I6, second half: the volunteered-reply floor ('quiet' by default, 0.85) reads triage's
+    // `replyValue` — how useful an answer would be — never its confidence in the intent. A sure-but-
+    // rhetorical question stays unanswered; a useful one with a fuzzy label gets its answer.
+    fixtures: {
+      triage: (t) =>
+        /plumber is coming/.test(t)
+          ? statement()
+          : /plumber still/.test(t)
+            ? question({ asksBaumy: true, confidence: 0.6, replyValue: 0.9 })
+            : /yogurt/.test(t)
+              ? question({ asksBaumy: true, confidence: 0.95, replyValue: 0.1 })
+              : chatter(),
+      extract: (t) =>
+        /plumber is coming/.test(t)
+          ? [fact({ subject: 'plumber', predicate: 'arrives_on', object: 'Mon 28 Sep 2026', when: { start: '2026-09-28', allDay: true } })]
+          : [],
+      reply: () => ({ reply: "Yep — Marco said the plumber's coming Monday 🐈‍⬛", answered: true }),
+    },
+    steps: [
+      say('Marco', 'the plumber is coming on monday'),
+      expectReaction('✍'),
+      say('Charli', 'is the plumber still coming or'),
+      expectPrompt('triage', (c) => /replyValue: 0\.\.1/.test(c.system), 'triage is asked how useful an answer would be'),
+      expectPrompt('reply', (c) => memoryLines(c.prompt).some((l) => /plumber/i.test(l)), 'the answer is grounded on the plumber fact'),
+      expectWords({ judge: 'Tells Charli the plumber is (still) coming on Monday, per Marco. One short line, no hedging, not a question back.' }),
+      say('Ryan', 'who even ate my yogurt lol?'),
+      expectNoPrompt('reply', 'a rhetorical question is never sent to the reply model, however sure triage is of the label'),
+      expectSilent(),
     ],
   })
 })

@@ -37,6 +37,8 @@ pnpm typecheck      # tsc --noEmit
 pnpm test           # vitest run (offline; PGlite) — includes the offline scenarios
 pnpm test:scenarios # just the multi-turn house scenarios (scenarios/, offline)
 pnpm test:scenarios:live  # same scenarios vs real models + LLM judge (needs ANTHROPIC_API_KEY + VOYAGE_API_KEY)
+SCENARIOS_SHOW_GAPS=1 pnpm test:scenarios   # run knownGap scenarios as ordinary tests (see where each fails)
+pnpm test:time-shift      # the suite with Date moved forward (TIME_SHIFT_TO=<iso> optional)
 pnpm build          # next build
 pnpm db:generate    # drizzle-kit generate (migrations)
 pnpm db:migrate     # apply migrations (needs DATABASE_URL_UNPOOLED)
@@ -60,9 +62,12 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
 - **Injection wall (lane-based):** origin/lane is derived from Telegram-authenticated
   `chat.type`/`chat.id`/`from.id`, never from message text (`lib/core/*`). House-group text is
   `privileged: false`, always.
-- **Trust tiers:** bot-origin content → `quarantined`: never attributed to a housemate, never
-  grounds a reply, never writes a fact, never windowed. A message a housemate **forwarded** →
-  `forwarded` (spec D4, phase 5): stored and **recallable, but only ever labelled** "forwarded by X"
+- **Trust tiers** — set from the authenticated transport, never from text: `trusted` (a member's DM) ·
+  `untrusted` (native house-group text) · `forwarded` (a housemate relayed someone else's words) ·
+  `quarantined` (bot-origin) — plus `system` for Baumy's own derived rows (reflect profiles, the
+  structural possessor edge) and its window turns. Bot-origin content → `quarantined`: never
+  attributed to a housemate, never grounds a reply, never writes a fact, never windowed. A message a
+  housemate **forwarded** → `forwarded` (spec D4, phase 5): stored and **recallable, but only ever labelled** "forwarded by X"
   (`baumy_memory_items.forwarded_by`; `authored_by` stays NULL — the words are the landlord's, not
   X's) in grounding, the window, `/weekly` and `/guests`; it **never reaches the web-search call** (the one
   tool-enabled generation — `grounding.forWeb` leaves it out); it **never writes a fact, never drives an action**
@@ -188,35 +193,64 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   re-run; an edit of a message with no window row is handled as new, silently.
 - **Fail closed** everywhere (roster, env, webhook secret).
 
-## The turn & Baumy's voice (`lib/turn/*`, `docs/spec/chat-understanding-v2.md` §1–§4)
+## The turn & Baumy's voice (`lib/turn/*`, `docs/spec/chat-understanding-v2.md`)
 
-`runIngest` (`lib/inngest/functions/ingest.ts`) is intake (record → origin → directedness → noise
-filter → slash commands, `lib/turn/commands.ts`) and then ONE turn:
+The design contract is `docs/spec/chat-understanding-v2.md` (fully implemented; the 2026-09-26 audit's
+72 findings are all closed — `audit-repro/README.md` has the per-finding status). `runIngest`
+(`lib/inngest/functions/ingest.ts`, **one message at a time per chat** — Inngest concurrency key on
+`event.data.chatId`, F16) is intake and then ONE turn, in this order:
 
-1. **`TurnContext`** (`context.ts`, pure): sender, lane, trust, scope vs destination, topic,
-   directedness + why, replied-to author/text, the @mention-stripped text, `sentAt` in the house tz.
-2. **Triage in context** (`lib/ai/classify.ts`): intent (statement / question / request / reminder
-   / forget / banter / chatter), `asksBaumy`, `worthRemembering`, confidence *in the intent*, vibe,
-   tier (quick/deep), webSearch, list. It **does not decide whether Baumy speaks.** A malformed
-   object → `SAFE_VERDICT` (captures nothing, `degraded`).
-3. **Write-gate** (`lib/core/decide.ts`): `shouldCapture` = statements / info-carrying requests and
-   reminders only — **never a question, chatter or a forget request** (I3).
-4. **Capture** (`capture.ts`) returns `{memoryItemId, factIds, learned, rejected, conflicts}`; **actions**
-   (`actions.ts`: list, reminder, forget) return what actually happened. All land in `ctx.outcome`.
-5. **`planResponse(ctx, policy)`** (`plan.ts`) — pure, table-driven, exhaustively tested — picks
-   none / a reaction / the deterministic list or forget text / words in a **MODE** (answer, ack,
-   confirm, clarify, banter). Paused house → none (DMs still work); quarantined content → none;
-   forwarded content → ✍ / the DM forward ack, never an answer; an edit → never words.
-   Don't add voice logic anywhere else.
-6. **Words** (`respond.ts` → `lib/ai/reply.ts` `answer(ctx, mode, grounding)`): the prompt is the
-   verified CONTEXT (FROM / WHERE / NOW / REPLYING TO / THIS TURN) + dated, attributed MEMORY + MODE +
-   `MESSAGE from <name>`. Grounding (`grounding.ts`) **excludes this turn's own note and facts** (C1).
-   The model never third-persons the sender and never claims an action THIS TURN doesn't report.
-   Words go out as a Telegram **reply** to the triggering message, through the `claimReply` /
-   `releaseReply` exactly-once belt; Sonnet→Opus self-escalation and the malformed-object text
+1. **Intake** — record the update (ledger, never the body) → captionless media dropped as `media` (a
+   photo/document caption IS the text, folded in at the webhook — I4) → origin/lane from transport ids
+   (an unknown PRIVATE sender is checked with `getChatMember` first, K6) → `ignore` lane dropped before
+   anything can reply (A12) → directedness → edit lookup (I1) → **window append** → noise pre-filter
+   (after directedness, so "yes" to Baumy survives, C7) → slash commands (`lib/turn/commands.ts`;
+   unknown ones in the group are dropped, I7; an edited command is not re-run).
+2. **`TurnContext`** (`context.ts`, pure, transport-derived): sender (+ role), lane, trust, **scope vs
+   destination**, topic, directedness + `why`, replied-to author (+ its text as quoted data, only for
+   Baumy or a housemate's own words), the @mention-stripped text (C12), `sentAt` + house tz, `recent`
+   (the window), `forwardedBy`, `edit`.
+3. **Triage in context** (`lib/ai/classify.ts`, spec §2): intent (statement / question / request /
+   reminder / forget / banter / chatter), `asksBaumy` (for Baumy vs another housemate, C6),
+   `worthRemembering`, `confidence` (in the intent — never a reason to speak), **`replyValue`** (how
+   useful a VOLUNTEERED answer would be — the only thing the owner's `reply_frequency` floor reads, I6),
+   vibe, tier (quick/deep), webSearch, list. It reads a verified CONTEXT header (lane, directed + why,
+   FROM, FORWARDED, HOUSEMATES, REPLYING TO) + the last 6 window turns as quoted data. It **does not
+   decide whether Baumy speaks.** Malformed object → `SAFE_VERDICT` (captures nothing, `degraded`).
+4. **Write-gate** (`lib/core/decide.ts`): `shouldCapture` = statements / info-carrying requests and
+   reminders only — **never a question, chatter or a forget request** (I3); a reminder needs a
+   **directed** ask and is not confidence-gated (A9, I6); relayed content (`isRelayed`) drives nothing.
+5. **Actions, then capture** (`actions.ts`, `capture.ts`), each result into `ctx.outcome`: the list op
+   first (a list op is **not** captured, A11) → reminders (+ a pending clarify draft, below) → capture
+   (skipped for a private DM reminder, D2) → edit settle → forget proposal. Capture returns `{memoryItemId,
+   factIds, learned, rejected, conflicts, secure}`; every action returns what actually happened.
+6. **`planResponse(ctx, policy)`** (`plan.ts`, pure, table-driven, exhaustively tested — spec §3)
+   picks none / a reaction / the deterministic list, forget or forward-ack text / words in a **MODE**
+   (answer, ack, confirm, clarify, banter), naming the table `row` that fired. In short: paused house →
+   none (DMs still work); quarantined → none; forwarded → ✍ (group) / the forward ack (DM); an edit →
+   never words; a directed question → answer; an undirected one → answer only when `asksBaumy` AND
+   `replyValue` clears the floor (a miss is a quiet 👎), housemates asking each other → none; a directed
+   statement → ack, an undirected captured one → ✍; a set reminder → confirm (with day + time), a failed
+   one → clarify; a refused correction (conflict) → clarify. **Don't add voice logic anywhere else.**
+7. **Words** (`respond.ts` → `lib/ai/reply.ts` `answer(ctx, mode, grounding)`, spec §4): verified
+   CONTEXT (FROM / WHERE / NOW / REPLYING TO / THIS TURN) → the replied-to text and RECENT CHAT as
+   quoted data → MEMORY (each line kind · who · said <date> · event <day>, forwarded notes labelled) →
+   MODE → `MESSAGE from <name>`. Grounding (`grounding.ts`) **excludes this turn's own note and facts**
+   (C1). The model never third-persons the sender and never claims an action THIS TURN doesn't report
+   (A3). Words go out as a Telegram **reply** to the triggering message (C11), through the `claimReply`
+   / `releaseReply` exactly-once belt; Sonnet→Opus self-escalation and the malformed-object text
    fallback are kept.
 
-Reactions are limited to `PLANNER_EMOJI` (`lib/turn/emoji.ts`, Bot-API-valid — ✍ is "noted").
+- **Clarify is answerable:** a reminder with no / unreadable / past time stores a short-lived draft
+  (`lib/reminders/draft.ts`, `pending_actions` type `reminder.draft`, never tap-able); the requester's
+  next directed message in that chat completes it ("at 8pm").
+- **Reactions** are limited to `PLANNER_EMOJI` (`lib/turn/emoji.ts`, Bot-API-valid, unit-tested — ✍ is
+  "noted"; 🧠 is not a Telegram reaction, K1).
+- **The window** (`window.ts`, `baumy_messages`, spec §5 — rules under "Message text at rest" above):
+  the last 12 turns of the same chat + forum topic within 48h, Baumy's own sends included, read once per
+  turn (`window-read`); triage gets 6, the reply 12. It also carries each message's produced-map
+  (note / facts / reminders) — what an edit supersedes (`edit.ts`).
+- **Time** and **facts** are under "Memory & retrieval" below (spec §6, §7).
 
 ## Auth reality (read before touching auth)
 
@@ -354,13 +388,25 @@ crown jewels. The pipeline:
   wall clock. `pnpm test:time-shift` (optionally `TIME_SHIFT_TO=<iso>`) runs the suite with `Date`
   moved forward — run it whenever a change touches what "current" / "due" / "stale" means.
 - Add a test for every security-relevant change (the poisoning/authz/exactly-once paths).
-- **Scenarios** (`scenarios/`, `docs/spec/chat-understanding-v2.md` §9): declarative multi-turn house
-  conversations through the REAL pipeline (sandbox harness), with a scripted model injected via the
+- **Scenarios** (`scenarios/`, `scenarios/README.md`, spec §9): declarative multi-turn house
+  conversations through the REAL pipeline (sandbox harness: PGlite, real ingest, crons at simulated
+  instants, captured sends, `tap()` for the confirm-tap wall) with a scripted model injected via the
   test-only `setModelOverride` seam (`lib/ai/registry.ts`) and `setEmbedOverride` (`lib/ai/embed.ts`).
-  They assert routing, reactions, rows and **what the model was told**. Behaviour the code doesn't
-  have yet is a `knownGap` (runs as `it.fails`, names the finding + phase) — when your change flips
-  one, drop its `knownGap`. Fixtures use the spec's classifier shape through ONE adapter
-  (`scenarios/shapes.ts`); a schema change edits that file, not the scenarios. See `scenarios/README.md`.
+  They assert routing, reactions, rows, reminders and **what the model was told** (`expectPrompt`).
+  Offline (default, part of `pnpm test`) is deterministic: fetch is trapped, `inngest.send` captured, and
+  a system prompt the fake model does not recognise throws (register a new prompt in `ROLE_PROMPTS`).
+  **Live mode** — `pnpm test:scenarios:live` (sets `SCENARIOS_LIVE=1`; needs `ANTHROPIC_API_KEY` +
+  `VOYAGE_API_KEY`, skips cleanly without them) — runs the same steps against the real models and grades
+  each `expectWords({ judge })` rubric with an LLM judge (`scenarios/judge.ts`); `offlineOnly` and
+  `knownGap` scenarios are skipped. It costs money and is not deterministic: run it by hand after a prompt
+  change, never in CI. Every user-visible behaviour change adds a scenario **with a judge rubric**.
+  Behaviour the code doesn't have yet is a `knownGap` (`it.fails`, names the finding + phase + `failsAt`)
+  — when your change flips one, drop its `knownGap`. Fixtures use the spec's shapes through ONE adapter
+  (`scenarios/shapes.ts`); a schema change edits that file, not the scenarios.
+- **`audit-repro/`** held characterisation tests asserting the 2026-09-26 audit's bugs; every finding is
+  now fixed and no repro test remains (`audit-repro/README.md` maps each finding to the test/scenario that
+  proves it; `findings.json` is the record). A future audit's repros go there the same way: assert the
+  bug, and when you fix it delete the repro and pin the CORRECT behaviour next to the code or as a scenario.
 
 ## Env & deploy
 

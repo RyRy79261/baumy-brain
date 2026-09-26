@@ -7,6 +7,7 @@ const gen = vi.fn(async (_args?: { prompt?: string; system?: string }) => ({
     asksBaumy: false,
     worthRemembering: true,
     confidence: 0.88,
+    replyValue: 0.4,
     vibe: null,
     tier: 'quick',
     webSearch: false,
@@ -28,6 +29,22 @@ describe('classify (triage, spec §2)', () => {
     expect(v.confidence).toBeCloseTo(0.88)
     expect(v).not.toHaveProperty('respond')
     expect(v).not.toHaveProperty('needsReply')
+  })
+
+  // C13: the old 'think' tier retrieved and answered exactly like 'quick' — it is gone from the schema,
+  // so the router's "needs history" signal is the one tier that changes anything ('deep').
+  it('tier is quick | deep only (C13)', async () => {
+    const { classifierVerdict } = await import('@/lib/ai/classify')
+    expect(classifierVerdict.shape.tier.options).toEqual(['quick', 'deep'])
+  })
+
+  // I6, second half: the reply floor has its own, defined signal; the degraded verdict never volunteers.
+  it('defines replyValue (how useful a volunteered answer would be) apart from confidence (I6)', async () => {
+    const v = await classify('who even ate my yogurt lol?')
+    expect(v.replyValue).toBeCloseTo(0.4)
+    expect(TRIAGE_SYSTEM).toMatch(/replyValue: 0\.\.1 — if nobody addressed Baumy, how useful would it be/)
+    expect(TRIAGE_SYSTEM).toMatch(/Independent of confidence/)
+    expect(SAFE_VERDICT.replyValue).toBe(0)
   })
 
   it('reads the message IN CONTEXT: lane, directed + why, console topic, replied-to author/text (C4/C6)', async () => {

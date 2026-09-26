@@ -52,6 +52,34 @@ describe('scenario: shopping list', () => {
     ],
   })
 
+  scenario('checking off "the eggs" ticks the listed "egg"; plain "milk" never ticks "almond milk" (K4)', {
+    people: HOUSE,
+    startAt: '2026-09-24 19:00',
+    // The check-off is matched article- and plural-tolerantly, but only against ONE open item: the
+    // extractor passed on what was said ("the eggs"), the list holds "egg".
+    fixtures: {
+      triage: (t: string) =>
+        /need/.test(t) ? statement({ worthRemembering: false, list: 'add' }) : /^got /.test(t) ? statement({ worthRemembering: false, list: 'checkoff' }) : chatter(),
+      list: (t: string) =>
+        /need an egg/.test(t)
+          ? { op: 'add' as const, items: ['egg', 'almond milk'] }
+          : /got the eggs/.test(t)
+            ? { op: 'checkoff' as const, items: ['the eggs', 'milk'] }
+            : { op: 'none' as const, items: [] },
+    },
+    steps: [
+      say('Marco', 'we need an egg and almond milk'),
+      expectReaction('✍'),
+      say('Ryan', 'got the eggs and milk'),
+      expectReaction({ not: '👍' }), // "milk" is NOT "almond milk" — the miss is reported, never guessed
+      expectWords({ contains: /milk/, judge: 'Says the egg(s) were ticked off, that plain milk was not on the list, and (optionally) that almond milk is still on it. Must not say almond milk was bought.' }),
+      expectDb(async (db, r) => {
+        const open = await openItems(db, r.sb.houseChatId)
+        return !open.includes('egg') && open.includes('almond milk')
+      }, 'egg is ticked off; almond milk stays on the list'),
+    ],
+  })
+
   scenario('a list op that also asks something still gets the question answered', {
     people: HOUSE,
     startAt: '2026-09-24 19:00',
