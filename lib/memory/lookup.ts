@@ -124,9 +124,13 @@ export function matchEntities(rows: EntityRow[], text: string, fuzzyThreshold = 
       continue
     }
     const words = nameWords(e.name).trim().split(' ')
-    // (never for a possessive: "charli's room" is not any room — its owner is the part that names it)
-    const head = words.length > 1 && !words.some((w) => w.endsWith("'s")) ? words[words.length - 1] : ''
-    if (head.length >= FUZZY_MIN_LEN && !STOP_HEADS.has(head) && !HUB_NAMES.has(head) && text.includes(` ${head} `)) {
+    // (never for a possessive: "charli's room" is not any room — its owner is the part that names it;
+    // and only for a name of several SPACE-separated words — a hyphenated compound like "zuzka-guest"
+    // is one word, so "guest" is not its head and "guest-bob" never names it)
+    const spaced = e.name.trim().replace(/^(the|a|an)\s+/i, '').split(/\s+/).length > 1
+    const head = spaced && words.length > 1 && !words.some((w) => w.endsWith("'s")) ? words[words.length - 1] : ''
+    // (plural-tolerant like hasName: "did we fix the sinks?" still names the kitchen sink)
+    if (head.length >= FUZZY_MIN_LEN && !STOP_HEADS.has(head) && !HUB_NAMES.has(head) && (text.includes(` ${head} `) || text.includes(` ${head}s `))) {
       out.push({ id: e.id, kind: 'fuzzy', specificity: specificityOf(head), names: [] })
     } else if (
       e.name.length >= FUZZY_MIN_LEN &&

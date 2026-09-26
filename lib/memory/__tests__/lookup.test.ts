@@ -43,7 +43,13 @@ describe('matchEntities', () => {
   })
   it('a bare head finds its qualified node (read side) — never a possessive one', () => {
     expect(ids('is the sink fixed?')).toEqual(['sink:fuzzy'])
+    expect(ids('did we fix the sinks yet')).toEqual(['sink:fuzzy']) // the head is plural-tolerant too
     expect(ids('who is in the room?')).toEqual(['room:named'])
+  })
+  it('a hyphenated name is one word: no head, so "guest-bob" never names "zuzka-guest"', () => {
+    const hy = [{ id: 'zg', name: 'zuzka-guest', aliases: [], kind: 'person' }]
+    expect(matchEntities(hy, lookupText('what is guest-bob full name'))).toEqual([])
+    expect(matchEntities(hy, lookupText('when does zuzka-guest arrive?')).map((m) => m.kind)).toEqual(['named'])
   })
   it('aliases match; short names never match by trigram', () => {
     expect(ids('is charli around?')).toEqual(['charli:named'])
