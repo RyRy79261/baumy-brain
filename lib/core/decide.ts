@@ -1,4 +1,4 @@
-import type { Origin } from './origin'
+import { isRelayed, type Origin } from './origin'
 import { isAllowed } from './policy'
 
 // The write-gate (task-graph I4, chat-understanding-v2 §2). The classifier PROPOSES a verdict;
@@ -33,8 +33,8 @@ export function decide(origin: Origin, v: Verdict, directed = false, th: Thresho
   if (origin.lane === 'ignore') return 'drop'
   const conf = clampConfidence(v.confidence)
   const forBaumy = directed || origin.lane === 'member_dm'
-  // Forwarded/bot content never drives an action (it is not a housemate asking).
-  const acts = origin.memoryTrust !== 'quarantined'
+  // Forwarded/bot content never drives an action (it is not a housemate asking — D4).
+  const acts = !isRelayed(origin.memoryTrust)
 
   // A reminder needs a DIRECTED ask (A9): "remind me to text you about the van" said to a housemate
   // in the group must not post to the whole house tomorrow. NOT confidence-gated (I6): the
@@ -50,13 +50,13 @@ export function decide(origin: Origin, v: Verdict, directed = false, th: Thresho
 
 // May this message COMPLETE an earlier reminder that is still waiting for its time (the answer to
 // Baumy's "when should I remind you?" — lib/reminders/draft.ts)? The same wall as a fresh reminder:
-// a directed, non-quarantined message from an authenticated sender whose lane may create reminders.
+// a directed, non-relayed (not forwarded / bot) message from an authenticated sender whose lane may create reminders.
 // An explicit forget or list op is its own action and never doubles as the follow-up. Whether it
 // really answers the question is the extractor's call; this only decides whether to look.
 export function reminderFollowUpAllowed(origin: Origin, v: Pick<Verdict, 'intent'> & { list?: string }, directed: boolean, authorId: string | null): boolean {
   if (origin.lane === 'ignore' || !authorId) return false
   if (!(directed || origin.lane === 'member_dm')) return false
-  if (origin.memoryTrust === 'quarantined') return false
+  if (isRelayed(origin.memoryTrust)) return false
   if (v.intent === 'forget' || (v.list != null && v.list !== 'none')) return false
   return isAllowed(origin, 'create_reminder')
 }
@@ -70,13 +70,18 @@ const CAPTURABLE: ReadonlySet<Intent> = new Set(['statement', 'request', 'remind
 
 export function shouldCapture(origin: Origin, v: Verdict, th: Thresholds = DEFAULT_THRESHOLDS): boolean {
   if (origin.lane === 'ignore') return false
+  // A FORWARDED message (D4) is someone else's words passed on — the landlord's "can someone be home
+  // Tuesday 10am?" is house info even though it is phrased as a question, so its intent label does not
+  // gate it; worthRemembering does. It is stored labelled and never becomes a fact (capture.ts).
+  if (origin.memoryTrust === 'forwarded')
+    return v.worthRemembering && v.intent !== 'forget' && isAllowed(origin, 'capture') && clampConfidence(v.confidence) >= th.capture
   if (!CAPTURABLE.has(v.intent)) return false
   return v.worthRemembering && isAllowed(origin, 'capture') && clampConfidence(v.confidence) >= th.capture
 }
 
 // A shopping-list op (add / check off / query) is a LOW-PRIVILEGE, group-scoped, reversible
 // mutation — the capture/reminder tier, NOT the confirm-tap tier (docs/spec/shopping-list.md).
-// The classifier PROPOSES the op flag; this disposes whether to act: quarantined (forwarded/bot)
+// The classifier PROPOSES the op flag; this disposes whether to act: relayed (forwarded/bot)
 // content can never mutate a list, and a paused GROUP goes silent while a member DM still works
 // (pause is lane-scoped, mirroring the DM answer bypass). The caller additionally checks the house
 // SCOPE is non-empty (needs houseChatId).
@@ -94,7 +99,7 @@ export function listOpProposed(
   if (origin.lane === 'ignore') return false
   if (listFlag === 'none') return false
   if (intent === 'reminder' || intent === 'forget') return false // explicit action wins
-  if (origin.memoryTrust === 'quarantined') return false
+  if (isRelayed(origin.memoryTrust)) return false
   if (!isAllowed(origin, 'mutate_list')) return false
   return origin.lane === 'member_dm' || policyEnabled
 }

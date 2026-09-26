@@ -6,11 +6,19 @@ import type { TelegramUpdate } from '@/lib/telegram/schema'
 
 export type Source = 'owner' | 'member' | 'unauthorized'
 export type Lane = 'house' | 'member_dm' | 'ignore'
-// 'quarantined' = forwarded/bot-origin content (memory-core #7/#94): stored for
-// provenance but NEVER grounds a reply, NEVER attributed to a housemate, NEVER
-// privileged. 'untrusted' = native group text: grounds replies (context only),
-// never privileged. 'trusted' = a known member's own DM text.
-export type Trust = 'trusted' | 'untrusted' | 'quarantined' | 'system'
+// 'quarantined' = BOT-origin content (memory-core #7/#94): stored for provenance but NEVER grounds a
+// reply, NEVER attributed to a housemate, NEVER privileged. 'forwarded' = a message a housemate
+// FORWARDED (someone else's words — the landlord's notice, the council's letter; spec D4): stored and
+// recallable, but only ever LABELLED "forwarded by X" — never X's own words, never a fact, never an
+// action, never privileged. 'untrusted' = native group text: grounds replies (context only), never
+// privileged. 'trusted' = a known member's own DM text.
+export type Trust = 'trusted' | 'untrusted' | 'forwarded' | 'quarantined' | 'system'
+
+/** Content that is not the sender's own words (forwarded, or bot-origin): it never writes a fact, never
+ *  drives an action (reminder / list / forget / follow-up) and is never attributed to the sender. */
+export function isRelayed(t: Trust): boolean {
+  return t === 'quarantined' || t === 'forwarded'
+}
 
 export interface Origin {
   source: Source
@@ -39,7 +47,7 @@ export interface OriginParts {
   isPrivate: boolean
   /** from.is_bot — bot-origin content is quarantined. */
   isBot?: boolean
-  /** message.forward_origin/forward_date present — forwarded content is quarantined. */
+  /** message.forward_origin present — a housemate relaying someone else's words: trust 'forwarded'. */
   isForwarded?: boolean
   /** message.sender_chat.id — set when a user posts "as the group" (anonymous admin) or a linked
    *  channel auto-forwards. Only sender_chat === the house itself de-quarantines (I8). */
@@ -70,9 +78,11 @@ export function resolveOriginParts(p: OriginParts, roster: Roster, houseChatId?:
   const accept = acceptHouseIds && acceptHouseIds.length > 0 ? acceptHouseIds : house !== '' ? [house] : []
   const { chatId, fromId, text, isPrivate } = p
   const isOwner = fromId != null && roster.isOwner(fromId)
-  // Forwarded or bot-origin content is quarantined regardless of lane (injection
-  // wall, memory-core #7/#94): it never grounds a reply, is never attributed to a
-  // housemate, and can never be privileged — even in a trusted member DM.
+  // Bot-origin content is quarantined regardless of lane (injection wall, memory-core #7/#94): it never
+  // grounds a reply, is never attributed to a housemate, and can never be privileged — even in a
+  // trusted member DM. A message a housemate FORWARDED is 'forwarded' (spec D4): recallable, labelled
+  // with the forwarder, but just as unprivileged and fact-free (isRelayed). A forwarded bot post stays
+  // quarantined.
   //
   // Exception (I8): an anonymous-admin post arrives from=@GroupAnonymousBot (is_bot) with
   // sender_chat = the house group ITSELF. That is a housemate speaking as the group — native house
@@ -80,7 +90,9 @@ export function resolveOriginParts(p: OriginParts, roster: Roster, houseChatId?:
   // alias set counts; a linked channel's auto-forward (sender_chat = the channel) stays quarantined.
   // Both ids are Telegram-authenticated transport fields, never message text.
   const anonymous = p.isBot === true && p.senderChatId != null && accept.includes(p.senderChatId) && accept.includes(chatId)
-  const quarantined = (p.isBot === true && !anonymous) || p.isForwarded === true
+  const quarantined = p.isBot === true && !anonymous
+  const forwarded = !quarantined && p.isForwarded === true
+  const relayedTrust: Trust | null = quarantined ? 'quarantined' : forwarded ? 'forwarded' : null
 
   // House lane: everyone in the house group is a housemate (B10). Their text is
   // ALWAYS untrusted for privileged actions (privacy mode is OFF → injection
@@ -90,7 +102,7 @@ export function resolveOriginParts(p: OriginParts, roster: Roster, houseChatId?:
     return {
       source: isOwner ? 'owner' : 'member',
       lane: 'house',
-      memoryTrust: quarantined ? 'quarantined' : 'untrusted',
+      memoryTrust: relayedTrust ?? 'untrusted',
       privileged: false,
       chatId,
       fromId,
@@ -100,9 +112,9 @@ export function resolveOriginParts(p: OriginParts, roster: Roster, houseChatId?:
   }
 
   // Member-DM lane: a private chat from a KNOWN member — house-management only.
-  // Forwarded/bot content the member relays is quarantined + non-privileged.
+  // Forwarded/bot content the member relays keeps its relayed tier and is never privileged.
   if (isPrivate && fromId != null && roster.isMember(fromId)) {
-    return { source: isOwner ? 'owner' : 'member', lane: 'member_dm', memoryTrust: quarantined ? 'quarantined' : 'trusted', privileged: !quarantined, chatId, fromId, text }
+    return { source: isOwner ? 'owner' : 'member', lane: 'member_dm', memoryTrust: relayedTrust ?? 'trusted', privileged: relayedTrust == null, chatId, fromId, text }
   }
 
   // Unknown DM sender / out-of-scope → ignored.

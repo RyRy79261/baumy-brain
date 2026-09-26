@@ -133,16 +133,18 @@ describe('ingest handler — shopping list end-to-end (real routing, mocked LLM/
     expect(reactToMessage).not.toHaveBeenCalled()
   })
 
-  it('a FORWARDED (quarantined) "buy milk" can NEVER touch the list — even flagged as add', async () => {
+  it('a FORWARDED "buy milk" can NEVER touch the list — even flagged as add', async () => {
     classifyMock.mockResolvedValue(verdict({ list: 'add' })) // classifier still says add…
     extractMock.mockResolvedValue({ op: 'add', items: ['milk'] })
 
     await runIngest(event({ text: 'buy milk', isForwarded: true }), step)
 
-    // …but quarantine blocks the mutation before the extractor even runs
+    // …but a relayed message (someone else's words — D4) never drives an action: blocked before the
+    // extractor even runs. The DM forward only gets the deterministic "read it" ack, never a list reply.
     expect(await openItems()).toEqual([])
     expect(extractMock).not.toHaveBeenCalled()
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(sendToHouse).toHaveBeenCalledTimes(1)
+    expect(String(sendToHouse.mock.calls[0][1])).not.toMatch(/milk|list/i)
   })
 
   it('a member DM "what\'s on the list?" renders the current list and does NOT double-reply', async () => {

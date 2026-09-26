@@ -34,7 +34,7 @@ const PROPOSAL_MIN_SIM = 0.45 // below: not a look-alike; at/above MERGE_THRESHO
 const PROPOSAL_MAX_SIM = 0.7
 const MAX_PROPOSALS = 10
 
-const TRUST_RANK: Record<string, number> = { system: 4, trusted: 3, untrusted: 2, quarantined: 1 }
+const TRUST_RANK: Record<string, number> = { system: 4, trusted: 3, untrusted: 2, forwarded: 1, quarantined: 1 }
 const rank = (t: string) => TRUST_RANK[t] ?? 0
 
 function rowsOf(res: unknown): Record<string, unknown>[] {

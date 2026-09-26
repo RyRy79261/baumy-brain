@@ -82,7 +82,8 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
           reportView === 'guests'
             ? await guestReport(db, houseScope)
             : reportView === 'reminders'
-              ? await upcomingRemindersReport(db, houseScope, houseTz())
+              ? // A member's own DM also lists their personal DM reminders (D2); the group never does.
+                await upcomingRemindersReport(db, houseScope, houseTz(), undefined, origin.lane === 'member_dm' && fromId != null ? String(fromId) : null)
               : reportView === 'recent'
                 ? await recentLearningsReport(db, houseScope)
                 : await weeklyReport(db, houseScope)

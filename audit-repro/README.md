@@ -27,7 +27,14 @@ gone; see `lib/memory/__tests__/{fact-model,predicates,lookup,hygiene,retrieve-a
 (`lib/turn/__tests__`, `lib/ai/__tests__/reply.test.ts`, `lib/inngest/functions/__tests__/ingest-turn.test.ts`)
 and in `scenarios/` (phase 2: `lib/turn/__tests__/window.test.ts`, `scenarios/window.scenario.test.ts`).
 
+And phase 5 (intake & actions — I1, I4, I5/D4, A4 enforced, A5/D2, A7, A8, A11, K6): `intake/ingest-intake.test.ts`,
+`reply/conversation.test.ts`, `spec-gap/chat-routing.test.ts`, `actions/*` and the webhook-mapping half of
+`intake/webhook-and-units.test.ts` are gone; see `lib/inngest/functions/__tests__/ingest-turn.test.ts` (phase 5
+block), `lib/memory/__tests__/forget.test.ts`, `lib/reminders/__tests__/destination.test.ts`,
+`lib/identity/__tests__/verify.test.ts`, `lib/telegram/__tests__/content.test.ts`,
+`app/api/telegram/webhook/__tests__/webhook.test.ts` and `scenarios/intake-actions.scenario.test.ts`.
+
 Still OPEN and kept here: I6's second half — the volunteered-reply floor (`replyAllowed`) still
 compares the triage confidence (certainty of the INTENT) against "how useful would a reply be"
-thresholds (`intake/webhook-and-units.test.ts`). No phase of chat-understanding-v2 schedules it yet;
-the spec §3 notes it as a known deviation.
+thresholds (`intake/webhook-and-units.test.ts`). It needs a product signal for "how useful would a
+volunteered reply be"; the spec (§3, and §8 "as implemented") notes it as a known deviation.

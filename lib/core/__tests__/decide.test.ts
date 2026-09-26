@@ -149,3 +149,24 @@ describe('reminderFollowUpAllowed', () => {
     expect(reminderFollowUpAllowed(houseOrigin(), { intent: 'request', list: 'add' }, true, '100')).toBe(false)
   })
 })
+
+// D4 (phase 5): a member-FORWARDED message is stored + recallable, but it is someone else's words — it
+// never drives an action, in either lane.
+describe('decide — forwarded content (D4)', () => {
+  const fwdHouse = () => resolveOriginParts({ chatId: HOUSE, fromId: 100, text: 'x', isPrivate: false, isForwarded: true }, roster)
+  const fwdDm = () => resolveOriginParts({ chatId: '200', fromId: 200, text: 'x', isPrivate: true, isForwarded: true }, roster)
+  it('never a reminder, a forget or a list op — even directed, even in a DM', () => {
+    for (const o of [fwdHouse(), fwdDm()]) {
+      expect(o.memoryTrust).toBe('forwarded')
+      expect(decide(o, V({ intent: 'reminder' }), true)).not.toBe('reminder')
+      expect(decide(o, V({ intent: 'forget' }), true)).not.toBe('forget')
+      expect(listOpProposed(o, 'add', true, 'statement')).toBe(false)
+      expect(reminderFollowUpAllowed(o, { intent: 'statement' }, true, '200')).toBe(false)
+    }
+  })
+  it('is captured when it holds house info — whatever intent its (someone else’s) wording reads as', () => {
+    expect(shouldCapture(fwdHouse(), V({ intent: 'question', worthRemembering: true }))).toBe(true) // "can someone be home Tuesday 10am?"
+    expect(shouldCapture(fwdHouse(), V({ intent: 'chatter', worthRemembering: false }))).toBe(false)
+    expect(shouldCapture(fwdDm(), V({ intent: 'forget', worthRemembering: true }))).toBe(false)
+  })
+})

@@ -68,8 +68,11 @@ are inside the 06:00–02:00 waking window, so the digest never sends at 3am.
   Exactly-once is a ceiling, not a floor: the staleness window above means a reminder can legitimately
   fire **zero** times if nothing delivered it within a day of its moment. That is the intended
   outcome — late enough and it is misinformation, not a reminder.
-- **Fixed destination.** Reminders/digests deliver only to the code-resolved house group, never an
-  LLM-picked recipient. Post-supergroup-migration this is resolved at send time by
+- **Fixed destination.** Reminders/digests deliver only to a code-resolved destination, never an
+  LLM-picked recipient: the house group, or — for a personal reminder set in a member DM
+  (chat-understanding-v2 D2, `deliver_chat_id = created_by`) — that creator's own DM, only while they are
+  an active member (`reminderDestination`; otherwise the row is cancelled, never re-routed). The house
+  path: Post-supergroup-migration this is resolved at send time by
   `sendToHouseResilient` to the CURRENT live house id (`house_config.live_chat_id ?? house_group_chat_id`),
   which also self-heals a stale id on a 400 — so a row's frozen `deliverChatId` can't misdeliver
   (docs/spec/telegram.md D9).

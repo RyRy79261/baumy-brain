@@ -65,7 +65,7 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
   if (action.actionType === 'memory.forget') {
     // The TAP is the wall: the delete targets the exact fact ids + value strings resolved
     // at propose time (payload), scoped to this house, and runs only now. Facts are
-    // removed; source messages are only surgically scrubbed on a purge, never deleted.
+    // removed; source messages are hidden (soft, reversible — A7) or surgically scrubbed (purge), never deleted.
     //
     // SCOPE = the pending action's STORED groupId (the house scope ingest resolved from the
     // authenticated lane at propose time) — NEVER the chat the button was tapped in (A1). A
@@ -100,6 +100,7 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
         mode: p.mode,
         facts: res.facts,
         messagesScrubbed: res.messagesScrubbed,
+        messagesHidden: res.messagesHidden,
         aliasesRemoved: res.aliasesRemoved,
       }),
     )
@@ -107,6 +108,7 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
     const bits = [
       `${res.facts} fact${res.facts === 1 ? '' : 's'}`,
       res.messagesScrubbed ? `scrubbed ${res.messagesScrubbed} message${res.messagesScrubbed === 1 ? '' : 's'}` : '',
+      res.messagesHidden ? `hid ${res.messagesHidden} message${res.messagesHidden === 1 ? '' : 's'}` : '',
       res.aliasesRemoved ? `${res.aliasesRemoved} alias${res.aliasesRemoved === 1 ? '' : 'es'}` : '',
     ].filter(Boolean)
     const detail = bits.join(' + ')

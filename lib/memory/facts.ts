@@ -10,7 +10,7 @@ import { liveFact } from '@/lib/memory/current'
 import { DEFAULT_EVENT_HOURS } from '@/lib/core/when'
 import { cardinalityOf, normalizePredicate, POSSESSOR_PREDICATE } from '@/lib/memory/predicates'
 import { cuedPredicates, lookupText, matchEntities, hasName, type EntityMatch, type LookupSpeaker } from '@/lib/memory/lookup'
-import type { Trust } from '@/lib/core/origin'
+import { isRelayed, type Trust } from '@/lib/core/origin'
 
 // Trust ranking for contradiction resolution. A fact may only supersede an
 // existing one when its trust is >= the incumbent's (memory-core #39). This is
@@ -19,7 +19,7 @@ import type { Trust } from '@/lib/core/origin'
 // may correct their own fact from any lane, and the owner may correct anything below 'system'.
 // Anything else that contradicts a more trusted fact is kept as a non-current CONFLICT row and
 // surfaced to the turn, so Baumy asks which is right instead of silently ignoring it.
-const TRUST_RANK: Record<string, number> = { system: 4, trusted: 3, untrusted: 2, quarantined: 1 }
+const TRUST_RANK: Record<string, number> = { system: 4, trusted: 3, untrusted: 2, forwarded: 1, quarantined: 1 }
 const rank = (t: string): number => TRUST_RANK[t] ?? 0
 
 // Entity resolution (memory Phase 3). WRITE side is precision-first: a wrong merge
@@ -272,7 +272,7 @@ export async function ensureSpeakerEntity(db: Database, groupId: string, memberI
 // Reconcile one extracted fact into the knowledge graph: ADD (new subject+
 // predicate, or another value of a multi-valued one), NOOP (unchanged), UPDATE (soft-supersede on a
 // trust-permitted contradiction), REMOVED (a `removes` fact closed a value), CONFLICT (a contradiction
-// the trust gate refused — kept as a non-current conflict row), or REJECTED (quarantined origin).
+// the trust gate refused — kept as a non-current conflict row), or REJECTED (relayed origin — forwarded / bot).
 export interface ReconcileInput {
   groupId: string
   fact: ExtractedFact
@@ -338,8 +338,9 @@ function mayOverride(input: ReconcileInput, existing: Incumbent): boolean {
 // the reply can exclude them from its own grounding (C1), the resolved subject to tag the note (F15),
 // and a refused contradiction to ask about (F5).
 export async function reconcileFactDetailed(db: Database, input: ReconcileInput): Promise<ReconcileDetail> {
-  // Quarantined (forwarded/bot) content NEVER becomes a fact (injection wall #7).
-  if (input.trustLevel === 'quarantined') return { result: 'rejected', factId: null, subjectEntityId: null, subjectKind: null }
+  // Relayed content — bot posts and member-forwarded messages (D4) — NEVER becomes a fact (injection
+  // wall #7): it is someone else's words, stored only as a labelled note.
+  if (isRelayed(input.trustLevel)) return { result: 'rejected', factId: null, subjectEntityId: null, subjectKind: null }
 
   const subject = await resolveEntity(db, input.groupId, input.fact.subject, input.fact.subjectKind ?? 'thing')
   const subjectId = subject.id

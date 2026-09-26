@@ -14,9 +14,12 @@ import {
   loadSeriesRow,
   scheduleNextOccurrence,
   repairRecurringSeries,
+  reminderDestination,
+  type ReminderDestination,
 } from '@/lib/reminders/store'
 import { headsUpAtDelivery } from '@/lib/inngest/functions/surfacing'
 import { sendToHouseResilient } from '@/lib/telegram/house-send'
+import { sendToHouse } from '@/lib/telegram/client'
 import { getHouseChatId } from '@/lib/identity/house'
 import { loadResponsePolicy } from '@/lib/policy'
 import { houseTz } from '@/lib/env'
@@ -37,6 +40,15 @@ const staleBefore = (now: Date): Date => new Date(now.getTime() - STALE_AFTER_HO
 // advance notice, not an alarm. Same delivery machinery — only the prefix differs.
 const reminderBody = (anchorKind: string | undefined, content: string): string =>
   `${anchorKind === 'event_offset' ? '🗓️' : '⏰'} ${content}`
+
+// The ONE send for a reminder, to its code-resolved destination (lib/reminders/store.ts
+// reminderDestination — never LLM): a house reminder goes to the CURRENT live house id (self-heals a
+// supergroup migration, lands in the /notifyhere topic); a personal reminder set in a member DM (D2)
+// goes to that creator's own DM and nowhere else — never through the house path.
+async function sendReminder(db: ReturnType<typeof createHttpDb>, dest: ReminderDestination, text: string): Promise<void> {
+  if (dest.kind === 'house') await sendToHouseResilient(db, text)
+  else await sendToHouse(dest.chatId, text)
+}
 
 // Daily arm (task-graph R2): emit an arm.due event for each scheduled reminder
 // entering the ≤6-day window. One cheap run/day — nowhere near the exec budget.
@@ -83,19 +95,27 @@ export async function deliverReminderNow(
   reminderId: string,
   at: Date,
   tz: string,
-): Promise<{ status: 'sent' | 'skipped' | 'expired' | 'paused'; nextId?: string | null }> {
+): Promise<{ status: 'sent' | 'skipped' | 'expired' | 'paused' | 'undeliverable'; nextId?: string | null }> {
   const row = await loadSeriesRow(db, reminderId)
   if (!row) return { status: 'skipped' }
   if (!(await loadResponsePolicy(db)).global_enabled) return { status: 'paused' }
+  // Fail closed on the destination: a personal DM reminder whose creator has left the house (or a row
+  // whose destination is not on the allow-list) is retired, never re-routed to the group.
+  const dest = await reminderDestination(db, row)
+  if (!dest) {
+    console.warn(`reminder ${reminderId}: no allowed destination (personal reminder of a departed member?) — cancelled`)
+    await cancelReminder(db, reminderId)
+    return { status: 'undeliverable' }
+  }
   if (new Date(row.fireAt).getTime() < staleBefore(at).getTime()) {
     await expireStaleScheduled(db, staleBefore(at), { now: at, tz })
     return { status: 'expired' }
   }
   if (!(await claimReminder(db, reminderId))) return { status: 'skipped' } // another path already claimed it
   try {
-    // Destination resolved in code to the CURRENT live house id (self-heals a supergroup
-    // migration — the frozen deliver_chat_id may predate it). Fixed-destination invariant intact.
-    await sendToHouseResilient(db, reminderBody(row.anchorKind, row.content))
+    // Destination resolved in code: the CURRENT live house id (self-heals a supergroup migration — the
+    // frozen deliver_chat_id may predate it), or the creator's own DM. Fixed-destination invariant intact.
+    await sendReminder(db, dest, reminderBody(row.anchorKind, row.content))
   } catch (e) {
     await releaseReminder(db, reminderId) // SEND failed → back to scheduled so it retries (never zero-fire)
     throw e
@@ -166,16 +186,28 @@ export async function deliverDueReminders(
   const expired = await expireStaleScheduled(db, staleBefore(now), { now, tz })
   if (expired > 0) console.warn(`reminder-digest: retired ${expired} stale reminder(s) (>${STALE_AFTER_HOURS}h past due)`)
   const due = await dueScheduled(db, now, 100, staleBefore(now))
-  // Batch by destination (all reminders target the house group, but group defensively).
+  // Batch by destination: the house group (one message), and each creator's DM for personal reminders
+  // set in a DM (D2) — never mixed, so a private reminder can never ride along in a house digest.
   const byDest = new Map<string, DueRow[]>()
   for (const r of due) byDest.set(r.deliverChatId, [...(byDest.get(r.deliverChatId) ?? []), r])
 
   let sent = 0
   let messages = 0
-  // All reminders deliver to the house group; the destination is resolved in code at send time to the
-  // CURRENT live id (sendToHouseResilient) — so a supergroup migration self-heals even if a row's
-  // frozen deliver_chat_id predates it. The byDest grouping stays as a defensive batch boundary.
-  for (const group of byDest.values()) {
+  // A house batch resolves its destination at send time to the CURRENT live id (sendToHouseResilient) —
+  // so a supergroup migration self-heals even if a row's frozen deliver_chat_id predates it. A DM batch
+  // goes to that creator's own DM; a row whose destination is not allowed is retired, never re-routed.
+  for (const rows of byDest.values()) {
+    const dest = await reminderDestination(db, rows[0])
+    const group: DueRow[] = []
+    for (const r of rows) {
+      const d = r === rows[0] ? dest : await reminderDestination(db, r)
+      if (d && dest && d.kind === dest.kind) group.push(r)
+      else {
+        console.warn(`reminder-digest: ${r.id} has no allowed destination — cancelled`)
+        await cancelReminder(db, r.id)
+      }
+    }
+    if (!dest || group.length === 0) continue
     const claimed: DueRow[] = []
     for (const r of group) if (await claimReminder(db, r.id)) claimed.push(r)
     if (claimed.length === 0) continue
@@ -218,7 +250,7 @@ export async function deliverDueReminders(
     }
     const body = toSend.map((r) => reminderBody(r.anchorKind, lines.get(r.id)!)).join('\n')
     try {
-      await sendToHouseResilient(db, body)
+      await sendReminder(db, dest, body)
     } catch (e) {
       for (const r of toSend) await releaseReminder(db, r.id)
       throw e

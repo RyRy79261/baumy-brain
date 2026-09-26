@@ -1,6 +1,6 @@
 import { Api } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
-import { record, isCapturing } from '@/lib/telegram/outbox'
+import { record, isCapturing, sandboxChatMember } from '@/lib/telegram/outbox'
 import { now } from '@/lib/core/clock'
 import { createHttpDb } from '@/db/client'
 import { appendBaumySend, type BaumySend } from '@/lib/turn/window'
@@ -147,6 +147,21 @@ export async function getGroupAdminIds(chatId: string): Promise<Set<string>> {
   } catch {
     return new Set()
   }
+}
+
+// A user's status in a chat (Bot API getChatMember): 'creator' | 'administrator' | 'member' |
+// 'restricted' | 'left' | 'kicked', plus whether a restricted user is still a member. Used ONLY to let
+// a housemate Baumy has never seen speak in the group DM it (K6, lib/identity/verify.ts) — Telegram's
+// own membership graph, an authenticated answer about an authenticated user id, never message text.
+// Needs no bot-admin rights for a group Baumy is in. Throws on a transport error (the caller fails
+// closed). In a sandbox: the harness's membership directory, never the network.
+export async function getChatMemberStatus(chatId: string, userId: number): Promise<{ status: string; isMember: boolean } | null> {
+  if (isCapturing()) {
+    const status = sandboxChatMember(chatId, userId)
+    return status ? { status, isMember: status !== 'left' && status !== 'kicked' } : null
+  }
+  const m = await api().getChatMember(chatId, userId)
+  return { status: m.status, isMember: m.status === 'restricted' ? (m as { is_member?: boolean }).is_member === true : m.status !== 'left' && m.status !== 'kicked' }
 }
 
 // Baumy's own identity (from getMe), cached for the process — so directed-at-Baumy detection uses

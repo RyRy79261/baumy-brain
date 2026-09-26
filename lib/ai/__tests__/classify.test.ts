@@ -84,6 +84,12 @@ describe('classify (triage, spec §2)', () => {
     expect(TRIAGE_SYSTEM).toMatch(/RECENT CHAT/)
   })
 
+  it('D4: a forwarded message is flagged FORWARDED with its forwarder — someone else\'s words', () => {
+    const h = triageHeader({ lane: 'house', directed: { value: false, why: null }, inConsoleTopic: false, forwardedBy: 'Marco' })
+    expect(h).toContain("FORWARDED: yes — Marco forwarded someone else's message (the words are not Marco's own)")
+    expect(triageHeader({ lane: 'house', directed: { value: false, why: null }, inConsoleTopic: false })).not.toContain('FORWARDED')
+  })
+
   it('the header names a DM and the ask-Baumy topic', () => {
     expect(triageHeader({ lane: 'member_dm', directed: { value: true, why: 'dm' }, inConsoleTopic: false })).toContain('a private DM to Baumy')
     expect(triageHeader({ lane: 'house', directed: { value: true, why: 'console_topic' }, inConsoleTopic: true })).toContain('DIRECTED AT BAUMY: yes (console_topic)')

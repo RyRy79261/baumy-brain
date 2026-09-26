@@ -1,7 +1,7 @@
 import { inngest, type TelegramMessageData } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { telegramUpdates } from '@/db/schema'
-import { resolveOriginParts } from '@/lib/core/origin'
+import { resolveOriginParts, isRelayed } from '@/lib/core/origin'
 import { decide, shouldCapture, listOpProposed, reminderFollowUpAllowed } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
@@ -22,6 +22,8 @@ import { takeReminderDraft } from '@/lib/reminders/draft'
 import { executePlan } from '@/lib/turn/respond'
 import { runCommands } from '@/lib/turn/commands'
 import { appendInbound, recentTurns, linkProduced, withholdTurn } from '@/lib/turn/window'
+import { lookupEdit, withdrawForEdit, settleEditedFacts, type EditMap } from '@/lib/turn/edit'
+import { admitVerifiedMember } from '@/lib/identity/verify'
 import type { WindowTurn } from '@/lib/turn/context'
 import type { TurnStep } from '@/lib/turn/step'
 
@@ -52,7 +54,8 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // STABLE scope id (group_id everywhere); `acceptIds` also includes the live transport id so an
   // inbound message from the migrated -100… supergroup still resolves to the house lane (alias
   // seam, docs/spec/telegram.md D9). Reply destination stays the inbound chat (origin.chatId).
-  const { scopeId: houseChatId, acceptIds, consoleThreadId } = await resolveHouseIds(createHttpDb())
+  const { scopeId: houseChatId, sendId: houseSendId, acceptIds, consoleThreadId } = await resolveHouseIds(createHttpDb())
+  const isEdit = event.data.isEdit === true
   // Owner-configurable response policy (kill-switch / reply floor / mutes).
   const policy = await loadResponsePolicy(createHttpDb())
 
@@ -66,10 +69,22 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     if (acceptIds.includes(chatId)) await ensureRegistered(db, houseChatId, isBot ? null : fromId, isBot ? null : fromName)
   })
 
-  if (!rawText.trim()) return { updateId, decision: 'drop' as const, reason: 'empty' as const }
+  // No text and no caption (I4): a voice note, sticker, location… is ignored EXPLICITLY — the media
+  // is never fetched or interpreted (lib/telegram/content.ts). A caption arrives folded into `text`.
+  if (!rawText.trim()) return { updateId, decision: 'drop' as const, reason: event.data.media ? ('media' as const) : ('empty' as const) }
 
   // Real roster (fail-closed) + deterministic origin — before any LLM call.
-  const roster = await loadRoster(createHttpDb())
+  let roster = await loadRoster(createHttpDb())
+  // A housemate Baumy has never seen speak in the group (K6): an unknown PRIVATE sender is checked
+  // against Telegram's membership of the house group (getChatMember — fail-closed, a "no" cached). An
+  // active member is added to the roster and served; anyone else stays out of scope. Memoized: a retry
+  // never re-asks, and the roster is re-read after the upsert.
+  if (chatType === 'private' && fromId != null && !isBot && houseChatId && !roster.isMember(fromId)) {
+    const admitted = (await step.run('verify-member', () =>
+      admitVerifiedMember(createHttpDb(), { scopeId: houseChatId, sendId: houseSendId }, fromId, fromName),
+    )) as boolean
+    if (admitted) roster = await loadRoster(createHttpDb())
+  }
   const origin = resolveOriginParts(
     { chatId, fromId, text: rawText, isPrivate: chatType === 'private', isBot, isForwarded, senderChatId: event.data.senderChatId ?? null },
     roster,
@@ -80,9 +95,12 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // can reply (A12).
   if (origin.lane === 'ignore') return { updateId, decision: 'drop' as const, reason: 'out-of-scope' }
   const lane = origin.lane
-  // Who the words are attributed to: the authenticated sender — never for quarantined content, and
-  // never the shared GroupAnonymousBot identity behind an anonymous-admin post (I8).
-  const authorId = origin.memoryTrust === 'quarantined' || origin.anonymous || fromId == null ? null : String(fromId)
+  // Who the words are attributed to: the authenticated sender — never for relayed content (a forwarded
+  // message is someone else's words; a bot post is nobody's), and never the shared GroupAnonymousBot
+  // identity behind an anonymous-admin post (I8).
+  const authorId = isRelayed(origin.memoryTrust) || origin.anonymous || fromId == null ? null : String(fromId)
+  // A member-FORWARDED message (D4): who relayed it — recorded beside the note, never as its author.
+  const forwarderId = origin.memoryTrust === 'forwarded' && !origin.anonymous && fromId != null ? String(fromId) : null
   // The house whose SHARED memory this message reads/writes — the SCOPE, distinct from the reply
   // DESTINATION (chatId). Derived from the authenticated lane, never text.
   const houseScope = houseScopeForOrigin(origin, houseChatId)
@@ -104,6 +122,13 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   const directed = directedness({ lane, text: rawText, botUsername, replyToBaumy, inConsoleTopic, repliesToHuman })
   // What Baumy reasons over: the @mention stripped (C12) — directedness above already used it.
   const text = stripBotMention(rawText, botUsername)
+
+  // An EDIT (I1): what did the original produce? Read BEFORE the window upsert below — the row's mere
+  // existence is how we know Baumy processed the original (lib/turn/edit.ts).
+  const editMap: EditMap | null =
+    isEdit && houseScope
+      ? ((await step.run('edit-lookup', () => lookupEdit(createHttpDb(), { chatId, messageId }))) as EditMap)
+      : null
 
   // The 48h conversation window (spec §5): every in-scope message, BEFORE the noise filter (an "ok"
   // or "lol" is still part of the conversation) — but never another bot's post (quarantined bot
@@ -136,6 +161,10 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
 
   const pf = prefilter(text, { directed: directed.value, dm: lane === 'member_dm' })
   if (!pf.keep) return { updateId, decision: 'drop' as const, reason: pf.reason }
+
+  // An edited slash command is not run again (a second /weekly post, a re-pointed topic): commands act
+  // once, on the message as first sent.
+  if (isEdit && rawText.trim().startsWith('/')) return { updateId, decision: 'drop' as const, reason: 'edited-command' as const }
 
   const cmd = await runCommands(step, { rawText, origin, roster, fromId, chatId, messageId, messageThreadId, houseScope, sayHouse, houseThreadId })
   if (cmd === 'unknown-command') return { updateId, decision: 'drop' as const, reason: 'unknown-command' as const }
@@ -189,6 +218,8 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     isOwner: fromId != null && roster.isOwner(fromId),
     anonymous: origin.anonymous === true,
     authorId,
+    forwardedBy: forwarderId ? { id: forwarderId, name: names.get(forwarderId) ?? fromName ?? 'a housemate' } : null,
+    edit: isEdit ? { processed: editMap?.processed === true } : null,
     trust: origin.memoryTrust,
     sentAt,
     tz: houseTz(),
@@ -208,6 +239,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
       inConsoleTopic,
       replyTo: ctx.replyTo,
       from: authorId ? ctx.sender.firstName : null,
+      forwardedBy: ctx.forwardedBy ? ctx.forwardedBy.name.split(/\s+/)[0] : origin.memoryTrust === 'forwarded' ? '' : null,
       housemates: [...new Set([...names.values()].map(firstName))].slice(0, 20),
       recent: { turns: recent, tz: ctx.tz, now: sentAt },
     }),
@@ -229,10 +261,25 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // Pause silences the GROUP (reply AND the actions that would be acknowledged there); a DM still works.
   const canSpeak = lane === 'member_dm' || policy.global_enabled
 
+  // An edit of a processed message: withdraw what the original produced BEFORE the edited text is
+  // re-read — its note (so consolidation cannot fold the edit back onto it) and its unsent reminders
+  // (the edit re-creates whatever it still asks for). Facts are settled after capture (lib/turn/edit.ts).
+  if (editMap?.processed) {
+    await step.run('edit-withdraw', () => withdrawForEdit(createHttpDb(), houseScope, editMap))
+  }
+
+  // Actions → ctx.outcome. The shopping list first: a message handled as a list op is NOT also captured
+  // as a memory note (A11) — "we're out of milk" lives in the list table, where "got the milk" ticks it
+  // off; as a note it stayed "we're out of milk" in memory forever. The list auto-commits
+  // (capture tier); reminder / forget below.
+  if (houseScope && canReply && listOpProposed(origin, verdict.list, policy.global_enabled, verdict.intent)) {
+    ctx.outcome.list = await runList(step, ctx)
+  }
+
   // Capture (evidence + facts) — orthogonal to the action, so a reminder that also states a fact is
   // still remembered. Never a question or chatter (I3), never a forget request (storing "delete X"
-  // re-adds X), never a question that mentions a secret (I9).
-  if (shouldCapture(origin, verdict) && decision !== 'forget' && !isSecretQuestion(text, verdict.intent)) {
+  // re-adds X), never a question that mentions a secret (I9), never a list op (A11).
+  if (!ctx.outcome.list && shouldCapture(origin, verdict) && decision !== 'forget' && !isSecretQuestion(text, verdict.intent)) {
     ctx.outcome.captured = await runCapture(step, ctx)
     // The window-append redacted on the raw text; the fact layer scans the extracted TRIPLE, which
     // catches more ("wifi is hunter2 now" → wifi · has_password · hunter2 is secure, the sentence is
@@ -243,10 +290,17 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     }
   }
 
-  // Actions → ctx.outcome. Each auto-commits (list, reminder) or only proposes (forget).
-  if (houseScope && canReply && listOpProposed(origin, verdict.list, policy.global_enabled, verdict.intent)) {
-    ctx.outcome.list = await runList(step, ctx)
+  if (editMap?.processed) {
+    const captured = ctx.outcome.captured
+    await step.run('edit-settle', () =>
+      settleEditedFacts(createHttpDb(), houseScope, editMap, {
+        produced: captured?.factIds ?? [],
+        kept: captured?.keptFactIds ?? [],
+        noteId: captured?.memoryItemId ?? null,
+      }),
+    )
   }
+
   // Reminders honour pause in BOTH lanes (they post to the house group) — unchanged from pre-v2 —
   // but a paused one is an explicit outcome, so a DM ask hears WHY nothing was scheduled.
   // A directed message may also complete an earlier reminder still waiting for its time (the answer
@@ -268,19 +322,31 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   } else if (decision === 'reminder') {
     ctx.outcome.reminder = { status: 'paused' }
   }
-  if (decision === 'forget' && canSpeak && canReply) {
+  // Forget only PROPOSES (a confirm card) — pointless for an edit, which never speaks: re-ask instead.
+  if (decision === 'forget' && canSpeak && canReply && !isEdit) {
     ctx.outcome.forget = await runForget(step, ctx)
   }
 
-  // What this message produced, on its window row — the map an edit needs to supersede it (I1).
+  // What this message produced, on its window row — the map an edit needs to supersede it (I1). An edit
+  // always rewrites it (what the original produced has just been withdrawn or settled).
   const reminderIds = (ctx.outcome.reminders ?? []).flatMap((r) => (r.status === 'set' && r.id ? [r.id] : []))
-  if (houseScope && (ctx.outcome.captured || reminderIds.length)) {
+  if (houseScope && (ctx.outcome.captured || reminderIds.length || isEdit)) {
     await step.run('window-link', async () => {
       try {
         await linkProduced(
           createHttpDb(),
           { chatId, messageId },
-          { memoryItemId: ctx.outcome.captured?.memoryItemId, factIds: ctx.outcome.captured?.factIds, reminderIds },
+          {
+            memoryItemId: ctx.outcome.captured?.memoryItemId,
+            // An edit that restated the original's own facts still "produced" them — a second edit must
+            // find them. (Never another message's fact a turn merely repeated: editing that away must not
+            // retract what someone else said.)
+            factIds: [
+              ...(ctx.outcome.captured?.factIds ?? []),
+              ...(ctx.outcome.captured?.keptFactIds ?? []).filter((id) => editMap?.factIds.includes(id)),
+            ],
+            reminderIds,
+          },
         )
       } catch (err) {
         console.warn('[baumy/ingest] conversation-window link failed:', err instanceof Error ? err.message : err)

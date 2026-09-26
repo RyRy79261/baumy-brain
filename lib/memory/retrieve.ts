@@ -9,7 +9,9 @@ import { now as clockNow } from '@/lib/core/clock'
 // over content_tsv) fused by Reciprocal Rank Fusion — and multiple probes (the query
 // + LLM paraphrases + a HyDE answer) are RRF-fused again across probes, so recall no
 // longer hinges on the asker's exact wording. Group-scoped, active-only, quarantined
-// excluded (poisoning wall), current embedding model only.
+// excluded (poisoning wall), current embedding model only. A member-FORWARDED note (trust
+// 'forwarded', D4) is recallable — it carries `forwardedBy` so the reply labels it as relayed words.
+// It never has an author, so the author arm ("what did Marco say") never returns it.
 const RRF_K = 60 // standard RRF damping constant
 const CANDIDATES = 50 // per-probe candidate pool feeding the fusion
 const RECENCY_HALFLIFE_DAYS = 30 // recency decay half-life
@@ -22,6 +24,10 @@ export interface RetrievedMemory {
   content: string
   memoryType: string
   authoredBy: string | null
+  /** The stored trust tier ('forwarded' = a member-forwarded note, labelled as relayed words — D4). */
+  trustLevel?: string
+  /** A member-forwarded note: who forwarded it — the words are NOT theirs. */
+  forwardedBy?: string | null
   /** Cosine similarity to the query (0 for a lexical-only hit — no vector rank). */
   similarity: number
   isSecure: boolean
@@ -129,6 +135,8 @@ async function runHybrid(
            mi.content AS content,
            mi.memory_type AS "memoryType",
            mi.authored_by AS "authoredBy",
+           mi.trust_level AS "trustLevel",
+           mi.forwarded_by AS "forwardedBy",
            mi.is_secure AS "isSecure",
            mi.content_encrypted AS "contentEncrypted",
            mi.created_at AS "createdAt",
@@ -151,6 +159,8 @@ async function runHybrid(
     content: r.content as string,
     memoryType: r.memoryType as string,
     authoredBy: (r.authoredBy ?? null) as string | null,
+    trustLevel: (r.trustLevel ?? undefined) as string | undefined,
+    forwardedBy: (r.forwardedBy ?? null) as string | null,
     similarity: Number(r.similarity),
     isSecure: Boolean(r.isSecure),
     contentEncrypted: (r.contentEncrypted ?? null) as string | null,

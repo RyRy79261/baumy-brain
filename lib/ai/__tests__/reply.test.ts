@@ -154,6 +154,14 @@ describe('renderReplyPrompt — spec §4 turn prompt', () => {
     expect(lines[3]).toBe('  - note · unattributed · 1 Dec 2025: "old news"')
   })
 
+  it('D4: a forwarded note is labelled with its forwarder and never attributed to them', () => {
+    const base = { kind: 'note' as const, who: null, saidAt: new Date('2026-09-20T10:00:00Z'), content: 'Landlord: inspection Tuesday 10am', isSecure: false, contentEncrypted: null }
+    expect(memoryLine({ ...base, forwarded: { by: 'Marco' } }, TZ, NOW)).toBe(
+      `  - note · forwarded by Marco (someone else's words, not Marco's) · 20 Sep: "Landlord: inspection Tuesday 10am"`,
+    )
+    expect(memoryLine({ ...base, forwarded: { by: null } }, TZ, NOW)).toContain("note · forwarded (someone else's words) ·")
+  })
+
   it('F11: a reflect profile is its own kind — Baumy\'s dated summary, never a housemate\'s words', () => {
     expect(
       memoryLine({ kind: 'profile', who: null, saidAt: new Date('2026-09-20T10:00:00Z'), content: "zuzka profile: Charl's sister", isSecure: false, contentEncrypted: null }, TZ, NOW),

@@ -76,7 +76,7 @@ These are the steps in `dsl.ts`. Expectations check the most recent turn.
 
 | Step | What it does |
 |---|---|
-| `say(person, text, opts)` | A message. `opts` can include `dm`, `topic: 'console' \| threadId`, `replyToBaumy: true \| text`, `replyTo`, `mention` (exact @username), `forwarded`, `anonymousAdmin`, `edit` (same message_id as the speaker's previous message) and `throws` (ingest must throw). |
+| `say(person, text, opts)` | A message. `opts` can include `dm`, `topic: 'console' \| threadId`, `replyToBaumy: true \| text`, `replyTo`, `mention` (exact @username), `forwarded`, `anonymousAdmin`, `edit` (an edited_message: same message_id as the speaker's previous message), `media` (the text is that media's caption — mapped exactly as the webhook maps it) and `throws` (ingest must throw). |
 | `tap(person, 'confirm' \| 'cancel')` | Taps the latest confirm card's button as `person` — the real callback handler (the confirm-tap wall), in the chat the card was sent to. |
 | `advance({ days, hours, minutes })` | Moves the clock. Each cron fires at its own instant, and whatever it posts becomes the turn. |
 | `expectReaction(emoji \| null \| { not })` | The reaction left on the message once the turn settled. A 👀 that was later cleared counts as none. |
@@ -106,6 +106,9 @@ converts them to the schemas the code validates today.
   `reminder`), before any cron due at the same minute; the digest stays the backstop.
 - The scripted reply echoes the MODE when a fixture doesn't script it (`(scripted ack)`), and in
   MODE answer admits a miss when MEMORY is empty — so a scenario can see which mode was used.
+
+A person with `unseen: true` is in the Telegram group (the sandbox's `getChatMember` directory knows
+them) but not on Baumy's roster — how a new housemate who never spoke in the group looks (K6).
 
 ### Known gaps
 

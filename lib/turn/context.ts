@@ -81,6 +81,9 @@ export interface TurnOutcome {
   captured?: {
     memoryItemId: string
     factIds: string[]
+    /** Facts this message restated unchanged (reconcile NOOP → the live incumbent) — an EDIT keeps them
+     *  (lib/turn/edit.ts); the reply's self-exclusion does not need them. */
+    keptFactIds?: string[]
     learned: FactSummary[]
     rejected: FactSummary[]
     /** Contradictions of a more trusted fact by someone who may not override it (F5) — never silent. */
@@ -130,8 +133,16 @@ export interface TurnContext {
   houseScope: string
   lane: 'house' | 'member_dm'
   sender: TurnSender
-  /** Member id the words are attributed to — null for quarantined content or an anonymous admin. */
+  /** Member id the words are attributed to — null for relayed (forwarded / bot) content or an
+   *  anonymous admin. */
   authorId: string | null
+  /** A member-FORWARDED message (trust 'forwarded', D4): who forwarded it. Stored + recallable labelled
+   *  "forwarded by X"; never X's words, never a fact, never an action. Null otherwise. */
+  forwardedBy: { id: string; name: string } | null
+  /** An EDIT of an earlier message (I1): `processed` = the original was seen (its window row exists), so
+   *  what it produced was superseded; otherwise it is handled as new. Either way Baumy never speaks in
+   *  words for an edit (the planner). Null for an ordinary message. */
+  edit: { processed: boolean } | null
   trust: Trust
   /** Message time (now() at ingest) and the house timezone it is read in. */
   sentAt: Date
@@ -157,6 +168,8 @@ export interface TurnInput {
   isOwner: boolean
   anonymous: boolean
   authorId: string | null
+  forwardedBy?: { id: string; name: string } | null
+  edit?: { processed: boolean } | null
   trust: Trust
   sentAt: Date
   tz: string
@@ -182,6 +195,8 @@ export function buildTurnContext(i: TurnInput): TurnContext {
     lane: i.lane,
     sender: { id: i.fromId ?? 0, name, firstName: given ? given.split(/\s+/)[0] : name, role: i.isOwner ? 'owner' : 'member' },
     authorId: i.authorId,
+    forwardedBy: i.forwardedBy ?? null,
+    edit: i.edit ?? null,
     trust: i.trust,
     sentAt: i.sentAt,
     tz: i.tz,

@@ -35,7 +35,8 @@ const V = (o: Partial<ClassifierVerdict> = {}): ClassifierVerdict => ({
 interface Case {
   lane?: 'house' | 'member_dm'
   why?: DirectedWhy | null
-  trust?: 'untrusted' | 'trusted' | 'quarantined'
+  trust?: 'untrusted' | 'trusted' | 'quarantined' | 'forwarded'
+  edit?: { processed: boolean }
   verdict?: ClassifierVerdict | undefined
   outcome?: TurnOutcome
   text?: string
@@ -64,6 +65,7 @@ function ctx(c: Case): TurnContext {
     directed: { value: why != null, why },
     replyTo: null,
     text: c.text ?? 'some message',
+    edit: c.edit ?? null,
   })
   t.verdict = 'verdict' in c ? c.verdict : V()
   t.outcome = c.outcome ?? {}
@@ -85,9 +87,34 @@ describe('planResponse — pause and trust', () => {
   it('paused does NOT silence a DM (the bypass is lane-scoped)', () => {
     expect(plan({ policy: PAUSED, lane: 'member_dm', verdict: V({ intent: 'question' }) })).toMatchObject({ kind: 'words', mode: 'answer' })
   })
-  it('forwarded / bot (quarantined) content never gets a voice — not even a ✍', () => {
+  it('member-FORWARDED content (D4): ✍ when kept in the group, silence when not, the deterministic ack in a DM — never an answer', () => {
+    expect(plan({ trust: 'forwarded', verdict: V({ intent: 'statement' }), outcome: { captured: CAPTURED } })).toEqual({ kind: 'react', emoji: '✍', row: 'forwarded-captured' })
+    expect(plan({ trust: 'forwarded', verdict: V({ intent: 'chatter' }) })).toEqual({ kind: 'none', row: 'forwarded' })
+    expect(plan({ trust: 'forwarded', why: 'mention', verdict: V({ intent: 'question', asksBaumy: true }) })).toEqual({ kind: 'none', row: 'forwarded' })
+    expect(plan({ trust: 'forwarded', lane: 'member_dm', verdict: V({ intent: 'question' }) })).toEqual({ kind: 'forward-ack', row: 'forwarded-dm' })
+    expect(plan({ trust: 'forwarded', policy: PAUSED, outcome: { captured: CAPTURED } })).toMatchObject({ row: 'paused' })
+  })
+  it('bot (quarantined) content never gets a voice — not even a ✍', () => {
     expect(plan({ trust: 'quarantined', verdict: V({ intent: 'statement' }), outcome: { captured: CAPTURED } })).toEqual({ kind: 'none', row: 'quarantined' })
     expect(plan({ trust: 'quarantined', why: 'mention', verdict: V({ intent: 'question', asksBaumy: true }) })).toMatchObject({ row: 'quarantined' })
+  })
+})
+
+describe('planResponse — edits never speak in words (I1)', () => {
+  const both = [{ processed: true }, { processed: false }]
+  it('a directed question edit → silence (it was already answered, or would land under an old message)', () => {
+    for (const edit of both) expect(plan({ edit, why: 'mention', verdict: V({ intent: 'question', asksBaumy: true }) })).toEqual({ kind: 'none', row: 'edit-silent' })
+  })
+  it('a re-set reminder → 👍 instead of the worded confirm; a re-noted statement → ✍ instead of the ack', () => {
+    for (const edit of both) {
+      expect(plan({ edit, why: 'mention', verdict: V({ intent: 'reminder' }), outcome: { reminder: set() } })).toEqual({ kind: 'react', emoji: '👍', row: 'edit-reminder' })
+      expect(plan({ edit, why: 'mention', verdict: V({ intent: 'statement' }), outcome: { captured: CAPTURED } })).toEqual({ kind: 'react', emoji: '✍', row: 'edit-noted' })
+    }
+  })
+  it('reactions pass through unchanged; a list or forget flow that would need words goes quiet', () => {
+    expect(plan({ edit: { processed: true }, verdict: V({ intent: 'statement' }), outcome: { captured: CAPTURED } })).toEqual({ kind: 'react', emoji: '✍', row: 'statement-captured' })
+    expect(plan({ edit: { processed: true }, lane: 'member_dm', verdict: V({ intent: 'question', list: 'query' }), outcome: { list: list({ op: 'query' }) } })).toEqual({ kind: 'none', row: 'edit-silent' })
+    expect(plan({ edit: { processed: true }, why: 'mention', verdict: V({ intent: 'statement' }), outcome: { captured: { ...CAPTURED, conflicts: [{ fact: { subject: 'a', predicate: 'b', object: 'c', when: null, secure: false }, current: { object: 'd', by: null, saidAt: null } }] } } })).toEqual({ kind: 'none', row: 'edit-silent' })
   })
 })
 

@@ -34,6 +34,14 @@ let sentSeq = 0
 
 const sink = new AsyncLocalStorage<OutboundMessage[]>()
 
+/** The sandbox's stand-in for Telegram's group membership (getChatMember): a status ('member',
+ *  'administrator', 'left', …) or null when the user is unknown there. Installed with the sink. */
+export type ChatMemberDirectory = (chatId: string, userId: number) => string | null
+const directory = new AsyncLocalStorage<ChatMemberDirectory | null>()
+
+/** The installed sandbox membership directory — only ever consulted while capturing (no network). */
+export const sandboxChatMember = (chatId: string, userId: number): string | null => directory.getStore()?.(chatId, userId) ?? null
+
 /** Installed sink, or undefined when we are talking to the real Bot API. */
 export const outboundSink = (): OutboundMessage[] | undefined => sink.getStore()
 
@@ -54,8 +62,8 @@ export function record(m: Omit<OutboundMessage, 'at' | 'messageId'>, at: Date): 
  * Run `fn` with outbound capture installed. Returns whatever Baumy tried to say, in order,
  * alongside the function's own result. Nothing reaches Telegram.
  */
-export async function captureOutbound<T>(fn: () => Promise<T>): Promise<{ result: T; sent: OutboundMessage[] }> {
+export async function captureOutbound<T>(fn: () => Promise<T>, opts: { chatMembers?: ChatMemberDirectory } = {}): Promise<{ result: T; sent: OutboundMessage[] }> {
   const box: OutboundMessage[] = []
-  const result = await sink.run(box, fn)
+  const result = await sink.run(box, () => directory.run(opts.chatMembers ?? null, fn))
   return { result, sent: box }
 }

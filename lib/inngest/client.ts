@@ -15,7 +15,13 @@ type Events = {
       fromFirstName?: string | null
       fromLastName?: string | null
       fromUsername?: string | null
+      /** The text, or the caption of a photo/document/video (folded in at the webhook — I4). */
       text: string | null
+      /** The media kind the message carries (lib/telegram/content.ts), null for plain text. Media with
+       *  no caption has text null and is dropped by ingest with reason 'media'. */
+      media?: string | null
+      /** An edited_message (I1): same message_id as the original, new update_id. */
+      isEdit?: boolean
       isBot: boolean
       isForwarded: boolean
       // COMPAT ONLY: "the replied-to author is SOME bot" — the pre-v2 coarse signal (C8). Ingest

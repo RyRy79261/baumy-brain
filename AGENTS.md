@@ -60,10 +60,14 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
 - **Injection wall (lane-based):** origin/lane is derived from Telegram-authenticated
   `chat.type`/`chat.id`/`from.id`, never from message text (`lib/core/*`). House-group text is
   `privileged: false`, always.
-- **Trust tiers:** forwarded / bot-origin content → `quarantined`; it is never attributed to a
-  housemate and never grounds a reply or writes a fact (the conversation window may show a
-  member-forwarded line as quoted context, labelled "X forwarded — not X's own words"; bot posts are
-  never windowed — spec §5). Native group text is `untrusted`
+- **Trust tiers:** bot-origin content → `quarantined`: never attributed to a housemate, never
+  grounds a reply, never writes a fact, never windowed. A message a housemate **forwarded** →
+  `forwarded` (spec D4, phase 5): stored and **recallable, but only ever labelled** "forwarded by X"
+  (`baumy_memory_items.forwarded_by`; `authored_by` stays NULL — the words are the landlord's, not
+  X's) in grounding, the window and `/weekly`; it **never writes a fact, never drives an action**
+  (reminder / list / forget / follow-up — `isRelayed()` in `lib/core/origin.ts`), is never privileged,
+  never consolidates, never feeds reflect; in the group a kept one gets ✍, in a DM a deterministic ack
+  (never the reply model). A forwarded bot post stays `quarantined`. Native group text is `untrusted`
   (grounds replies, never privileged). Member DM text is `trusted`. One exception: an
   **anonymous-admin post** (`from` = @GroupAnonymousBot, `sender_chat.id` = the house itself) is
   native `untrusted` house text, never attributed and never registered as a member (I8).
@@ -92,8 +96,8 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   changes commit via authenticated **owner/admin dashboard** server actions
   (`lib/auth/require-admin.ts` `requireAdmin`/`requireOwner`, re-checked live), **not** a
   Telegram tap. **Reminders and shopping-list add/check-off are exempt from both — they
-  auto-commit** (`lib/turn/actions.ts` `runReminder` + `runList`): a reminder only posts text to the
-  fixed house group, and a list op only mutates the house's own group-scoped list (reversible,
+  auto-commit** (`lib/turn/actions.ts` `runReminder` + `runList`): a reminder only posts text to a
+  fixed, code-resolved destination (the house group, or its creator's own DM — D2), and a list op only mutates the house's own group-scoped list (reversible,
   low-privilege). Both are the capture tier. Do not re-add a confirm step to either. A reminder is
   only created from a **directed** ask (DM / @mention / reply / console topic — `decide()`, A9), is
   not confidence-gated, and every failure (no time / unreadable / past) is an explicit outcome the
@@ -103,7 +107,14 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   **rethrows** so the Inngest step retries — never swallow it into a memoized degraded value.
 - **Fixed send destination:** `sendToHouse` targets a **code-resolved** chat id only. Replies
   are a **two-target allow-list** — the house group, or the authenticated DM sender's own chat
-  (`origin.chatId`); reminders/digests → the fixed house group. The LLM never picks a recipient.
+  (`origin.chatId`). Reminders are the same two targets (spec D2, phase 5): a **house** reminder
+  (`deliver_chat_id = group_id`) → the current live house id via `sendToHouseResilient`; a
+  **personal reminder set in a member DM** (`forWhom` speaker, or a literal "remind me" / a DM ask
+  with no `forWhom`) → `deliver_chat_id = created_by` = that authenticated DM chat, delivered with a
+  plain `sendToHouse` to it — never through the house path, retired (never re-routed) if its creator
+  has left (`lib/reminders/store.ts` `reminderDestination`). Personal reminders never appear in the
+  group's `/reminders` or `/weekly` (`visibleReminders`). Digests / heads-ups → the house group only.
+  Both lanes' reminders still honour `/pause`. The LLM never picks a recipient.
 - **Supergroup migration (alias seam, `docs/spec/telegram.md` D9):** the house `chat_id` changes on a
   group→supergroup upgrade, but `house_group_chat_id` is ALSO the memory `group_id` — so it is the
   stable **scope** and is NEVER rewritten. `house_config.live_chat_id` holds the current transport id;
@@ -155,6 +166,16 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   (`conflicts_with_fact_id`) and surfaced in `ctx.outcome.captured.conflicts` → the planner's
   `statement-conflict` row asks which is right. A conflict row never grounds anything; the hygiene
   sweep retires it. A `system` (reflect) fact is never correctable by chat.
+- **New housemates (K6):** an unknown PRIVATE sender is checked with `getChatMember(house live id,
+  from.id)` (`lib/identity/verify.ts`) — an active member is upserted (role `member`, audited
+  `member.verified`) and served as a member DM; anyone else stays `ignore`. Fail-closed (a transport
+  error = not a member, uncached), a definite "no" cached 10 min. Grants only the `member_dm` lane —
+  never owner, never the dashboard.
+- **Edits (I1, `lib/turn/edit.ts`):** an `edited_message` (`isEdit`, same `message_id`) supersedes what
+  the original produced via the window's produced-map — its note retired, facts it no longer states
+  soft-retracted (`deleted_at`), unsent reminders (+ their series) cancelled and re-created from the
+  edited text — and **never gets words** (planner `quietForEdit`; reactions only). An edited slash
+  command is not re-run; an edit of a message with no window row is handled as new, silently.
 - **Fail closed** everywhere (roster, env, webhook secret).
 
 ## The turn & Baumy's voice (`lib/turn/*`, `docs/spec/chat-understanding-v2.md` §1–§4)
@@ -174,7 +195,8 @@ filter → slash commands, `lib/turn/commands.ts`) and then ONE turn:
    (`actions.ts`: list, reminder, forget) return what actually happened. All land in `ctx.outcome`.
 5. **`planResponse(ctx, policy)`** (`plan.ts`) — pure, table-driven, exhaustively tested — picks
    none / a reaction / the deterministic list or forget text / words in a **MODE** (answer, ack,
-   confirm, clarify, banter). Paused house → none (DMs still work); quarantined content → none.
+   confirm, clarify, banter). Paused house → none (DMs still work); quarantined content → none;
+   forwarded content → ✍ / the DM forward ack, never an answer; an edit → never words.
    Don't add voice logic anywhere else.
 6. **Words** (`respond.ts` → `lib/ai/reply.ts` `answer(ctx, mode, grounding)`): the prompt is the
    verified CONTEXT (FROM / WHERE / NOW / REPLYING TO / THIS TURN) + dated, attributed MEMORY + MODE +
@@ -203,8 +225,10 @@ crown jewels. The pipeline:
 - **Capture** (`write.ts` `captureMemory`): store the message as an evidence item + Voyage
   embedding. A near-verbatim restatement (≥0.97 cosine) **by the same author within 24h**
   **consolidates** onto the original (salience bump) instead of duplicating (F9 — keyed on cosine
-  alone, Charli's "I'm away" folded onto Marco's month-old note); secure and quarantined input are
-  exempt.
+  alone, Charli's "I'm away" folded onto Marco's month-old note); secure and relayed (forwarded /
+  bot) input are exempt. A message handled as a **list op is not captured** (A11 — it lives in the list
+  table). A photo/document **caption is the message text** (folded in at the webhook,
+  `lib/telegram/content.ts`, I4); media without one is dropped explicitly (`reason: 'media'`).
 - **Facts** (`facts.ts`, spec §7): `extractFacts` → `reconcileFact` distils {subject,predicate,
   object} triples into a **trust-gated, bitemporal** knowledge graph. **Predicates are a controlled
   vocabulary** (`lib/memory/predicates.ts`): canonical names with a **cardinality** + a synonym map
@@ -259,7 +283,9 @@ crown jewels. The pipeline:
   tier** adds query **expansion/HyDE** (`expand.ts` → `retrieveExpanded`, cross-probe RRF) and a
   Haiku **re-rank** (`rerank.ts`) — both best-effort, degrading to plain hybrid on any error.
 - Every retrieval arm (semantic *and* lexical) is **group-scoped, active-only, quarantined-
-  excluded, current-embedding-model-only** — preserve all four in any query you add.
+  excluded, current-embedding-model-only** — preserve all four in any query you add. (`forwarded`
+  notes pass the quarantine filter by design and come back with `trustLevel`/`forwardedBy`, so the
+  reply labels them; they have no author, so the author arm never returns them.)
 - **Reflect** (`reflect.ts` + `functions/reflect.ts`): a slow **sleep-time cron** (every 6h)
   re-reads each person's own facts + attributed notes and synthesises a durable per-person
   **profile**, stored back as a `system`-trust fact (supersedes the prior; grounds "who is X").
@@ -278,9 +304,12 @@ crown jewels. The pipeline:
   conflict-row retirement. Ingest runs **one message at a time per chat** (Inngest concurrency key on
   `event.data.chatId`, F16) so a correction is never superseded by the message it corrected.
 - **Forget** (`forget.ts`, deletion on request): `findMemoryToForget` resolves a target
-  description to exact **group-scoped** row ids (facts via trigram/substring, notes via hybrid
-  recall); `forgetMemory` runs **soft** (hide: `is_current`/`is_active=false`, reversible) or
-  **purge** (redact value/content + drop the embedding). Confirm-tap-gated + audited (above).
+  description to exact **group-scoped** row ids — a named value that IS an entity, or a subject with no
+  detail, proposes that entity's current facts; a detail matches loosely (cue words / predicate +
+  synonym words / stems / the value — A8); notes by whole-word value match **plus the proposed facts'
+  source notes**. `forgetMemory` runs **soft** (hide the facts AND those notes: `is_current` /
+  `is_active=false`, reversible — A7, so the verbatim note can no longer answer) or **purge** (redact
+  value/content + drop the embedding). Confirm-tap-gated + audited (above).
   A "forget" message is **never captured** (storing "delete X" would re-add X).
 - **Extraction has NO fact ceiling** (`extract.ts`): a dense message **paginates** (re-ask for
   new facts until a short page drains; `MAX_PASSES` backstop is logged, never a silent drop).

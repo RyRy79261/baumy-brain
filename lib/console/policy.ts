@@ -143,6 +143,7 @@ export const POLICY: Record<string, TablePolicy> = {
     content: open('the evidence text. Editing it MUST invalidate the embedding (set it NULL) so the reembed sweep recomputes'),
     authoredBy: prov('who said it — attribution is a trust input, never a free-text field'),
     aboutEntityId: prov('who it is about — feeds reflection'),
+    forwardedBy: prov('who FORWARDED it (trust forwarded, D4) — the words are someone else\'s, so never the author'),
     trustLevel: prov('trust tier from the authenticated lane — the injection wall depends on this'),
     isSecure: prov('flips the encryption path; changing it would strand a ciphertext'),
     contentEncrypted: secret('AES-256-GCM blob. The key is not in the DB, GCM fails closed on tamper, and there is no rotation — any edit destroys it irrecoverably'),

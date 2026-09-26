@@ -1,6 +1,7 @@
 import { verifyWebhookSecret } from '@/lib/telegram/verify'
 import { parseUpdate, type TelegramMessage } from '@/lib/telegram/schema'
 import { inngest } from '@/lib/inngest/client'
+import { messageContent } from '@/lib/telegram/content'
 
 // The "200-fast-then-defer-to-Inngest" spine (architecture D5/D6/D7/D8). grammY
 // types the update; ALL work happens in Inngest functions off this request path.
@@ -69,6 +70,8 @@ export async function POST(req: Request): Promise<Response> {
     // ignore) is resolved DOWNSTREAM from house_config — the webhook needs no chat id.
     const msg = update.message ?? update.edited_message
     if (!msg) return Response.json({ ok: true, ignored: 'no-message' })
+    // A caption IS the message's text (I4); media without one is flagged so ingest ignores it explicitly.
+    const content = messageContent(msg)
     await inngest.send({
       id: `tg:update:${update.update_id}`,
       name: 'telegram/message.received',
@@ -82,7 +85,11 @@ export async function POST(req: Request): Promise<Response> {
         fromFirstName: msg.from?.first_name ?? null,
         fromLastName: msg.from?.last_name ?? null,
         fromUsername: msg.from?.username ?? null,
-        text: msg.text ?? null,
+        text: content.text,
+        media: content.media,
+        // An EDIT (I1): Telegram re-delivers the message under a NEW update_id with the SAME message_id.
+        // Ingest supersedes what the original produced (lib/turn/edit.ts) and never replies twice.
+        isEdit: update.edited_message != null && update.message == null,
         // Forum-topic thread (null = General / not a forum) — for /notifyhere capture + reply threading.
         messageThreadId: msg.is_topic_message ? (msg.message_thread_id ?? null) : null,
         // Trust signals resolved downstream: bot-origin / forwarded → quarantined.

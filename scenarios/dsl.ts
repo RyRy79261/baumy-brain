@@ -209,8 +209,10 @@ export interface SayOptions {
   replyTo?: SendOptions['replyTo']
   /** Prefix the exact @username (a real mention). */
   mention?: boolean
-  /** Forwarded into the chat (quarantine path today; D4 in phase 5). */
+  /** Forwarded into the chat by this person (trust 'forwarded' — D4). */
   forwarded?: boolean
+  /** The text is the caption of this media (a photo, a document…) — I4. */
+  media?: SendOptions['media']
   anonymousAdmin?: boolean
   /** This is an EDIT of the speaker's previous message (same message_id, new update). */
   edit?: boolean
@@ -252,6 +254,8 @@ export function say(who: string, text: string, opts: SayOptions = {}): Step {
           forwarded: opts.forwarded,
           anonymousAdmin: opts.anonymousAdmin,
           messageId,
+          edit: opts.edit,
+          media: opts.media,
         })
       } catch (err) {
         error = err

@@ -61,6 +61,8 @@ export interface TriageContext {
   replyTo?: ReplyToContext | null
   /** First name of the sender. */
   from?: string | null
+  /** The message is FORWARDED (trust 'forwarded', D4): the forwarder's first name ('' if unknown). */
+  forwardedBy?: string | null
   /** Housemates' first names — so "Charli, are you home?" reads as addressed to a person. */
   housemates?: string[]
   /** The last turns of this chat (the 48h window, spec §5) — rendered as quoted data, never CONTEXT. */
@@ -78,6 +80,8 @@ export function triageHeader(c: TriageContext): string {
     `  DIRECTED AT BAUMY: ${c.directed.value ? `yes (${c.directed.why})` : 'no'}`,
   ]
   if (c.from) lines.push(`  FROM: ${c.from}`)
+  if (c.forwardedBy != null)
+    lines.push(`  FORWARDED: yes — ${c.forwardedBy || 'a housemate'} forwarded someone else's message (the words are not ${c.forwardedBy ? `${c.forwardedBy}'s` : 'their'} own)`)
   if (c.housemates?.length) lines.push(`  HOUSEMATES: ${c.housemates.join(', ')}`)
   // Only WHO it replies to is verified; the replied-to text follows as a quoted, one-line data line.
   const r = c.replyTo ? describeReplyTo(c.replyTo) : null

@@ -188,3 +188,26 @@ describe('telegram webhook — reply + sender_chat forwarding', () => {
     expect(sentData().isBot).toBe(true)
   })
 })
+
+// Phase 5 (spec §8): captions are the message text (I4); an edit is flagged (I1).
+describe('telegram webhook — captions, media, edits', () => {
+  const lastData = () => (send.mock.calls.at(-1)?.[0] as { data: Record<string, unknown> }).data
+  const base = { message_id: 5, date: 0, chat: { id: Number(HOUSE), type: 'supergroup' }, from: { id: 701, is_bot: false, first_name: 'Charli' } }
+
+  it('a photo caption is forwarded as the text, with the media kind (I4)', async () => {
+    await POST(req({ update_id: 40, message: { ...base, photo: [{ file_id: 'a', file_unique_id: 'a', width: 1, height: 1 }], caption: 'bins now go out tuesdays' } }))
+    expect(lastData()).toMatchObject({ text: 'bins now go out tuesdays', media: 'photo', isEdit: false })
+  })
+
+  it('a voice note / contact without a caption carries no text but says what it is (ignored explicitly downstream)', async () => {
+    await POST(req({ update_id: 41, message: { ...base, voice: { file_id: 'v', file_unique_id: 'v', duration: 4 } } }))
+    expect(lastData()).toMatchObject({ text: null, media: 'voice' })
+    await POST(req({ update_id: 42, message: { ...base, contact: { phone_number: '+49 30 123', first_name: 'Klaus' } } }))
+    expect(lastData()).toMatchObject({ text: null, media: 'contact' })
+  })
+
+  it('an edited_message is flagged isEdit with the ORIGINAL message_id (I1)', async () => {
+    await POST(req({ update_id: 43, edited_message: { ...base, edit_date: 1, text: 'fixed typo' } }))
+    expect(lastData()).toMatchObject({ isEdit: true, messageId: 5, text: 'fixed typo', media: null })
+  })
+})

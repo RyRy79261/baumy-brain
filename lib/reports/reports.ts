@@ -12,6 +12,7 @@ import { buildDigest, gatherWeekly, isEmptyWeek, weeklyLines, WEEKLY_LOOKBACK_DA
 import { houseToday, now as clockNow } from '@/lib/core/clock'
 import { formatEventWindow } from '@/lib/core/calendar'
 import { describeRecurrence } from '@/lib/reminders/recurrence'
+import { visibleReminders } from '@/lib/reminders/store'
 import { houseTz } from '@/lib/env'
 import { textFallbackAllowed } from '@/lib/ai/errors'
 
@@ -136,17 +137,31 @@ const fmtDateTime = (d: Date | string, tz: string) =>
 // DETERMINISTIC — a direct read of the reminders table, no model, no cost. Reminders aren't secret,
 // but this reads only status='scheduled' rows so it never leaks cancelled/sent noise. 🗓️ marks an
 // event heads-up, ⏰ an explicit reminder — matching how they'll actually post.
-export async function upcomingRemindersReport(db: Database, groupId: string, tz: string, now: Date = clockNow()): Promise<string> {
+// `privateTo` = the member asking in their own DM: their personal DM reminders (D2) are listed too,
+// marked as just theirs. In the group (null) only house reminders are — a personal one stays private.
+export async function upcomingRemindersReport(
+  db: Database,
+  groupId: string,
+  tz: string,
+  now: Date = clockNow(),
+  privateTo: string | null = null,
+): Promise<string> {
   const rows = await db
-    .select({ content: reminders.content, fireAt: reminders.fireAt, anchorKind: reminders.anchorKind, recurrence: reminders.recurrence })
+    .select({
+      content: reminders.content,
+      fireAt: reminders.fireAt,
+      anchorKind: reminders.anchorKind,
+      recurrence: reminders.recurrence,
+      personal: sql<boolean>`${reminders.deliverChatId} <> ${reminders.groupId}`,
+    })
     .from(reminders)
-    .where(and(eq(reminders.groupId, groupId), eq(reminders.status, 'scheduled'), gte(reminders.fireAt, now)))
+    .where(and(eq(reminders.groupId, groupId), visibleReminders(privateTo), eq(reminders.status, 'scheduled'), gte(reminders.fireAt, now)))
     .orderBy(reminders.fireAt)
     .limit(25)
   if (rows.length === 0) return 'Nothing on the calendar right now — all clear 😺'
   const lines = rows.map((r) => {
     const repeat = describeRecurrence(r.recurrence)
-    return `${r.anchorKind === 'event_offset' ? '🗓️' : '⏰'} ${r.content} — ${fmtDateTime(r.fireAt, tz)}${repeat ? ` (${repeat})` : ''}`
+    return `${r.anchorKind === 'event_offset' ? '🗓️' : '⏰'} ${r.content} — ${fmtDateTime(r.fireAt, tz)}${repeat ? ` (${repeat})` : ''}${r.personal ? ' (just for you, here)' : ''}`
   })
   return `Coming up:\n${lines.join('\n')}`
 }

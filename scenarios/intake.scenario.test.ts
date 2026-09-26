@@ -17,7 +17,7 @@ const forwarded = {
 }
 
 describe('scenario: intake', () => {
-  scenario('a forwarded landlord message never writes a fact (the quarantine wall)', {
+  scenario('a forwarded landlord message never writes a fact (the relayed-content wall)', {
     people: HOUSE,
     startAt: '2026-09-28 10:00',
     fixtures: forwarded,
@@ -31,10 +31,8 @@ describe('scenario: intake', () => {
   scenario('a forwarded landlord message is recallable later, labelled as forwarded by Marco', {
     people: HOUSE,
     startAt: '2026-09-28 10:00',
-    // TODO(phase 5, D4/I5): forwarded-by-member content gets trust `forwarded` — stored and
-    // recallable with a "forwarded by X" label, never facts or actions. Today it is quarantined and
-    // excluded from every retrieval arm, so the question below grounds on nothing.
-    knownGap: { refs: 'I5 D4', phase: 5, failsAt: 5, note: 'forwarded trust tier' },
+    // D4/I5 (phase 5): forwarded-by-member content has trust `forwarded` — stored and recallable with a
+    // "forwarded by X" label, never facts or actions.
     fixtures: forwarded,
     steps: [
       say('Marco', LANDLORD, { forwarded: true }),

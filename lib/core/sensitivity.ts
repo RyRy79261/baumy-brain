@@ -9,6 +9,9 @@ const PATTERNS: RegExp[] = [
   /\b(pin|passcode)\b[^.]{0,12}?\d{3,}/i,
   /\b(iban|account\s*(number|no)\.?|sort\s*code|routing\s*number|card\s*number)\b/i,
   /\b\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}\b/, // 16-digit card number
+  // Any other numeric code stated with its value — "the boiler code is 4821", "bike lock combo: 0912",
+  // and the extracted triple "boiler code 4821". The door/gate pattern above only knows its own nouns.
+  /\b(code|combo|combination)\b[^.\d]{0,12}?\d{3,}/i,
 ]
 
 // Non-secret descriptors, parallel to PATTERNS. Stored as the memory item's
@@ -21,6 +24,7 @@ const DESCRIPTORS: string[] = [
   'a PIN/passcode',
   'bank/account details',
   'a card number',
+  'a numeric code',
 ]
 
 // Invariant: PATTERNS[i] ↔ DESCRIPTORS[i]. A new pattern without a matching descriptor would

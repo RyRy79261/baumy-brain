@@ -30,6 +30,7 @@ const answerMock = vi.fn(async (_ctx: TurnContext, _mode: string, _g: GroundingI
 const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
 const sendConfirmCard = vi.fn(async (..._a: unknown[]) => {})
 const reactToMessage = vi.fn(async (..._a: unknown[]) => {})
+const chatMemberMock = vi.fn(async (..._a: unknown[]): Promise<{ status: string; isMember: boolean } | null> => null)
 
 vi.mock('@/db/client', async (o) => ({ ...(await o<typeof import('@/db/client')>()), createHttpDb: () => dbh.db }))
 vi.mock('@/lib/ai/classify', async (o) => ({ ...(await o<typeof import('@/lib/ai/classify')>()), classify: (t: string, c?: unknown) => classifyMock(t, c) }))
@@ -55,6 +56,7 @@ vi.mock('@/lib/telegram/client', () => ({
   reactToMessage: (...a: unknown[]) => reactToMessage(...a),
   getBotUsername: async () => 'baumy_bot',
   getBotId: async () => 7001,
+  getChatMemberStatus: (...a: unknown[]) => chatMemberMock(...a),
 }))
 
 const { runIngest } = await import('@/lib/inngest/functions/ingest')
@@ -644,5 +646,114 @@ describe('the conversation window (phase 2, spec §5 — C5)', () => {
     expect(lastAnswer().ctx.recent).toEqual([])
     const [dm] = await windowRows()
     expect(dm).toMatchObject({ groupId: HOUSE, chatId: String(MARCO), trust: 'trusted' })
+  })
+})
+
+// Phase 5 (spec §8): edits (I1), captions/media (I4), forwarded content (D4), personal DM reminders
+// (A5/D2) and new housemates (K6), through the whole handler.
+describe('phase 5 — intake & actions', () => {
+  const reminderRows = async () => (await dbh.db.select().from(reminders)) as { id: string; content: string; fireAt: Date; status: string; deliverChatId: string }[]
+
+  it('I1: editing a reminder request cancels the unsent reminder, creates the edited one, and never replies twice', async () => {
+    classifyMock.mockResolvedValue(V({ intent: 'reminder', asksBaumy: true }))
+    extractReminderMock.mockResolvedValue({ reminders: [{ content: 'bins out', fireAt: '2026-10-02T09:00' }] })
+    const first = ev({ text: '@baumy_bot remind us friday 9am bins out' })
+    await run(first)
+    expect(sendToHouse).toHaveBeenCalledTimes(1)
+    extractReminderMock.mockResolvedValue({ reminders: [{ content: 'bins out', fireAt: '2026-10-03T09:00' }] })
+    const res = await run({ data: { ...first.data, updateId: first.data.updateId + 500, isEdit: true, text: '@baumy_bot remind us saturday 9am bins out' } })
+    expect(res).toMatchObject({ planRow: 'edit-reminder', reminderSet: true })
+    expect(sendToHouse).toHaveBeenCalledTimes(1) // no second reply
+    expect(reactions().at(-1)).toBe('👍')
+    const rows = await reminderRows()
+    expect(rows.map((r) => [r.status, r.fireAt.toISOString()]).sort()).toEqual([
+      ['cancelled', '2026-10-02T07:00:00.000Z'],
+      ['scheduled', '2026-10-03T07:00:00.000Z'],
+    ])
+    // the window row now maps to the NEW reminder, so a second edit supersedes it in turn
+    const [w] = await dbh.db.select().from(messages).where(eq(messages.messageId, String(first.data.messageId)))
+    expect(w.producedReminderIds).toEqual([rows.find((r) => r.status === 'scheduled')!.id])
+  })
+
+  it('I1: an edited directed question is not answered again; an edited slash command is not re-run', async () => {
+    classifyMock.mockResolvedValue(V({ intent: 'question', asksBaumy: true }))
+    const q = ev({ text: '@baumy_bot whats the bin day' })
+    await run(q)
+    await run({ data: { ...q.data, updateId: q.data.updateId + 500, isEdit: true, text: "@baumy_bot what's the bin day?" } })
+    expect(answerMock).toHaveBeenCalledTimes(1)
+    expect(sendToHouse).toHaveBeenCalledTimes(1)
+    const cmd = ev({ text: '/weekly' })
+    expect(await run({ data: { ...cmd.data, isEdit: true } })).toMatchObject({ decision: 'drop', reason: 'edited-command' })
+  })
+
+  it('I1: an edited statement retires the original note and retracts the fact it no longer states', async () => {
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
+    extractFactsMock.mockResolvedValue({ facts: [{ subject: 'cleaner', subjectKind: 'person', predicate: 'visits_on', object: 'monday' }] })
+    const first = ev({ text: 'the cleaner comes monday' })
+    await run(first)
+    extractFactsMock.mockResolvedValue({ facts: [] })
+    await run({ data: { ...first.data, updateId: first.data.updateId + 500, isEdit: true, text: 'the cleaner comes, not sure when' } })
+    const notes = await dbh.db.select().from(memoryItems)
+    expect(notes.map((n: { content: string; isActive: boolean }) => [n.content, n.isActive]).sort()).toEqual([
+      ['the cleaner comes monday', false],
+      ['the cleaner comes, not sure when', true],
+    ])
+    const f = await dbh.db.select().from(facts)
+    expect(f.map((x: { isCurrent: boolean; deletedAt: Date | null }) => [x.isCurrent, x.deletedAt != null])).toEqual([[false, true]])
+  })
+
+  it('I4: media with no caption is dropped explicitly as media, before triage', async () => {
+    expect(await run(ev({ text: null, media: 'voice' }))).toMatchObject({ decision: 'drop', reason: 'media' })
+    expect(classifyMock).not.toHaveBeenCalled()
+  })
+
+  it('D4: a forwarded message is stored as forwarded by its forwarder (no author, no facts) and grounds a later answer LABELLED', async () => {
+    classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
+    extractFactsMock.mockResolvedValue({ facts: [{ subject: 'inspection', predicate: 'status', object: 'tuesday' }] })
+    const res = await run(ev({ fromId: MARCO, fromFirstName: 'Marco', isForwarded: true, text: 'Landlord: boiler inspection Tuesday 10am' }))
+    expect(res).toMatchObject({ planRow: 'forwarded-captured' })
+    expect(extractFactsMock).not.toHaveBeenCalled()
+    expect(classifyMock.mock.calls[0][1]).toMatchObject({ from: null, forwardedBy: 'Marco' })
+    const [n] = await dbh.db.select().from(memoryItems)
+    expect(n).toMatchObject({ trustLevel: 'forwarded', authoredBy: null, forwardedBy: String(MARCO), memoryType: 'statement' })
+    classifyMock.mockResolvedValue(V({ intent: 'question', asksBaumy: true }))
+    await run(ev({ text: '@baumy_bot when is the boiler inspection?' }))
+    const g = lastAnswer().grounding.find((x) => x.content.includes('inspection'))
+    expect(g).toMatchObject({ kind: 'note', who: null, forwarded: { by: 'Marco' } })
+  })
+
+  it('A5/D2: "remind me" in a DM is delivered to that DM (code-resolved), named; "remind everyone" from a DM still goes to the house', async () => {
+    classifyMock.mockResolvedValue(V({ intent: 'reminder', asksBaumy: true }))
+    extractReminderMock.mockResolvedValue({
+      reminders: [
+        { content: 'take my antibiotics', fireAt: '2026-09-28T21:00', forWhom: 'speaker' },
+        { content: 'pay rent', fireAt: '2026-10-01T10:00', forWhom: 'house' },
+      ],
+    })
+    await run(ev({ chatId: String(CHARLI), chatType: 'private', text: 'remind me to take my antibiotics at 9pm and remind everyone to pay rent on the 1st' }))
+    const rows = await reminderRows()
+    expect(rows.map((r) => [r.content, r.deliverChatId]).sort()).toEqual([
+      ['Charli: take my antibiotics', String(CHARLI)],
+      ['pay rent', HOUSE],
+    ])
+    expect(lastAnswer().ctx.outcome.reminders?.map((r) => (r.status === 'set' ? r.deliverTo : r.status)).sort()).toEqual(['dm', 'house'])
+  })
+
+  it('K6: an unknown DM sender who IS in the house group is verified, added and served; a stranger (or a failed check) is ignored', async () => {
+    classifyMock.mockResolvedValue(V({ intent: 'question', asksBaumy: true }))
+    const { clearMembershipCache } = await import('@/lib/identity/verify')
+    clearMembershipCache()
+    chatMemberMock.mockResolvedValueOnce({ status: 'member', isMember: true })
+    const res = await run(ev({ chatId: '905', chatType: 'private', fromId: 905, fromFirstName: 'Nina', text: 'what is the bin day?' }))
+    expect(res).toMatchObject({ plan: 'words:answer' })
+    expect(chatMemberMock).toHaveBeenCalledWith(HOUSE, 905)
+    expect(sendToHouse.mock.calls.at(-1)?.[0]).toBe('905')
+
+    chatMemberMock.mockResolvedValueOnce({ status: 'left', isMember: false })
+    expect(await run(ev({ chatId: '906', chatType: 'private', fromId: 906, text: 'hi baumy' }))).toMatchObject({ decision: 'drop', reason: 'out-of-scope' })
+    chatMemberMock.mockRejectedValueOnce(new Error('network down'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await run(ev({ chatId: '907', chatType: 'private', fromId: 907, text: 'hi baumy' }))).toMatchObject({ decision: 'drop', reason: 'out-of-scope' })
+    warn.mockRestore()
   })
 })

@@ -1,6 +1,6 @@
 # Chat understanding v2 — the turn, the planner, time, and the fact model
 
-**Status:** approved design (2026-09-26), implemented in phases 0–5 below.
+**Status:** approved design (2026-09-26), implemented in phases 0–5 below (all landed; I6's second half open).
 **Why:** the 2026-09-26 chat-handling audit (72 findings, reproductions in `audit-repro/`) traced
 Baumy's "I don't know, Charli said Zuzka's staying" failures to five root causes: (1) no model of the
 current *turn* (who is speaking, where, why it is for Baumy, what just happened), (2) memory without
@@ -58,8 +58,8 @@ interface TurnOutcome {
 
 (As implemented: `TurnContext` also carries `authorId` — null for quarantined content or an anonymous
 admin; `outcome.list` carries `open`, the list after the op; `outcome.forget` is `{proposed:true,
-pendingId, card}` or `{proposed:false, reason}`; `reminder.deliverTo` is always `'house'` until D2
-lands in phase 5.)
+pendingId, card}` or `{proposed:false, reason}`; `reminder.deliverTo` is `'dm'` for a personal
+reminder set in a member DM (D2, phase 5); `forwardedBy` and `edit` are phase-5 fields.)
 
 **Directedness (C8–C10, K5):** `dm` is always directed. `reply_to_baumy` only when
 `reply_to_message.from.id === bot id` (the webhook forwards the replied-to message's author id, its
@@ -417,6 +417,58 @@ context only — it never writes facts and is never shown to anyone.
   a member DM (A12); anonymous-admin posts (`sender_chat` = the house) are untrusted house text, not
   quarantined (I8); muted topics match whole words (I10); a captured question never becomes a
   "secret" (I9).
+
+**As implemented (phase 5):**
+- **Edits (I1)** — `lib/turn/edit.ts`. The webhook sets `isEdit` (same `message_id`, new `update_id`).
+  Ingest reads the window row BEFORE its upsert (`lookupEdit`; no row = never processed). For a processed
+  edit: `withdrawForEdit` retires the original note (before capture, so consolidation cannot fold the edit
+  back onto it) and cancels every unsent row of its reminders' series (`cancelUnsentSeries`, a recursive
+  CTE over `previous_reminder_id`; a sent occurrence stays sent); the edited text then runs the normal
+  turn (a reminder is re-created if still asked for); `settleEditedFacts` keeps restated facts (reconcile
+  NOOP — `captured.keptFactIds`, re-pointed at the new note), re-parents a corrected fact past the typo, and
+  soft-retracts (`deleted_at`) anything only the original stated. The window row's produced-map is always
+  rewritten. The planner never speaks in words for an edit (`quietForEdit`: 👍 for a re-set reminder, ✍ for
+  something re-noted, else nothing); forget is not proposed on an edit; an edited slash command is dropped
+  (`edited-command`). An edit of a message with no window row (older than 48h, or before Baumy joined) is
+  handled as new, silently. Not done: an edit that deletes a correction does not resurrect the fact the
+  original had superseded; list ops on an edit run again (idempotent adds/tick-offs) but the original's
+  op is not undone.
+- **Captions (I4)** — `lib/telegram/content.ts` `messageContent`: `text ?? caption`, plus the media kind.
+  Media with no caption → ingest drops it as `media` (after registering the sender). The media itself is
+  never fetched. The sensitivity scan gained a generic "code/combo + 3+ digits" pattern ("boiler code is
+  4821" — descriptor "a numeric code"), so a caption like that is stored encrypted.
+- **Forwarded (I5, D4)** — `Trust` gains `'forwarded'` (member-forwarded; a forwarded bot post stays
+  `quarantined`); `isRelayed()` = forwarded ∨ quarantined gates facts (reconcile rejects), actions (decide,
+  list, reminder follow-up) and attribution (`authorId` null). Capture stores it as a `statement` note with
+  `forwarded_by` (migration 0023) and no author, when `worthRemembering` (any intent — the words are
+  someone else's). Retrieval returns it with `trustLevel`/`forwardedBy`; the MEMORY line reads
+  `note · forwarded by Marco (someone else's words, not Marco's) · 28 Sep: "…"`; the reply prompt says how to
+  cite it; `/weekly` labels it; reflect and consolidation skip it. Triage gets `FORWARDED: yes — X forwarded
+  someone else's message`. Planner: group → ✍ if kept; DM → a deterministic ack (`forwardAck`), never the
+  reply model. The replied-to text of a forwarded message is still withheld (§4).
+- **Reminders (A4, A5, D2)** — `reminderIsPersonal`: the model's per-entry `forWhom` when given, else a
+  literal "remind me" or a DM ask; the name is always the authenticated sender's (`nameRequester`). A
+  personal reminder asked in a member DM gets `deliver_chat_id` = that DM (= `created_by`); delivery
+  resolves `reminderDestination` (house → `sendToHouseResilient`; DM → `sendToHouse(dm)` only while the
+  creator is an active member, else the row is cancelled, never re-routed); the digest batches per
+  destination. `/reminders` in the group and `/weekly` list only house reminders; a member's own DM
+  `/reminders` also shows theirs ("just for you, here"). Reminders in both lanes still honour `/pause`.
+- **Forget (A7, A8)** — `findMemoryToForget`: a value that is an entity, or a subject with no detail,
+  proposes that entity's current facts (subject or object side); `attributeMatches` is loose (cue words,
+  predicate + synonym words, 4-letter stems, the value); the proposed facts' source notes join `noteIds`.
+  Soft `forgetMemory` hides facts AND notes (`is_active=false`, plus the facts' source notes even for an
+  older proposal); the card says "hide N message(s)"; the receipt "hid N message(s)". `notes_only` now only
+  means "just an alias" (purge-only).
+- **List ops (A11)** — the list step runs before capture; a message handled as a list op is not captured
+  (the cost: a fact stated in the same message as a list op is not remembered).
+- **New housemates (K6)** — `lib/identity/verify.ts`: an unknown private sender → `getChatMember(house live
+  id, from.id)` (sandbox: the harness's membership directory); a member (creator / administrator / member /
+  restricted-but-member) is upserted (audited `member.verified`) and served; fail-closed, "no" cached 10
+  min in-process. Not done: a departed member who rejoins and speaks in the GROUP is still only reactivated
+  by a chat_member update or their next DM (ensureRegistered never touches `is_active`).
+- **Still open — I6, second half** (§3 "known deviation"): the undirected-question floor still compares the
+  triage confidence to the reply-frequency thresholds. Fixing it needs a product signal for "how useful
+  would a volunteered reply be" (a classifier field or a policy change); the repro stays in `audit-repro/`.
 
 ## 9. Scenario testing (`scenarios/`)
 

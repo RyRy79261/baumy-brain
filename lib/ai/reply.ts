@@ -29,6 +29,9 @@ export interface GroundingItem {
   kind: 'fact' | 'note' | 'connection' | 'timeline' | 'profile'
   /** Display name of whoever said it (null = unattributed / system). */
   who: string | null
+  /** A note a housemate FORWARDED (D4): `by` = the forwarder's display name (null if unknown). The
+   *  words are someone else's — the line says "forwarded by X", never attributes them to X. */
+  forwarded?: { by: string | null }
   /** When it was said (note created_at / fact recorded_at). */
   saidAt: Date | null
   /** For a dated happening: when it happens (fact event_at) … */
@@ -55,7 +58,11 @@ export function memoryLine(m: GroundingItem, tz: string, nowAt: Date): string {
     // Dated + attributed to what it is (F11): Baumy's synthesis as of the day it was written.
     return `  - profile · Baumy's summary (not anyone's words)${m.saidAt ? ` · as of ${day(m.saidAt, tz, now)}` : ''}: ${m.content}`
   }
-  const who = m.who ?? 'unattributed'
+  const who = m.forwarded
+    ? m.forwarded.by
+      ? `forwarded by ${m.forwarded.by} (someone else's words, not ${m.forwarded.by}'s)`
+      : "forwarded (someone else's words)"
+    : (m.who ?? 'unattributed')
   const parts = [m.kind, who]
   if (m.kind === 'note') {
     if (m.saidAt) parts.push(day(m.saidAt, tz, now))

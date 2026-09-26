@@ -7,6 +7,7 @@ import { memberDisplayNames } from '@/lib/identity/roster'
 import { eventWindowFromModel, eventWindowFromPhrase, type EventWindow } from '@/lib/core/when'
 import { formatEventWindow } from '@/lib/core/calendar'
 import { scanSensitivity } from '@/lib/core/sensitivity'
+import { isRelayed } from '@/lib/core/origin'
 import { summarizeFact, type FactConflict, type FactSummary, type TurnContext, type TurnOutcome } from './context'
 import type { TurnStep } from './step'
 
@@ -31,17 +32,31 @@ export async function runCapture(step: TurnStep, ctx: TurnContext): Promise<NonN
       // Scope = the house (houseScope), NOT the inbound chat: a member DM writes THROUGH to shared
       // house memory, never to a dead private-chat silo. In the house lane houseScope === chatId.
       // Attribution = the authenticated sender — never quarantined content or an anonymous admin.
-      { groupId: ctx.houseScope, content: ctx.text, memoryType: intent, authoredBy: ctx.authorId, trustLevel: ctx.trust, salience: SALIENCE[intent] ?? 0.5 },
+      // A member-FORWARDED message (D4) is kept unattributed with its forwarder recorded beside it, so
+      // it grounds replies as "forwarded by X", never as X's own words. Its intent label describes
+      // someone else's words, so it is stored at statement salience.
+      {
+        groupId: ctx.houseScope,
+        content: ctx.text,
+        memoryType: ctx.trust === 'forwarded' ? 'statement' : intent,
+        authoredBy: ctx.authorId,
+        trustLevel: ctx.trust,
+        forwardedBy: ctx.forwardedBy?.id ?? null,
+        salience: ctx.trust === 'forwarded' ? SALIENCE.statement : (SALIENCE[intent] ?? 0.5),
+      },
       { db: createHttpDb() },
     ),
   )) as string
 
-  // Quarantined content never writes a fact (injection wall) — the note alone is kept for provenance.
-  if (ctx.trust === 'quarantined') return { memoryItemId, factIds: [], learned: [], rejected: [] }
+  // Relayed content never writes a fact (injection wall): a bot post is kept for provenance only, a
+  // member-forwarded one as a labelled, recallable note (D4) — "the landlord says the inspection is
+  // Tuesday" is not a house fact anyone stated, and a forwarded message can be anything.
+  if (isRelayed(ctx.trust)) return { memoryItemId, factIds: [], learned: [], rejected: [] }
 
   const facts = (await step.run('extract-facts', async () => {
     const db = createHttpDb()
     const factIds: string[] = []
+    const keptFactIds: string[] = []
     const learned: FactSummary[] = []
     const rejected: FactSummary[] = []
     const conflicts: FactConflict[] = []
@@ -77,7 +92,8 @@ export async function runCapture(step: TurnStep, ctx: TurnContext): Promise<NonN
       if ((r.result === 'add' || r.result === 'update') && r.factId) {
         factIds.push(r.factId)
         learned.push(summarizeFact(f, when))
-      } else if (r.result === 'removed') learned.push({ ...summarizeFact(f, null), removed: true })
+      } else if (r.result === 'noop' && r.factId) keptFactIds.push(r.factId)
+      else if (r.result === 'removed') learned.push({ ...summarizeFact(f, null), removed: true })
       else if (r.result === 'rejected') rejected.push(summarizeFact(f, when))
       else if (r.result === 'conflict' && r.conflict) {
         // Refused by the trust gate: stored NOT current, and the turn says so — Baumy asks which is
@@ -98,8 +114,8 @@ export async function runCapture(step: TurnStep, ctx: TurnContext): Promise<NonN
     }
     // Tag this note with the person it's about (memory v2 §3) — attributed, never scored.
     await tagMemoryAboutPerson(db, ctx.houseScope, memoryItemId, aboutPerson)
-    return { factIds, learned, rejected, conflicts, secure }
-  })) as { factIds: string[]; learned: FactSummary[]; rejected: FactSummary[]; conflicts: FactConflict[]; secure: string | null }
+    return { factIds, keptFactIds, learned, rejected, conflicts, secure }
+  })) as { factIds: string[]; keptFactIds: string[]; learned: FactSummary[]; rejected: FactSummary[]; conflicts: FactConflict[]; secure: string | null }
 
   return { memoryItemId, ...facts }
 }

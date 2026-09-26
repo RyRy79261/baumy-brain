@@ -18,6 +18,12 @@ export type ReplyMode = 'answer' | 'ack' | 'clarify' | 'confirm' | 'banter'
 export type PlanRow =
   | 'paused'
   | 'quarantined'
+  | 'forwarded'
+  | 'forwarded-captured'
+  | 'forwarded-dm'
+  | 'edit-silent'
+  | 'edit-noted'
+  | 'edit-reminder'
   | 'forget'
   | 'list'
   | 'reminder-set'
@@ -50,6 +56,9 @@ export type Plan =
   | { kind: 'list-words'; row: 'list' }
   /** The forget flow: the confirm card, or the deterministic "nothing to forget" line. */
   | { kind: 'forget'; row: 'forget' }
+  /** A message a member forwarded to Baumy's DM (D4): the deterministic "filed it, as forwarded by you"
+   *  line — the reply model never voices someone else's words back as a conversation turn. */
+  | { kind: 'forward-ack'; row: 'forwarded-dm' }
 
 const none = (row: PlanRow): Plan => ({ kind: 'none', row })
 const react = (emoji: PlannerEmoji, row: PlanRow): Plan => ({ kind: 'react', emoji, row })
@@ -72,11 +81,36 @@ function listAck(l: ListOutcome, dm: boolean): { react: PlannerEmoji } | 'words'
 }
 
 export function planResponse(ctx: TurnContext, policy: ResponsePolicy): Plan {
+  const plan = planTurn(ctx, policy)
+  return ctx.edit ? quietForEdit(plan, ctx) : plan
+}
+
+// An EDIT never gets words (spec §8, I1): the original was already answered (or, if Baumy never saw
+// it, a reply now would land under a message people read hours ago). What the edit changed still
+// happens — capture, a re-set reminder — and may show as a reaction on the edited message: 👍 for a
+// reminder (re)set, ✍ for something (re)noted. The worded confirm of the new time is the one thing
+// lost; /reminders shows it.
+function quietForEdit(plan: Plan, ctx: TurnContext): Plan {
+  if (plan.kind === 'none' || plan.kind === 'react') return plan
+  if (ctx.outcome.reminder?.status === 'set') return react('👍', 'edit-reminder')
+  if (plan.kind === 'words' && plan.alsoReact) return react(plan.alsoReact, 'edit-noted')
+  if (ctx.outcome.captured && !ctx.outcome.captured.conflicts?.length) return react(NOTED, 'edit-noted')
+  return none('edit-silent')
+}
+
+function planTurn(ctx: TurnContext, policy: ResponsePolicy): Plan {
   const dm = ctx.lane === 'member_dm'
   // Pause (/pause, the kill-switch) silences the GROUP; a private DM pollutes nothing, so it still
   // works (the bypass is lane-scoped).
   if (ctx.lane === 'house' && !policy.global_enabled) return none('paused')
-  // Forwarded / bot content is never a housemate talking to Baumy: no voice at all.
+  // A member-FORWARDED message (D4) is someone else's words, not a housemate talking to Baumy: it never
+  // gets an answer. In the group a kept one is ✍ (it IS recallable now); in a DM the forwarder hears
+  // that it was filed (deterministic line, respond.ts).
+  if (ctx.trust === 'forwarded') {
+    if (dm) return { kind: 'forward-ack', row: 'forwarded-dm' }
+    return ctx.outcome.captured ? react(NOTED, 'forwarded-captured') : none('forwarded')
+  }
+  // Bot content is never a housemate talking to Baumy: no voice at all.
   if (ctx.trust === 'quarantined') return none('quarantined')
 
   const v = ctx.verdict

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { and, eq } from 'drizzle-orm'
 import { startPgHarness, dockerAvailable, type PgHarness } from './pg-harness'
-import { entities } from '@/db/schema'
+import { entities, facts, memoryItems, reminders } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
 import { reconcileFact, reconcileFactDetailed, currentFactsForQuery, upcomingDatedFacts, eventGroupFacts, ensureSpeakerEntity } from '@/lib/memory/facts'
@@ -11,7 +11,8 @@ import { runHygieneSweep } from '@/lib/memory/hygiene'
 import { resolveSeedEntities, connectedEdges, gatherGraphContext } from '@/lib/memory/graph'
 import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/forget'
 import { appendInbound, recentTurns, scrubWindow, purgeWindow, linkProduced, withholdProducing } from '@/lib/turn/window'
-import { createReminder, claimReminder, markSent, releaseReminder, scheduleNextOccurrence, loadSeriesRow, repairRecurringSeries, orphanedEventReminders } from '@/lib/reminders/store'
+import { createReminder, claimReminder, markSent, releaseReminder, scheduleNextOccurrence, loadSeriesRow, repairRecurringSeries, orphanedEventReminders, reminderDestination } from '@/lib/reminders/store'
+import { lookupEdit, withdrawForEdit, settleEditedFacts } from '@/lib/turn/edit'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { loadResponsePolicy, setGlobalEnabled } from '@/lib/policy'
@@ -451,5 +452,58 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect((await retrieve('what did charli say?', { groupId: G, floor: 0.99, authorId: '901' }, { db: h.db, embed: junk })).map((m) => m.id)).toContain(note)
     const other = await captureMemory({ groupId: G, content: 'Zuzka is staying in my room this weekend', memoryType: 'statement', authoredBy: '902', trustLevel: 'untrusted' }, { db: h.db, embed })
     expect(other).not.toBe(note) // Marco's identical line is HIS note, not folded onto Charli's (F9)
+  })
+  it('intake & actions: migration 0023 (forwarded_by), forwarded recall, edit supersession, series cancel, soft forget (spec §8)', async () => {
+    const G = '-100e2e-intake'
+    await ensureRegistered(h.db, G, null)
+    await upsertMember(h.db, G, '911', 'Charli', 'owner')
+    await upsertMember(h.db, G, '912', 'Marco', 'member')
+    // 0023: the forwarder column (FK → members, ON DELETE SET NULL)
+    const col = await h.pool.query("SELECT is_nullable FROM information_schema.columns WHERE table_name = 'baumy_memory_items' AND column_name = 'forwarded_by'")
+    expect(col.rows[0].is_nullable).toBe('YES')
+
+    // D4: a member-forwarded note is stored unattributed with its forwarder, and every retrieval arm returns it labelled
+    const fwd = await captureMemory({ groupId: G, content: 'Landlord: boiler inspection Tuesday 10am', memoryType: 'statement', authoredBy: null, trustLevel: 'forwarded', forwardedBy: '912' }, { db: h.db, embed })
+    const junk = async () => embedSync('completely unrelated vocabulary xyzzy plugh')
+    const hit = (await retrieve('when is the boiler inspection?', { groupId: G, floor: 0.99 }, { db: h.db, embed: junk })).find((m) => m.id === fwd)
+    expect(hit).toMatchObject({ trustLevel: 'forwarded', forwardedBy: '912', authoredBy: null })
+
+    // I1: an edit retires the original's note, cancels its unsent series (recursive CTE), and settles its facts
+    const note = await captureMemory({ groupId: G, content: 'zuzka arrives friday', memoryType: 'statement', authoredBy: '911', trustLevel: 'untrusted' }, { db: h.db, embed })
+    const first = await reconcileFactDetailed(h.db, { groupId: G, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'arrives_on', object: 'friday' }, authoredBy: '911', trustLevel: 'untrusted', memoryItemId: note })
+    const r1 = await createReminder(h.db, { groupId: G, deliverChatId: G, content: 'bins', fireAt: new Date('2026-10-02T18:00:00Z'), createdBy: '911', recurrence: 'FREQ=WEEKLY;BYDAY=FR' })
+    await claimReminder(h.db, r1)
+    await markSent(h.db, r1)
+    const r2 = await scheduleNextOccurrence(h.db, (await loadSeriesRow(h.db, r1))!, new Date('2026-10-02T18:01:00Z'), 'Europe/Berlin')
+    await appendInbound(h.db, { groupId: G, chatId: G, messageId: 77, authorKind: 'member', authorMemberId: '911', authorName: 'Charli', text: 'zuzka arrives friday', trust: 'untrusted', replyToMessageId: null, threadId: null, sentAt: new Date() })
+    await linkProduced(h.db, { chatId: G, messageId: 77 }, { memoryItemId: note, factIds: [first.factId!], reminderIds: [r1] })
+    const map = await lookupEdit(h.db, { chatId: G, messageId: 77 })
+    expect(map).toMatchObject({ processed: true, memoryItemId: note, factIds: [first.factId], reminderIds: [r1] })
+    const w = await withdrawForEdit(h.db, G, map)
+    expect(w).toEqual({ noteRetired: true, remindersCancelled: [r2] }) // the SENT first occurrence stays sent
+    const statuses = await h.db.select({ id: reminders.id, status: reminders.status }).from(reminders).where(eq(reminders.groupId, G))
+    expect(Object.fromEntries(statuses.map((x) => [x.id, x.status]))).toEqual({ [r1]: 'sent', [r2!]: 'cancelled' })
+    const note2 = await captureMemory({ groupId: G, content: 'zuzka arrives saturday', memoryType: 'statement', authoredBy: '911', trustLevel: 'untrusted' }, { db: h.db, embed })
+    const fixed = await reconcileFactDetailed(h.db, { groupId: G, fact: { subject: 'zuzka', subjectKind: 'person', predicate: 'arrives_on', object: 'saturday' }, authoredBy: '911', trustLevel: 'untrusted', memoryItemId: note2 })
+    expect(fixed.result).toBe('update')
+    const retracted = await settleEditedFacts(h.db, G, map, { produced: [fixed.factId!], kept: [], noteId: note2 })
+    expect(retracted).toEqual([first.factId])
+    const [newRow] = await h.db.select({ parent: facts.derivedFromFactId }).from(facts).where(eq(facts.id, fixed.factId!))
+    expect(newRow.parent).toBeNull() // the typo is not "earlier" history
+    const [oldNote] = await h.db.select({ active: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, note))
+    expect(oldNote.active).toBe(false)
+
+    // A7/A8: "forget Zuzka" proposes her facts (subject side) and their source note; a soft forget hides both
+    const m = await findMemoryToForget(h.db, G, { values: ['Zuzka'], subject: 'Zuzka', attribute: '' })
+    expect(m.factIds).toEqual([fixed.factId])
+    expect(m.noteIds).toContain(note2)
+    const res = await forgetMemory(h.db, G, { ...m, mode: 'soft' })
+    expect(res).toMatchObject({ facts: 1, messagesHidden: 1 })
+    const [hidden] = await h.db.select({ active: memoryItems.isActive }).from(memoryItems).where(eq(memoryItems.id, note2))
+    expect(hidden.active).toBe(false)
+
+    // D2: a personal reminder's destination is its creator's DM only while they are an active member
+    expect(await reminderDestination(h.db, { groupId: G, deliverChatId: '912', createdBy: '912' })).toEqual({ kind: 'dm', chatId: '912' })
+    expect(await reminderDestination(h.db, { groupId: G, deliverChatId: '912', createdBy: '911' })).toBeNull()
   })
 })

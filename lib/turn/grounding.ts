@@ -107,6 +107,8 @@ export async function gatherGrounding(db: Database, ctx: TurnContext, opts: { de
     ...memories.map((m) => ({
       kind: 'note' as const,
       who: nameOf(m.authoredBy),
+      // A member-forwarded note (D4) is labelled with its forwarder, never attributed to them.
+      ...(m.trustLevel === 'forwarded' ? { forwarded: { by: nameOf(m.forwardedBy ?? null) } } : {}),
       saidAt: m.createdAt ? new Date(m.createdAt) : null,
       content: m.content,
       isSecure: m.isSecure,

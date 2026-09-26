@@ -1,5 +1,5 @@
 import { describe } from 'vitest'
-import { scenario, say, advance, expectPrompt, expectWords, expectNoWords, expectReaction, expectReminder } from './dsl'
+import { scenario, say, advance, expectPrompt, expectWords, expectNoWords, expectReaction, expectReminder, check } from './dsl'
 import { reminderAsk, chatter, reminder } from './shapes'
 import { HOUSE } from './house'
 
@@ -111,9 +111,8 @@ describe('scenario: reminders', () => {
   scenario('editing a reminder request replaces the reminder and never re-replies', {
     people: HOUSE,
     startAt: start,
-    // I1: an edit arrives as a new update with the same message_id and re-runs everything —
-    // duplicate reminder, second reply. Spec §8: the edit supersedes, never re-replies.
-    knownGap: { refs: 'I1', phase: 5, failsAt: 5, note: 'baumy_messages edit mapping' },
+    // I1 (phase 5): an edit arrives as a new update with the same message_id. The unsent reminder the
+    // original set is cancelled and the edited text re-read ("cancel + recreate"); never a second reply.
     fixtures,
     steps: [
       say('Ryan', BINS, { mention: true }),
@@ -122,6 +121,14 @@ describe('scenario: reminders', () => {
       expectReminder({ content: /bins/, status: 'scheduled', count: 1, at: '2026-10-03 20:00' }),
       expectReminder({ at: '2026-10-02 20:00', status: 'scheduled', count: 0 }),
       expectNoWords(), // no second reply for an edit (a reaction change is fine)
+      expectReaction('👍'),
+      expectReminder({ at: '2026-10-02 20:00', status: 'cancelled', count: 1 }),
+      advance({ days: 5, hours: 11 }), // → Sat 3 Oct 21:00: only the edited time fires
+      expectWords({ contains: /take the bins out/ }),
+      check('exactly one bins reminder was ever posted', (r, e) => {
+        const posted = r.turns.flatMap((t) => (t.kind === 'advance' ? t.entries : [])).filter((x) => x.kind === 'message' && /bins/.test(x.text ?? ''))
+        e(posted).toHaveLength(1)
+      }),
     ],
   })
 })

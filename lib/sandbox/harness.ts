@@ -16,6 +16,7 @@ import { houseConfig, reminders } from '@/db/schema'
 import { withSimulatedTime } from '@/lib/core/clock'
 import { captureOutbound, type OutboundMessage } from '@/lib/telegram/outbox'
 import { SANDBOX_BOT_ID, SANDBOX_BOT_USERNAME } from '@/lib/telegram/client'
+import { messageContent, type MediaKind } from '@/lib/telegram/content'
 
 // The sandbox (docs/spec/sandbox-console.md Phase 2): a disposable house you can talk to as
 // anyone, fast-forward, and watch.
@@ -36,6 +37,10 @@ export interface SandboxPerson {
   id: number
   name: string
   role?: 'owner' | 'member'
+  /** In the Telegram group, but Baumy has never registered them (joined, never spoke, and Baumy is not
+   *  an admin so no chat_member update came — K6). Not seeded into the roster; the sandbox's membership
+   *  directory (getChatMember) still knows them. */
+  unseen?: boolean
 }
 
 export interface Sandbox {
@@ -78,6 +83,7 @@ export async function createSandbox(input: CreateSandboxInput): Promise<Sandbox>
     .values({ id: true, houseGroupChatId: houseChatId, houseTimezone: tz })
     .onConflictDoUpdate({ target: houseConfig.id, set: { houseGroupChatId: houseChatId, houseTimezone: tz } })
   for (const p of input.people) {
+    if (p.unseen) continue
     await upsertMember(input.db, houseChatId, String(p.id), p.name, p.role ?? 'member')
   }
   return { db: input.db, houseChatId, now: new Date(input.startAt), tz, people: input.people, transcript: [], seq: 1 }
@@ -108,9 +114,14 @@ export interface SendOptions {
   anonymousAdmin?: boolean
   /** Forum topic the message sits in (message_thread_id). */
   threadId?: number
-  /** Reuse an earlier message's id — how Telegram delivers an EDIT (a new update, same message_id;
-   *  the webhook forwards edited_message like any message — I1). Defaults to a fresh id. */
+  /** Reuse an earlier message's id — how Telegram delivers an EDIT (a new update, same message_id).
+   *  Defaults to a fresh id. */
   messageId?: number
+  /** This is an edited_message (I1): the webhook's isEdit flag. Use with `messageId`. */
+  edit?: boolean
+  /** The text is the CAPTION of this media (a photo, a document…) — mapped exactly as the webhook maps a
+   *  real message (lib/telegram/content.ts), so the caption fold (I4) is what the pipeline receives. */
+  media?: MediaKind
 }
 
 /** Telegram's fixed identity for anonymous-admin posts. */
@@ -125,6 +136,8 @@ export async function sendAs(sb: Sandbox, who: string | number, text: string, op
 
   const updateId = sb.seq++
   const anon = opts.anonymousAdmin === true && !opts.dm
+  const raw = opts.mention ? `@${SANDBOX_BOT_USERNAME} ${text}` : text
+  const content = opts.media ? messageContent({ [opts.media]: {}, caption: raw }) : { text: raw, media: null }
   const event: { data: TelegramMessageData } = {
     data: {
       updateId,
@@ -137,7 +150,9 @@ export async function sendAs(sb: Sandbox, who: string | number, text: string, op
       fromFirstName: anon ? 'Group' : person.name,
       fromLastName: null,
       fromUsername: anon ? 'GroupAnonymousBot' : null,
-      text: opts.mention ? `@${SANDBOX_BOT_USERNAME} ${text}` : text,
+      text: content.text,
+      media: content.media,
+      isEdit: opts.edit === true,
       messageThreadId: opts.dm ? null : (opts.threadId ?? null),
       isBot: anon,
       isForwarded: opts.forwarded ?? false,
@@ -146,7 +161,9 @@ export async function sendAs(sb: Sandbox, who: string | number, text: string, op
     },
   }
 
-  const { sent } = await captureOutbound(async () => withSimulatedTime(sb.now, () => runIngest(event, inlineStep)))
+  const { sent } = await captureOutbound(async () => withSimulatedTime(sb.now, () => runIngest(event, inlineStep)), {
+    chatMembers: (chatId, userId) => groupMembership(sb, chatId, userId),
+  })
   const entries = sent.map((m) => ({ ...m, cause: `${person.name}: ${text}` }))
   sb.transcript.push(...entries)
   return entries
@@ -177,6 +194,14 @@ export async function tapAs(
   const entries = sent.map((m) => ({ ...m, cause: `${person.name}: tap ${opts.verb ?? 'confirm'}` }))
   sb.transcript.push(...entries)
   return entries
+}
+
+// Telegram's view of the sandbox group (the getChatMember stand-in, K6): every sandbox person is in it,
+// registered by Baumy or not; nobody else is.
+function groupMembership(sb: Sandbox, chatId: string, userId: number): string | null {
+  if (chatId !== sb.houseChatId) return null
+  const p = sb.people.find((x) => x.id === userId)
+  return p ? (p.role === 'owner' ? 'creator' : 'member') : null
 }
 
 function findPerson(sb: Sandbox, who: string | number): SandboxPerson {

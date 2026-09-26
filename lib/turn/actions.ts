@@ -61,17 +61,21 @@ export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOut
 // question (A2) — no time given → needs_time, a time that can't be read → unparsed, a time already gone
 // → past. Undefined = the extractor says it isn't a reminder at all.
 type OneReminder =
-  | { status: 'set'; id: string; fireAt: string; content: string; recurrence: string | null }
+  | { status: 'set'; id: string; fireAt: string; content: string; recurrence: string | null; deliverTo: 'house' | 'dm' }
   | { status: 'needs_time' | 'past' | 'unparsed'; content: string }
 
 // `draft` = an earlier request from this sender in this chat that is still waiting for its time
 // (lib/reminders/draft.ts): "at 8pm" in reply to "when should I remind you?" completes it — the
 // extractor is shown the open request and Baumy's question. A failure (needs_time / unparsed / past)
 // stores a fresh draft, so the clarifying question Baumy asks can actually be answered.
+// `houseChatId` = the house scope, where a house reminder is delivered (resolved to the live transport
+// id at send time). A PERSONAL reminder asked for in a member's own DM goes to that DM instead (D2):
+// the destination is ctx.chatId, which in the member_dm lane is the Telegram-authenticated private chat
+// of the sender (ingest's destination belt already checked it) — never anything the model said.
 export async function runReminder(
   step: TurnStep,
   ctx: TurnContext,
-  deliverChatId: string,
+  houseChatId: string,
   draft: { content: string } | null = null,
 ): Promise<ReminderOutcome[] | undefined> {
   const results = (await step.run('reminder', async (): Promise<OneReminder[]> => {
@@ -97,12 +101,15 @@ export async function runReminder(
         continue
       }
       // A personal reminder names who asked (A4): "⏰ Charli: call the plumber", never a nameless line
-      // three housemates each assume is someone else's job. The name is the AUTHENTICATED sender's.
-      const forSpeaker = r.forWhom ? r.forWhom === 'speaker' : /\bremind me\b/i.test(ctx.text)
+      // three housemates each assume is someone else's job. The name is the AUTHENTICATED sender's, and
+      // whether it is personal is decided HERE, not left to the model (reminderIsPersonal).
+      const forSpeaker = reminderIsPersonal(r.forWhom, ctx)
       const named = forSpeaker && ctx.authorId ? nameRequester(content, ctx.sender.firstName) : content
+      // D2: a personal reminder set privately in a DM is delivered privately, to that DM.
+      const toDm = forSpeaker && ctx.lane === 'member_dm' && ctx.authorId != null && ctx.chatId === ctx.authorId
       const id = await createReminder(db, {
         groupId: ctx.houseScope, // scope = the house (a DM-set reminder belongs to the house, not a silo)
-        deliverChatId, // fixed destination, resolved in code (never LLM)
+        deliverChatId: toDm ? ctx.chatId : houseChatId, // fixed destination, resolved in code (never LLM)
         content: named,
         fireAt: resolved.fireAt,
         createdBy: ctx.authorId,
@@ -115,7 +122,7 @@ export async function runReminder(
       } catch {
         /* sweeper still delivers */
       }
-      out.push({ status: 'set', id, fireAt: resolved.fireAt.toISOString(), content: named, recurrence: resolved.recurrence })
+      out.push({ status: 'set', id, fireAt: resolved.fireAt.toISOString(), content: named, recurrence: resolved.recurrence, deliverTo: toDm ? 'dm' : 'house' })
     }
     return out
   })) as OneReminder[]
@@ -123,7 +130,7 @@ export async function runReminder(
   // Step results are JSON-memoized — rehydrate the Date.
   return results.map((r) =>
     r.status === 'set'
-      ? { status: 'set', id: r.id, fireAt: new Date(r.fireAt), content: r.content, deliverTo: 'house', ...(r.recurrence ? { recurrence: r.recurrence } : {}) }
+      ? { status: 'set', id: r.id, fireAt: new Date(r.fireAt), content: r.content, deliverTo: r.deliverTo ?? 'house', ...(r.recurrence ? { recurrence: r.recurrence } : {}) }
       : r,
   )
 }
@@ -167,6 +174,17 @@ function resolveReminderTime(r: ExtractedReminder, ctx: TurnContext): Resolved {
   return { status: 'ok', fireAt: clampToWakingHours(fireAt, tz), recurrence }
 }
 
+/**
+ * Is this reminder the SPEAKER's own (A4)? The model's per-entry `forWhom` decides when it gave one (one
+ * message can hold both: "remind me at 6 … and remind everyone at 7"); without it, a literal "remind me"
+ * is personal, and so is anything asked in a member's own DM. The NAME itself is always added here, from
+ * the authenticated sender (nameRequester) — never trusted to the model's wording of the content.
+ */
+export function reminderIsPersonal(forWhom: 'speaker' | 'house' | undefined, ctx: Pick<TurnContext, 'text' | 'lane'>): boolean {
+  if (forWhom) return forWhom === 'speaker'
+  return /\bremind\s+me\b/i.test(ctx.text) || ctx.lane === 'member_dm'
+}
+
 /** "Charli: call the plumber" — unless the content already opens with their name. */
 export function nameRequester(content: string, firstName: string | null | undefined): string {
   const name = firstName?.trim()
@@ -189,11 +207,12 @@ export async function runForget(step: TurnStep, ctx: TurnContext): Promise<Forge
     const mode: ForgetMode = ex.permanent ? 'purge' : 'soft'
     const aliasCount = matches.aliasHits.reduce((n, h) => n + h.remove.length, 0)
     const hasFacts = matches.facts.length > 0
-    const hasScrub = matches.noteIds.length > 0 || aliasCount > 0
-    // soft can only HIDE facts; purge also scrubs messages + aliases. If this mode can't act on
-    // what we found, say why (or ask) rather than a misleading proposal.
-    if (!hasFacts && !(mode === 'purge' && hasScrub)) {
-      if (mode === 'soft' && hasScrub) return { proposed: false, reason: 'notes_only' }
+    const hasNotes = matches.noteIds.length > 0
+    // soft HIDES facts and the messages that hold them (A7 — reversible); purge redacts facts, scrubs
+    // the values out of messages and drops aliases. If this mode can't act on what we found, say why (or
+    // ask) rather than a misleading proposal. (An alias alone is only something a purge can drop.)
+    if (!hasFacts && !hasNotes && !(mode === 'purge' && aliasCount > 0)) {
+      if (mode === 'soft' && aliasCount > 0) return { proposed: false, reason: 'notes_only' }
       if (ex.values.length === 0 && !ex.subject) return { proposed: false, reason: 'vague' }
       return { proposed: false, reason: 'nothing' }
     }
@@ -211,6 +230,8 @@ export async function runForget(step: TurnStep, ctx: TurnContext): Promise<Forge
       requestedBy: ctx.authorId,
     })
     const lines: string[] = matches.facts.map((c) => `• ${c.label}`)
+    const n = matches.noteIds.length
+    if (mode === 'soft' && n) lines.push(`• hide ${n} message${n === 1 ? '' : 's'} that mention${n === 1 ? 's' : ''} it`)
     if (mode === 'purge') {
       if (matches.noteIds.length && matches.scrubValues.length) {
         lines.push(
@@ -226,7 +247,7 @@ export async function runForget(step: TurnStep, ctx: TurnContext): Promise<Forge
 
 /** The deterministic line for a forget request that has nothing to confirm. */
 export function forgetExplanation(reason: Exclude<Extract<ForgetOutcome, { proposed: false }>['reason'], 'not_forget'>): string {
-  if (reason === 'notes_only') return `That's only in past messages, not a fact I can just hide — say "permanently forget it" and I'll scrub it out for good. 😼`
+  if (reason === 'notes_only') return `That's only a name I know someone by, not something I can just hide — say "permanently forget it" and I'll drop it for good. 😼`
   if (reason === 'vague') return `What exactly should I forget? Name the specific thing — a name, number, that kind of thing 😼`
   return `Nothing like that in my memory, so nothing to forget 😼`
 }

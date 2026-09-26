@@ -61,6 +61,13 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
     return
   }
 
+  if (plan.kind === 'forward-ack') {
+    await once('forward-ack', async () => {
+      await say(forwardAck(ctx.outcome.captured != null))
+    })
+    return
+  }
+
   if (plan.kind === 'forget') {
     const f = ctx.outcome.forget
     if (!f) return
@@ -118,6 +125,14 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
     },
     clear,
   )
+}
+
+/** The deterministic DM line for a message a member forwarded to Baumy (D4). Never the reply model:
+ *  a forwarded message is someone else's words, and answering it would treat them as the member's. */
+export function forwardAck(kept: boolean): string {
+  return kept
+    ? "Got it — filed that for the house as something you forwarded (not your own words). Ask me about it any time 📎"
+    : "Read it — nothing in there I need to keep for the house 😼"
 }
 
 /** What the conversation window keeps of a forget confirm card (the card itself names the target). */

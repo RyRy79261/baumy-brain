@@ -57,7 +57,8 @@ export async function pickPeopleToReflect(
 // fed to synthesis — it must never leak into a profile / digest; an event that is over is not who
 // someone is) — each DATED and ATTRIBUTED (F11: the profile used to state an undated, unattributed
 // month-old plan as present-tense truth) — plus the attributed notes filed under them, EXCLUDING
-// quarantined (forwarded/bot) content. Authors are resolved to display names ("Ryan: …").
+// relayed content — bot posts and member-forwarded messages (someone else's words are not who the
+// forwarder is). Authors are resolved to display names ("Ryan: …").
 export async function gatherPersonMaterial(
   db: Database,
   groupId: string,
@@ -88,7 +89,7 @@ export async function gatherPersonMaterial(
     FROM baumy_memory_items mi
     LEFT JOIN baumy_members m ON mi.authored_by = m.telegram_user_id
     WHERE mi.group_id = ${groupId} AND mi.about_entity_id = ${personId}
-      AND mi.is_active AND NOT mi.is_secure AND mi.trust_level <> 'quarantined'
+      AND mi.is_active AND NOT mi.is_secure AND mi.trust_level NOT IN ('quarantined', 'forwarded')
     ORDER BY mi.salience DESC, mi.created_at DESC
     LIMIT 20`)
   const notes: ReflectNote[] = rowsOf(noteRes).map((r) => ({

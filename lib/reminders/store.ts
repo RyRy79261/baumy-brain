@@ -1,12 +1,14 @@
-import { and, desc, eq, gte, inArray, isNotNull, lt, lte, sql } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, isNotNull, lt, lte, or, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
-import { reminders } from '@/db/schema'
+import { members, reminders } from '@/db/schema'
 import { now as clockNow } from '@/lib/core/clock'
 import { nextOccurrence } from '@/lib/reminders/recurrence'
 
 export interface CreateReminderInput {
   groupId: string
-  deliverChatId: string // resolved in code = house group (never LLM)
+  // Resolved in code, never LLM: the house scope (a house reminder — delivered to the CURRENT live house
+  // id at send time), or — D2 — the creator's own DM chat for a personal reminder set in a member DM.
+  deliverChatId: string
   content: string
   fireAt: Date
   anchorKind?: string
@@ -182,6 +184,62 @@ export async function reapStaleFiring(db: Database, olderThan: Date): Promise<nu
   return rows.length
 }
 
+// ── Destination (the fixed-destination allow-list, docs/spec/chat-understanding-v2.md D2) ──────────
+// A reminder row is delivered to exactly one of two code-resolved places: the HOUSE (deliver_chat_id =
+// its scope group_id — sent to the current live house id, so a supergroup migration self-heals), or the
+// CREATOR's own DM (deliver_chat_id = created_by, the authenticated member_dm chat it was set in — a
+// private chat's id IS the member's user id). Nothing else is ever a destination.
+
+/** SQL: the row posts to the house group (not a personal DM reminder). */
+export const houseDelivered = () => eq(reminders.deliverChatId, reminders.groupId)
+
+/** SQL: rows a viewer may see listed — house reminders, plus (in their own DM) their personal ones.
+ *  A personal DM reminder never shows up in the group's /reminders or /weekly. */
+export const visibleReminders = (privateTo: string | null) =>
+  privateTo ? or(houseDelivered(), and(eq(reminders.deliverChatId, privateTo), eq(reminders.createdBy, privateTo))) : houseDelivered()
+
+export type ReminderDestination = { kind: 'house' } | { kind: 'dm'; chatId: string }
+
+/** Where a row may be delivered, or null when it may not be delivered at all (a personal reminder whose
+ *  creator has left the house, or a destination that is neither the house nor the creator's DM). */
+export async function reminderDestination(
+  db: Database,
+  row: { groupId: string; deliverChatId: string; createdBy: string | null },
+): Promise<ReminderDestination | null> {
+  if (row.deliverChatId === row.groupId) return { kind: 'house' }
+  if (!row.createdBy || row.deliverChatId !== row.createdBy) return null
+  const [m] = await db
+    .select({ id: members.telegramUserId })
+    .from(members)
+    .where(and(eq(members.telegramUserId, row.createdBy), eq(members.isActive, true)))
+    .limit(1)
+  return m ? { kind: 'dm', chatId: row.deliverChatId } : null
+}
+
+/**
+ * Cancel every UNSENT row of the series these reminders start (the rows themselves and any later
+ * occurrence chained from them via previous_reminder_id), within one house scope. An EDIT of the
+ * message that set them (I1) runs this before re-reading the edited text: what was already posted
+ * stays posted, what is still to come is withdrawn and — if the edit still asks for it — recreated.
+ * Only 'scheduled' rows: one already 'firing' is mid-send. Returns the cancelled ids.
+ */
+export async function cancelUnsentSeries(db: Database, groupId: string, ids: string[]): Promise<string[]> {
+  if (!ids.length) return []
+  const res = await db.execute(sql`
+    WITH RECURSIVE series AS (
+      SELECT id FROM baumy_reminders
+       WHERE group_id = ${groupId} AND id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+      UNION
+      SELECT r.id FROM baumy_reminders r JOIN series s ON r.previous_reminder_id = s.id
+       WHERE r.group_id = ${groupId}
+    )
+    UPDATE baumy_reminders SET status = 'cancelled'
+     WHERE group_id = ${groupId} AND status = 'scheduled' AND id IN (SELECT id FROM series)
+    RETURNING id`)
+  const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
+  return rows.map((r) => String(r.id))
+}
+
 export async function cancelReminder(db: Database, id: string): Promise<boolean> {
   const rows = await db
     .update(reminders)
@@ -217,8 +275,10 @@ export async function dueScheduled(db: Database, before: Date, limit = 100, notB
   return db
     .select({
       id: reminders.id,
+      groupId: reminders.groupId,
       fireAt: reminders.fireAt,
       deliverChatId: reminders.deliverChatId,
+      createdBy: reminders.createdBy,
       content: reminders.content,
       anchorKind: reminders.anchorKind, // event_offset heads-ups render differently from ⏰ reminders
       eventFactId: reminders.eventFactId, // the event a heads-up is about — its line is written at delivery

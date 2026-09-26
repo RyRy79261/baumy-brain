@@ -8,6 +8,7 @@ import { formatEventWindow } from '@/lib/core/calendar'
 import { upcomingDatedFacts } from '@/lib/memory/facts'
 import { memberDisplayNames } from '@/lib/identity/roster'
 import { describeRecurrence } from '@/lib/reminders/recurrence'
+import { houseDelivered } from '@/lib/reminders/store'
 
 // What /weekly is about (T5), gathered FROM DB records (never chat recall) and every line DATED:
 //   • notes of kind statement/fact said in the LAST 7 DAYS — never a question someone asked or chatter
@@ -16,13 +17,16 @@ import { describeRecurrence } from '@/lib/reminders/recurrence'
 //   • explicit reminders coming up in the next two weeks, with their day + time (and repeat rule);
 //   • dated events coming up (current facts with an event_at), with the EVENT's date — not a heads-up
 //     reminder's fire date next to text that already says "tomorrow".
-// Secure values and quarantined (forwarded/bot) content are never included.
+// Secure values and quarantined (bot) content are never included; a member-FORWARDED notice (D4) is,
+// labelled as forwarded — never as the forwarder's own words. Only reminders delivered to the house
+// are listed (a personal reminder set in a DM goes to its creator's DM — D2 — and stays private).
 export const WEEKLY_LOOKBACK_DAYS = 7
 const HORIZON_DAYS = 14
 const NEWS_KINDS = ['statement', 'fact']
 
 export interface WeeklyMaterial {
-  notes: { content: string; at: Date; by: string | null }[]
+  /** `forwardedBy` set (possibly null = unknown) ⇔ a member-forwarded note: `by` is then null. */
+  notes: { content: string; at: Date; by: string | null; forwardedBy?: string | null }[]
   reminders: { content: string; fireAt: Date; recurrence: string | null }[]
   events: { text: string; eventAt: Date; validTo: Date | null; by: string | null }[]
 }
@@ -34,7 +38,7 @@ export async function gatherWeekly(db: Database, groupId: string, now: Date = cl
   const nameOf = (id: string | null) => (id ? (names.get(id) ?? null) : null)
 
   const notes = await db
-    .select({ content: memoryItems.content, at: memoryItems.createdAt, by: memoryItems.authoredBy })
+    .select({ content: memoryItems.content, at: memoryItems.createdAt, by: memoryItems.authoredBy, trust: memoryItems.trustLevel, fwd: memoryItems.forwardedBy })
     .from(memoryItems)
     .where(
       and(
@@ -56,6 +60,7 @@ export async function gatherWeekly(db: Database, groupId: string, now: Date = cl
     .where(
       and(
         eq(reminders.groupId, groupId),
+        houseDelivered(),
         eq(reminders.status, 'scheduled'),
         ne(reminders.anchorKind, 'event_offset'), // the events themselves come from the facts below
         gte(reminders.fireAt, now),
@@ -67,7 +72,12 @@ export async function gatherWeekly(db: Database, groupId: string, now: Date = cl
 
   const dated = await upcomingDatedFacts(db, groupId, now, horizon)
   return {
-    notes: notes.map((n) => ({ content: n.content, at: new Date(n.at), by: nameOf(n.by) })),
+    notes: notes.map((n) => ({
+      content: n.content,
+      at: new Date(n.at),
+      by: nameOf(n.by),
+      ...(n.trust === 'forwarded' ? { forwardedBy: nameOf(n.fwd) } : {}),
+    })),
     reminders: upcoming.map((u) => ({ content: u.content, fireAt: new Date(u.fireAt), recurrence: u.recurrence })),
     events: dated.slice(0, 12).map((f) => ({
       text: `${f.subject} ${f.predicate.replace(/_/g, ' ')}${f.objectValue ? `: ${f.objectValue}` : ''}`,
@@ -90,7 +100,10 @@ export function weeklyLines(m: WeeklyMaterial, tz: string = houseTz()): { lately
     return d ? ` (repeats ${d})` : ''
   }
   return {
-    lately: m.notes.map((n) => `- noted ${day(n.at, tz)}${n.by ? ` by ${n.by}` : ''}: ${n.content}`),
+    lately: m.notes.map(
+      (n) =>
+        `- noted ${day(n.at, tz)}${n.forwardedBy !== undefined ? ` (a message ${n.forwardedBy ?? 'a housemate'} forwarded — not their own words)` : n.by ? ` by ${n.by}` : ''}: ${n.content}`,
+    ),
     comingUp: [
       ...m.events.map((e) => ({ at: e.eventAt, line: `- event ${formatEventWindow(e.eventAt, e.validTo, tz)}${e.by ? ` (per ${e.by})` : ''}: ${e.text}` })),
       ...m.reminders.map((r) => ({ at: r.fireAt, line: `- reminder ${dayTime(r.fireAt, tz)}: ${r.content}${repeat(r.recurrence)}` })),
