@@ -17,7 +17,7 @@ SCENARIOS_SHOW_GAPS=1 pnpm test:scenarios   # run known gaps as ordinary tests t
 - **Model.** `fake-model.ts` installs a scripted model for every role through the test-only
   `setModelOverride` seam in `lib/ai/registry.ts`.
   - It works out which call it is serving from the system prompt, by matching it against the
-    constants in `lib/ai/prompts.ts`. The roles are triage, extract, reminder, list, forget, cancel-reminder, reply,
+    constants in `lib/ai/prompts.ts`. The roles are triage, extract, reminder, list, forget, cancel-reminder, olympics, reply,
     reply-text, voice, reflect, headsup, expand, rerank, websearch, weekly, guests, issue,
     deliberate and dedupe (the nightly hygiene sweep's entity-merge proposal; default: no merges).
   - It answers from the scenario's `fixtures`, which are functions of the message text. Any role
@@ -64,6 +64,7 @@ flipped when its phase landed.
 | `reminders.scenario.test.ts` | confirm / clarify modes and the clarify follow-through (A2, A3), undirected reminders (A9), edits (I1), pause |
 | `lists.scenario.test.ts` | list acks from the store outcome, article/plural-tolerant check-off (K4), list op + question (A10), list ops not notes (A11) |
 | `cancel-reminders.scenario.test.ts` | cancelling from chat through the confirm-tap wall: a weekly series stops for good, a creator cancels their DM reminder, another member cannot see it, nothing-matched lists what is scheduled |
+| `olympics.scenario.test.ts` | Baumy Olympics against an in-memory Olympics (`olympics-fake.ts`, the scenario's `olympics` option): a calendar add and a chore log through the asker-only confirm tap, a retried tap reusing its Idempotency-Key, `/link`, "link first", reads, not-connected / down |
 | `forget.scenario.test.ts` | propose → card → tap in the stored house scope (A1), window clearing |
 | `intake.scenario.test.ts` / `intake-actions.scenario.test.ts` | forwarded content (I5/D4), captions (I4), edits (I1), personal/DM reminders (A4, A5/D2), soft forget (A7, A8), new housemates (K6), a transient model error failing the ingest (I2) |
 | `deep.scenario.test.ts` | the deep tier: expansion + re-rank + a graph hop into MEMORY |
