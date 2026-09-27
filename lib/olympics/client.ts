@@ -76,7 +76,15 @@ function config(): Config | null {
   const base = process.env.OLYMPICS_BASE_URL?.trim()
   const token = process.env.BRAIN_SERVICE_TOKEN?.trim()
   if (!base || !token) return null
-  if (!/^https?:\/\/[^\s]+$/i.test(base)) return null
+  // The token rides in a header: HTTPS only, plain HTTP just for a local Olympics.
+  let u: URL
+  try {
+    u = new URL(base)
+  } catch {
+    return null
+  }
+  const loopback = u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]'
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && loopback)) return null
   return { baseUrl: base.replace(/\/+$/, ''), token }
 }
 

@@ -80,7 +80,12 @@ describe('callOlympicsAction — never throws, always a result', () => {
     process.env.BRAIN_SERVICE_TOKEN = TOKEN
     process.env.OLYMPICS_BASE_URL = 'not a url'
     expect(await callOlympicsAction('whoami', {}, { actor: 1 })).toEqual({ ok: false, kind: 'not_configured' })
+    // The token is never sent over plain HTTP, except to a local Olympics.
+    process.env.OLYMPICS_BASE_URL = 'http://olympics.example'
+    expect(await callOlympicsAction('whoami', {}, { actor: 1 })).toEqual({ ok: false, kind: 'not_configured' })
     expect(seen).toHaveLength(0)
+    process.env.OLYMPICS_BASE_URL = 'http://localhost:3000'
+    expect(olympicsConfigured()).toBe(true)
   })
 
   it('a network error or a timeout is unavailable', async () => {

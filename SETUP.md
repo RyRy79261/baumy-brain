@@ -68,7 +68,7 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 | `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` | **auto-injected** by the Vercel↔Inngest integration |
 | `GITHUB_TOKEN` | *(optional)* a token with **issues:write** on the repo below — enables `/bug` + `/feature` to file GitHub issues. Unset = the feature politely says it's not set up. |
 | `GITHUB_REPO` | *(optional)* `owner/name` the issues are filed to (e.g. `RyRy79261/baumy-brain`) — required alongside `GITHUB_TOKEN`. |
-| `OLYMPICS_BASE_URL` | *(optional)* the Baumy Olympics origin, e.g. `https://<olympics>.vercel.app` (no trailing path). Enables the calendar + chore intents and `/link`. Unset = Baumy says Olympics isn't connected. |
+| `OLYMPICS_BASE_URL` | *(optional)* the Baumy Olympics origin, e.g. `https://<olympics>.vercel.app` (HTTPS only; plain HTTP just for localhost). Enables the calendar + chore intents and `/link`. Unset = Baumy says Olympics isn't connected. |
 | `BRAIN_SERVICE_TOKEN` | *(optional)* the service token Olympics minted for `baumy-brain` (see below) — required alongside `OLYMPICS_BASE_URL`. A token Olympics rejects (401) reads as "not connected". |
 
 > **Optional overrides — you normally set neither:** `BAUMY_HOUSE_CHAT_ID` pins the
