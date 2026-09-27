@@ -24,6 +24,8 @@ export interface Verdict {
   tier: 'quick' | 'deep'
   webSearch: boolean
   list: 'add' | 'checkoff' | 'query' | 'none'
+  /** Baumy Olympics routing (docs/spec/olympics.md). */
+  olympics: 'calendar_add' | 'calendar_list' | 'chore_log' | 'standings' | 'none'
 }
 
 export function verdict(v: Partial<Verdict> & { intent: Intent }): Verdict {
@@ -38,6 +40,7 @@ export function verdict(v: Partial<Verdict> & { intent: Intent }): Verdict {
     tier: 'quick',
     webSearch: false,
     list: 'none',
+    olympics: 'none',
     ...v,
   }
 }

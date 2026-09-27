@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { DateTime } from 'luxon'
 import { createHttpDb } from '@/db/client'
 import { inngest } from '@/lib/inngest/client'
@@ -5,6 +6,27 @@ import { extractListOp } from '@/lib/ai/list-extract'
 import { extractReminder, type ExtractedReminder } from '@/lib/ai/reminder-extract'
 import { extractForget } from '@/lib/ai/forget-extract'
 import { extractReminderCancel } from '@/lib/ai/reminder-cancel-extract'
+import { extractOlympicsOp } from '@/lib/ai/olympics-extract'
+import { callOlympicsAction } from '@/lib/olympics/client'
+import {
+  buildEventInput,
+  choreAmbiguous,
+  choreBlocked,
+  choreCard,
+  choreNotFound,
+  eventCard,
+  eventDraftProblem,
+  failureLine,
+  listRange,
+  matchChore,
+  renderEvents,
+  renderStandings,
+  OLYMPICS_WRITE_ACTIONS,
+  type GetStandingsData,
+  type ListChoresData,
+  type ListEventsData,
+  type OlympicsPending,
+} from '@/lib/olympics/intents'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
 import { clampToWakingHours } from '@/lib/reminders/parse'
 import { fireAtFromModel, reminderTimeFromPhrase, minutesApart } from '@/lib/core/when'
@@ -15,7 +37,7 @@ import { cancellableReminders, matchReminders, reminderLabel } from '@/lib/remin
 import { findMemoryToForget, type ForgetMode } from '@/lib/memory/forget'
 import { createPendingAction } from '@/lib/confirm/store'
 import { memberDisplayNames } from '@/lib/identity/roster'
-import type { CancelReminderOutcome, ForgetOutcome, ListOutcome, ReminderOutcome, TurnContext } from './context'
+import type { CancelReminderOutcome, ForgetOutcome, ListOutcome, OlympicsOutcome, ReminderOutcome, TurnContext } from './context'
 import type { TurnStep } from './step'
 
 // The turn's ACTIONS (docs/spec/chat-understanding-v2.md §1 TurnOutcome). Each one is the LLM
@@ -247,6 +269,68 @@ export async function runCancelReminder(step: TurnStep, ctx: TurnContext): Promi
       card: `${head}\n${items.join('\n')}${recurring ? '\n\n(every future repeat stops too)' : ''}\n\nTap to confirm.`,
     }
   })) as CancelReminderOutcome
+}
+
+// ── Baumy Olympics (docs/spec/olympics.md) ──────────────────────────────────────────────────────
+// The calendar and the chore game, AS the authenticated sender (X-Baumy-Actor = their Telegram id —
+// never anything the message says). The extractor PROPOSES the op and its slots; this code DISPOSES:
+// reads (what's on, the standings) run straight away and are rendered deterministically; a write
+// (add an event, log a chore) is validated, checked against Olympics (linked? which chore? cooling
+// down?) and only PROPOSED as a confirm card storing the exact Olympics input and a fresh
+// Idempotency-Key. Nothing is written until the asker taps (functions/callback.ts), and every retry
+// of that tap resends the same key, so Olympics runs it once. Memoized: a retry never sends a second
+// card. Undefined = the extractor found no Olympics op after all.
+export async function runOlympics(step: TurnStep, ctx: TurnContext): Promise<OlympicsOutcome | undefined> {
+  const out = (await step.run('olympics', async (): Promise<OlympicsOutcome | null> => {
+    const actor = ctx.authorId
+    if (!actor) return null // gated upstream (olympicsOpProposed); a belt, not a path
+    const db = createHttpDb()
+    const speaker = (await memberDisplayNames(db)).get(actor) ?? ctx.sender.name
+    const ex = await extractOlympicsOp(ctx.text, speaker, { at: ctx.sentAt, tz: ctx.tz })
+    const call = <T>(name: string, input: Record<string, unknown>) => callOlympicsAction<T>(name, input, { actor })
+    const propose = async (op: OlympicsPending['op'], input: Record<string, unknown>, summary: string, card: string): Promise<OlympicsOutcome> => {
+      const pending: OlympicsPending = { op, name: OLYMPICS_WRITE_ACTIONS[op], input, idempotencyKey: `brain-${randomUUID()}`, summary }
+      const pendingId = await createPendingAction(db, {
+        groupId: ctx.houseScope,
+        actionType: 'olympics.action',
+        payload: pending as unknown as Record<string, unknown>,
+        requestedBy: actor, // only this person's tap sends it (resolvePendingAction)
+      })
+      return { op, proposed: true, pendingId, card }
+    }
+
+    switch (ex.op) {
+      case 'none':
+        return null
+      case 'calendar_list': {
+        const r = await call<ListEventsData>('list_events', listRange({ from: ex.from, to: ex.to }, ctx.sentAt, ctx.tz))
+        return { op: ex.op, proposed: false, text: r.ok ? renderEvents(r.data, ctx.tz) : failureLine(r) }
+      }
+      case 'standings': {
+        const r = await call<GetStandingsData>('get_standings', {})
+        return { op: ex.op, proposed: false, text: r.ok ? renderStandings(r.data) : failureLine(r) }
+      }
+      case 'calendar_add': {
+        // Linked first: an unlinked asker hears how to link, not a card whose tap could only fail.
+        const who = await call('whoami', {})
+        if (!who.ok) return { op: ex.op, proposed: false, text: failureLine(who) }
+        const draft = buildEventInput(ex, ctx.sentAt, ctx.tz)
+        if (!draft.ok) return { op: ex.op, proposed: false, text: eventDraftProblem(draft.reason) }
+        return propose(ex.op, { ...draft.input }, `${draft.input.title} — ${draft.when}`, eventCard(draft.input, draft.when))
+      }
+      case 'chore_log': {
+        const r = await call<ListChoresData>('list_chores', {})
+        if (!r.ok) return { op: ex.op, proposed: false, text: failureLine(r) }
+        const m = matchChore(r.data.chores, ex.chore ?? '')
+        if (m.kind === 'none') return { op: ex.op, proposed: false, text: choreNotFound(r.data.chores, ex.chore ?? '') }
+        if (m.kind === 'ambiguous') return { op: ex.op, proposed: false, text: choreAmbiguous(m.chores) }
+        const blocked = choreBlocked(m.chore, ctx.sentAt, ctx.tz)
+        if (blocked) return { op: ex.op, proposed: false, text: blocked }
+        return propose(ex.op, { choreId: m.chore.id }, m.chore.name, choreCard(m.chore))
+      }
+    }
+  })) as OlympicsOutcome | null
+  return out ?? undefined
 }
 
 // ── Forget (deletion on request) ─────────────────────────────────────────────────────────────────

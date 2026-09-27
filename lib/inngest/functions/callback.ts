@@ -2,12 +2,14 @@ import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { loadRoster } from '@/lib/identity/roster'
 import { resolveHouseIds } from '@/lib/identity/house'
-import { resolvePendingAction } from '@/lib/confirm/store'
+import { resolvePendingAction, pendingForSomeoneElse, reopenPendingAction } from '@/lib/confirm/store'
 import { forgetMemory, type ForgetMode, type AliasHit } from '@/lib/memory/forget'
 import { cancelRemindersOnTap } from '@/lib/reminders/cancel'
 import { createIssue } from '@/lib/github/issues'
 import { writeAudit } from '@/lib/audit'
 import { answerCallback, editMessageText } from '@/lib/telegram/client'
+import { callOlympicsAction, type OlympicsResult } from '@/lib/olympics/client'
+import { tapResultLine, type OlympicsPending } from '@/lib/olympics/intents'
 
 // Deterministic confirm handler (security Stage D / B4). A callback_query is a
 // Telegram-authenticated button press; only an ACTIVE member/owner from.id may
@@ -42,8 +44,17 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
     return { ignored: 'bad-data' }
   }
 
+  const tapper = String(fromId)
+  // A card that acts AS its asker (a Baumy Olympics write) is theirs alone to confirm or cancel.
+  const notYours = async () => {
+    const other = await pendingForSomeoneElse(db, id, tapper)
+    if (other) await answerCallback(callbackId, 'Only the person who asked can confirm this one.')
+    return other != null
+  }
+
   if (verb === 'x') {
-    const dropped = await step.run('cancel', () => resolvePendingAction(db, id, 'cancelled'))
+    const dropped = await step.run('cancel', () => resolvePendingAction(db, id, 'cancelled', tapper))
+    if (!dropped && (await notYours())) return { ignored: 'not-requester' }
     // On a reminder-cancellation card "Cancelled" would read as "the reminder was cancelled" — the
     // opposite of what the tap did. Say what happened: the reminder is kept.
     const keep = dropped?.actionType === 'reminder.cancel'
@@ -55,7 +66,8 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
   // Resolve in its OWN step so the result is MEMOIZED: a retry after a downstream effect
   // fails replays the action here WITHOUT re-flipping the row, so the effect can safely
   // re-run instead of being silently lost to "already handled".
-  const action = await step.run('resolve', () => resolvePendingAction(db, id, 'confirmed'))
+  const action = await step.run('resolve', () => resolvePendingAction(db, id, 'confirmed', tapper))
+  if (!action && (await notYours())) return { ignored: 'not-requester' }
   if (!action) {
     await answerCallback(callbackId, 'This already expired or was handled.')
     return { ignored: 'not-pending' }
@@ -152,6 +164,35 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
     await answerCallback(callbackId, 'Reminder cancelled')
     if (messageId) await editMessageText(chatId, messageId, `🗑️ Cancelled:\n${named.join('\n')}`)
     return { confirmed: id, remindersCancelled: cancelled.length }
+  }
+
+  if (action.actionType === 'olympics.action') {
+    // The TAP is the wall (docs/spec/olympics.md): the exact Olympics input resolved and validated at
+    // propose time goes out now — AS the tapper, who is the asker (resolvePendingAction), with
+    // X-Baumy-Confirmed and the Idempotency-Key minted with the card. The call is its own memoized
+    // step, so an Inngest retry reuses its answer; and if Olympics did not answer, the card is put
+    // back so the asker can tap again — with the SAME key, so Olympics still runs it at most once.
+    const p = action.payload as unknown as OlympicsPending
+    const result = (await step.run('olympics-call', () =>
+      callOlympicsAction(p.name, p.input, { actor: tapper, idempotencyKey: p.idempotencyKey, confirmed: true }),
+    )) as OlympicsResult<unknown>
+    if (!result.ok && result.kind === 'unavailable') {
+      const reopened = await step.run('olympics-reopen', () => reopenPendingAction(db, id))
+      await answerCallback(callbackId, reopened ? "Olympics didn't answer — tap confirm again in a moment." : "Olympics didn't answer, and this card has expired.")
+      if (!reopened && messageId) await editMessageText(chatId, messageId, `⚠️ Not done — Olympics didn't answer and the card expired. Ask me again.`)
+      return { confirmed: id, olympics: 'unavailable', reopened }
+    }
+    await step.run('olympics-audit', () =>
+      writeAudit(db, 'olympics.action', tapper, p.summary ?? null, {
+        action: p.name,
+        idempotencyKey: p.idempotencyKey,
+        ok: result.ok,
+        ...(result.ok ? {} : { kind: result.kind, code: result.kind === 'refused' ? result.code : null }),
+      }),
+    )
+    await answerCallback(callbackId, result.ok ? 'Done' : 'Not done')
+    if (messageId) await editMessageText(chatId, messageId, tapResultLine(p, result))
+    return { confirmed: id, olympics: result.ok ? 'ok' : result.kind }
   }
 
   if (action.actionType === 'github.issue') {

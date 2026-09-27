@@ -30,6 +30,7 @@ export type PlanRow =
   | 'cancel-reminder-which'
   | 'cancel-reminder-undirected'
   | 'list'
+  | 'olympics'
   | 'reminder-set'
   | 'reminder-set-undirected'
   | 'reminder-failed'
@@ -60,6 +61,8 @@ export type Plan =
   | { kind: 'list-words'; row: 'list' }
   /** The forget flow: the confirm card, or the deterministic "nothing to forget" line. */
   | { kind: 'forget'; row: 'forget' }
+  /** A Baumy Olympics op: its confirm card, or the deterministic line (a read's answer, or why not). */
+  | { kind: 'olympics'; row: 'olympics' }
   /** Reminder cancellation proposed: the deterministic confirm card listing exactly what would go. */
   | { kind: 'cancel-reminder'; row: 'cancel-reminder' }
   /** A message a member forwarded to Baumy's DM (D4): the deterministic "filed it, as forwarded by you"
@@ -136,6 +139,10 @@ function planTurn(ctx: TurnContext, policy: ResponsePolicy): Plan {
     if (c.proposed) return { kind: 'cancel-reminder', row: 'cancel-reminder' }
     return c.reason === 'nothing' ? words('answer', 'cancel-reminder-unmatched', { onMiss: 'words' }) : words('clarify', 'cancel-reminder-which')
   }
+
+  // Baumy Olympics (docs/spec/olympics.md): only ever run for a directed ask, so it always answers —
+  // the card, or the deterministic line. Never the reply model.
+  if (o.olympics) return { kind: 'olympics', row: 'olympics' }
 
   const main = planMain(ctx, policy, directed)
 

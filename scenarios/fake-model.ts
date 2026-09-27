@@ -9,6 +9,7 @@ import {
   EXTRACT_LIST_SYSTEM,
   FORGET_EXTRACT_SYSTEM,
   CANCEL_REMINDER_EXTRACT_SYSTEM,
+  OLYMPICS_EXTRACT_SYSTEM,
   REPLY_SYSTEM,
   REPLY_SYSTEM_TEXT,
   VOICE_SYSTEM,
@@ -54,6 +55,7 @@ export type CallRole =
   | 'list'
   | 'forget'
   | 'cancel-reminder'
+  | 'olympics'
   | 'reply'
   | 'reply-text'
   | 'voice'
@@ -97,6 +99,7 @@ export const ROLE_PROMPTS: [CallRole, string][] = (
     ['list', EXTRACT_LIST_SYSTEM],
     ['forget', FORGET_EXTRACT_SYSTEM],
     ['cancel-reminder', CANCEL_REMINDER_EXTRACT_SYSTEM],
+    ['olympics', OLYMPICS_EXTRACT_SYSTEM],
     ['reply', REPLY_SYSTEM],
     ['reply-text', REPLY_SYSTEM_TEXT],
     ['voice', VOICE_SYSTEM],
@@ -141,7 +144,7 @@ export function messageOf(prompt: string): string | null {
 
 // Roles whose fixtures are a function of the message text. If their prompt layout changes so the
 // message can no longer be found, a fixture must not silently regex over MEMORY / THIS TURN instead.
-const TEXT_ROLES = new Set<CallRole>(['triage', 'extract', 'reminder', 'list', 'forget', 'cancel-reminder', 'reply', 'reply-text', 'websearch', 'expand', 'rerank', 'issue'])
+const TEXT_ROLES = new Set<CallRole>(['triage', 'extract', 'reminder', 'list', 'forget', 'cancel-reminder', 'olympics', 'reply', 'reply-text', 'websearch', 'expand', 'rerank', 'issue'])
 
 export function textOf(role: CallRole, prompt: string, strict = true): string {
   const m = messageOf(prompt)
@@ -174,6 +177,8 @@ export interface Fixtures {
   ) => { isForget: boolean; values?: string[]; subject?: string; attribute?: string; permanent?: boolean } | null
   /** Which scheduled reminder a cancellation request means (docs/spec/reminders.md). Default: not a cancel. */
   cancelReminder?: (text: string, speaker: string | null, call: ModelCall) => CancelReminderSpec | null
+  /** The Baumy Olympics op and its slots (docs/spec/olympics.md). Default: not an Olympics op. */
+  olympics?: (text: string, call: ModelCall) => { op: 'calendar_add' | 'calendar_list' | 'chore_log' | 'standings' | 'none'; [slot: string]: string | undefined } | null
   reply?: (text: string, call: ModelCall) => string | ReplyScript
   headsup?: (call: ModelCall) => string
   reflect?: (call: ModelCall) => string
@@ -240,6 +245,8 @@ function answerFor(call: ModelCall, fx: Fixtures): string {
     }
     case 'cancel-reminder':
       return json(toCancelReminderOutput(fx.cancelReminder ? fx.cancelReminder(call.text, speakerOf(call.prompt), call) : null))
+    case 'olympics':
+      return json((fx.olympics ? fx.olympics(call.text, call) : null) ?? { op: 'none' })
     case 'reply': {
       const r = fx.reply ? fx.reply(call.text, call) : noteDefaultReply(call)
       const s = typeof r === 'string' ? { reply: r, answered: true } : r

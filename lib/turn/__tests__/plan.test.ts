@@ -30,6 +30,7 @@ const V = (o: Partial<ClassifierVerdict> = {}): ClassifierVerdict => ({
   tier: 'quick',
   webSearch: false,
   list: 'none',
+  olympics: 'none',
   ...o,
 })
 
@@ -377,5 +378,19 @@ describe('planResponse — fact conflict', () => {
   })
   it('paused → none; quarantined never gets here (no facts)', () => {
     expect(plan({ policy: PAUSED, verdict: V({ intent: 'statement' }), outcome: conflict })).toMatchObject({ kind: 'none', row: 'paused' })
+  })
+})
+
+describe('planResponse — Baumy Olympics (docs/spec/olympics.md)', () => {
+  it('an Olympics op always answers deterministically — the card or the line, never the reply model', () => {
+    const card: TurnOutcome = { olympics: { op: 'calendar_add', proposed: true, pendingId: 'p', card: 'Add this?' } }
+    const line: TurnOutcome = { olympics: { op: 'standings', proposed: false, text: '🏆' } }
+    expect(plan({ lane: 'member_dm', verdict: V({ intent: 'request', olympics: 'calendar_add' }), outcome: card })).toEqual({ kind: 'olympics', row: 'olympics' })
+    expect(plan({ why: 'mention', verdict: V({ intent: 'question', olympics: 'standings' }), outcome: line })).toEqual({ kind: 'olympics', row: 'olympics' })
+  })
+  it('paused group → none; an edit never speaks', () => {
+    const line: TurnOutcome = { olympics: { op: 'standings', proposed: false, text: '🏆' } }
+    expect(plan({ policy: PAUSED, why: 'mention', verdict: V({ intent: 'question' }), outcome: line })).toMatchObject({ kind: 'none', row: 'paused' })
+    expect(plan({ edit: { processed: true }, lane: 'member_dm', verdict: V({ intent: 'question' }), outcome: line })).toEqual({ kind: 'none', row: 'edit-silent' })
   })
 })
