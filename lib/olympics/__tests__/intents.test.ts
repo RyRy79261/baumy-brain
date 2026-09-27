@@ -153,6 +153,10 @@ describe('rendering', () => {
     )
     const ch: OlympicsPending = { op: 'chore_log', name: 'log_completion', input: { choreId: 'c' }, idempotencyKey: 'brain-x1234567', summary: 'Dishes' }
     expect(tapResultLine(ch, { ok: true, data: { choreName: 'Dishes', counted: true, totalPts: 1 } })).toBe('✅ Logged: Dishes — +1 point 🧹')
+    // Partner mode: logged, but it scores only once another member confirms it.
+    expect(tapResultLine(ch, { ok: true, data: { choreName: 'Dishes', counted: false, totalPts: null } })).toBe(
+      '✅ Logged: Dishes — it counts once someone else confirms it 🧹',
+    )
     expect(tapResultLine(ch, { ok: false, kind: 'refused', status: 422, code: 'COOLDOWN', message: 'Too soon.' })).toBe('⚠️ Too soon.')
   })
 })

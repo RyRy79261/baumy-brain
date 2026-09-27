@@ -318,5 +318,7 @@ export function tapResultLine(p: OlympicsPending, result: OlympicsResult<unknown
   }
   const d = (result.data ?? {}) as { choreName?: string; counted?: boolean; totalPts?: number | null }
   const pts = d.counted && d.totalPts != null ? ` — +${d.totalPts} point${d.totalPts === 1 ? '' : 's'}` : ''
-  return `✅ Logged: ${d.choreName ?? p.summary}${pts} 🧹`
+  // Partner mode: the claim waits for another member to confirm it before it scores.
+  const pending = d.counted === false ? ' — it counts once someone else confirms it' : ''
+  return `✅ Logged: ${d.choreName ?? p.summary}${pts}${pending} 🧹`
 }
