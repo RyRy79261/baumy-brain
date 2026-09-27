@@ -48,3 +48,72 @@ describe('handleCommand — /start (orientation + first-DM capture)', () => {
     expect(replies).toEqual(['Unknown command.', 'Unknown command.', 'Unknown command.'])
   })
 })
+
+describe('handleCommand — /link <code> (Baumy Olympics member linking)', async () => {
+  const { setOlympicsTransport } = await import('@/lib/olympics/client')
+  const { FakeOlympics, FAKE_OLYMPICS_URL, FAKE_OLYMPICS_TOKEN } = await import('@/scenarios/olympics-fake')
+  const setup = () => {
+    const f = new FakeOlympics({ members: [{ id: 'm-anna', displayName: 'Anna' }, { id: 'm-bo', displayName: 'Bo', telegramUserId: '300' }] })
+    f.codes.set('ANNACODE12', 'm-anna')
+    f.codes.set('ANNACODE34', 'm-anna')
+    process.env.OLYMPICS_BASE_URL = FAKE_OLYMPICS_URL
+    process.env.BRAIN_SERVICE_TOKEN = FAKE_OLYMPICS_TOKEN
+    setOlympicsTransport(f.transport)
+    sendDm.mockClear()
+    return f
+  }
+  const reply = () => (sendDm.mock.calls.at(-1) as unknown as [string, string])[1]
+  const teardown = () => {
+    setOlympicsTransport(null)
+    delete process.env.OLYMPICS_BASE_URL
+    delete process.env.BRAIN_SERVICE_TOKEN
+  }
+
+  it('links the SENDER (X-Baumy-Actor from the authenticated from.id) and says who they are', async () => {
+    const f = setup()
+    const db = await makeTestDb()
+    await handleCommand(dmOrigin(200, '200'), '/link ANNACODE12', db, { messageId: 41 })
+    expect(reply()).toBe("🔗 Linked — you're Anna in Baumy Olympics. You can now ask me to add calendar events and log your chores.")
+    expect(f.members.find((m) => m.id === 'm-anna')?.telegramUserId).toBe('200')
+    expect(f.calls[0]).toMatchObject({ name: 'link_telegram', actor: '200', idempotencyKey: 'tglink-200-41', confirmed: false, body: { code: 'ANNACODE12' } })
+    expect(f.audit).toEqual([{ action: 'link_telegram', memberId: 'm-anna', source: 'brain', entityId: 'm-anna' }])
+    teardown()
+  })
+
+  it('a retried command (same message) replays the answer instead of burning the code twice', async () => {
+    const f = setup()
+    const db = await makeTestDb()
+    await handleCommand(dmOrigin(200, '200'), '/link ANNACODE12', db, { messageId: 41 })
+    await handleCommand(dmOrigin(200, '200'), '/link ANNACODE12', db, { messageId: 41 })
+    expect(reply()).toMatch(/Linked — you're Anna/)
+    expect(f.calls).toHaveLength(2)
+    teardown()
+  })
+
+  it('a bad, used or expired code; an account linked to someone else; a malformed or missing code', async () => {
+    setup()
+    const db = await makeTestDb()
+    await handleCommand(dmOrigin(200, '200'), '/link WRONGCODE9', db, { messageId: 1 })
+    expect(reply()).toMatch(/That code didn't work/)
+    await handleCommand(dmOrigin(300, '300'), '/link ANNACODE34', db, { messageId: 2 })
+    expect(reply()).toMatch(/already linked to another Olympics member/)
+    await handleCommand(dmOrigin(200, '200'), '/link', db, { messageId: 3 })
+    expect(reply()).toMatch(/^Send it like this: \/link/)
+    await handleCommand(dmOrigin(200, '200'), '/link no!', db, { messageId: 4 })
+    expect(reply()).toMatch(/^Send it like this: \/link/)
+    teardown()
+  })
+
+  it('Olympics not set up or down → a friendly line, never an error', async () => {
+    const f = setup()
+    const db = await makeTestDb()
+    f.down = true
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await handleCommand(dmOrigin(200, '200'), '/link ANNACODE12', db, { messageId: 5 })
+    expect(reply()).toMatch(/isn't answering right now/)
+    warn.mockRestore()
+    teardown()
+    await handleCommand(dmOrigin(200, '200'), '/link ANNACODE12', db, { messageId: 6 })
+    expect(reply()).toMatch(/isn't connected to me yet/)
+  })
+})

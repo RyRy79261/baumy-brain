@@ -38,6 +38,7 @@ const REPORT_COMMANDS = [
 const DM_COMMANDS = [
   { command: 'start', description: 'What Baumy is + how to use it' },
   { command: 'dashboard', description: 'Get a one-time dashboard login link' },
+  { command: 'link', description: 'Link your Telegram to Baumy Olympics (/link <code>)' },
   ...REPORT_COMMANDS,
 ]
 

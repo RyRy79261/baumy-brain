@@ -153,7 +153,15 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
 
   // Member-DM commands (house-management). Deterministic; no classify/LLM.
   if (origin.lane === 'member_dm' && rawText.trim().startsWith('/')) {
-    await step.run('command', async () => handleCommand(origin, rawText))
+    await step.run('command', async () => handleCommand(origin, rawText, undefined, { messageId }))
+    return 'command'
+  }
+  // /link in the GROUP: a one-time link code posted there could be claimed by anyone who reads it
+  // first, so it is never used — the sender is told to make a fresh one and DM it. Members only.
+  if (origin.lane === 'house' && fromId != null && roster.isMember(fromId) && /^\/link(?:@\w+)?(?:\s|$)/i.test(rawText.trim())) {
+    await step.run('link-in-group', () =>
+      sayHouse("Don't post link codes in the group — anyone could use it. Make a fresh code in Olympics → Settings and DM it to me as /link <code>. 🔗"),
+    )
     return 'command'
   }
   // Any OTHER slash command in the house group (/pause, /help, /start, a non-owner /notifyhere…) is
