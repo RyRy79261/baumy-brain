@@ -125,6 +125,17 @@ describe('kitchen shopping API — house scoping', () => {
     expect(await openItems(db, OTHER)).toEqual(['caviar'])
   })
 
+  it('uses the scope id, never the send id, after a group→supergroup migration (live_chat_id set)', async () => {
+    const LIVE = '-100migratedLiveId'
+    await house(db)
+    await ensureRegistered(db, LIVE, null)
+    await db.update(houseConfig).set({ liveChatId: LIVE })
+    const res = await ADD(req('/add', { body: { items: ['flour'] } }))
+    expect(res.status).toBe(200)
+    expect(await openItems(db, HOUSE)).toEqual(['flour'])
+    expect(await openItems(db, LIVE)).toEqual([])
+  })
+
   it('honours the BAUMY_HOUSE_CHAT_ID pin (the scope id), registering the pinned chat for the FK', async () => {
     const PIN = '-100pinnedScope'
     await house(db) // captured id differs from the pin; the pin wins, as it does for the Telegram lane
