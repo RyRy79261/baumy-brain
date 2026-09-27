@@ -106,7 +106,13 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   not even for a creator's own DM reminder. (2) the **dashboard-authz wall** — grants + response-policy/config
   changes commit via authenticated **owner/admin dashboard** server actions
   (`lib/auth/require-admin.ts` `requireAdmin`/`requireOwner`, re-checked live), **not** a
-  Telegram tap. **Reminder CREATION and shopping-list add/check-off are exempt from both — they
+  Telegram tap. **Baumy Olympics writes** (`olympics.action` — add a calendar event, log a chore;
+  `docs/spec/olympics.md`) ride wall (1) too, with one twist: they run AS the asker (Olympics gets
+  their Telegram id in `X-Baumy-Actor`), so only the ASKER's tap resolves the card
+  (`REQUESTER_ONLY_ACTIONS`), and the tap sends `X-Baumy-Confirmed: 1` with the `Idempotency-Key`
+  minted at propose time — a retried tap (or a card reopened after Olympics did not answer) resends
+  the same key, so Olympics runs it once. Olympics reads (what's on, standings) and `/link` (DM only;
+  refused in the group) run without a tap. **Reminder CREATION and shopping-list add/check-off are exempt from both — they
   auto-commit** (`lib/turn/actions.ts` `runReminder` + `runList`): a reminder only posts text to a
   fixed, code-resolved destination (the house group, or its creator's own DM — D2), and a list op only mutates the house's own group-scoped list (reversible,
   low-privilege). Both are the capture tier. Do not re-add a confirm step to either. (Cancelling a reminder is the
@@ -420,6 +426,8 @@ crown jewels. The pipeline:
   `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`,
   `BAUMY_SESSION_SECRET`, `BAUMY_ENCRYPTION_KEY`. Optional overrides: `BAUMY_HOUSE_CHAT_ID`, `BAUMY_OWNER_ID`
   (both auto-captured when the bot is added to the group), `BAUMY_PUBLIC_URL`, `BAUMY_TIMEZONE`.
+  Optional feature: `OLYMPICS_BASE_URL` + `BRAIN_SERVICE_TOKEN` (Baumy Olympics — the calendar and chore
+  intents and `/link`; `lib/olympics/client.ts`, 5s timeout, never throws; unset = "not connected").
 - Boot is **non-fatal** and `/api/health` **reports which required vars are missing** (503 with
   a `notReady` list) — use it to diagnose, don't crash the whole app on a missing secret.
 - Env changes need a **redeploy** to take effect. Secrets can be any random ≥32-char value
