@@ -51,6 +51,8 @@ describe('callOlympicsAction — the request', () => {
     expect(s.headers.get('X-Baumy-Confirmed')).toBe('1')
     expect(s.headers.get('Content-Type')).toBe('application/json')
     expect(s.init.signal).toBeInstanceOf(AbortSignal)
+    // A redirect would re-send the token elsewhere (and turn the POST into a GET): never followed.
+    expect(s.init.redirect).toBe('error')
   })
 
   it('sends X-Baumy-Confirmed ONLY when confirmed, and no Idempotency-Key for a read', async () => {

@@ -139,6 +139,10 @@ async function request(method: 'GET' | 'POST', path: string, o: { headers: Recor
       ...(o.body != null ? { body: o.body } : {}),
       signal: AbortSignal.timeout(o.timeoutMs ?? OLYMPICS_TIMEOUT_MS),
       cache: 'no-store',
+      // Never follow a redirect: it would re-send the bearer token somewhere OLYMPICS_BASE_URL did not
+      // name, and a 301/302 turns the POST into a GET that silently drops the write. A redirecting
+      // base URL (apex → www, http → https) is a setup mistake; it reads as "not answering".
+      redirect: 'error',
     })
   } catch (err) {
     // A timeout, DNS failure or refused connection. Never log the request (it holds the token).
