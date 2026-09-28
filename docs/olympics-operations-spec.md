@@ -1,4 +1,4 @@
-<!-- A copy of baumy-olympics docs/brain-operations-spec.md (branch feat/brain-operations-spec, commit 813a652, RyRy79261/baumy-olympics#71). Olympics generates it from its action registry with `pnpm brain:spec`; do not edit it here. To refresh it, copy the file again from baumy-olympics main. -->
+<!-- A copy of baumy-olympics docs/brain-operations-spec.md (branch feat/brain-operations-spec, commit a299350, RyRy79261/baumy-olympics#71). Olympics generates it from its action registry with `pnpm brain:spec`; do not edit it here. To refresh it, copy the file again from baumy-olympics main. -->
 
 # Baumy Olympics: operations spec for Baumy (baumy-brain)
 
@@ -139,6 +139,13 @@ waiting on Sam?": send `X-Baumy-On-Behalf-Of: <Sam's member id>`.
   `doneBy: <Jo's id>`. The asker logs it and **vouches** for Jo, so it counts
   at once, and the record says truthfully who logged it. On-behalf would
   claim Jo logged it herself.
+- **Never for someone's own word** (403 `FORBIDDEN`, "Only that housemate
+  can do this themself"): the claim events (`confirm_completion`,
+  `dispute_completion`, `undo_completion`, `withdraw_dispute`,
+  `concede_completion`) and the note writes (`create_note`, `update_note`,
+  `pin_note`, `delete_note`). These are `attested` actions: the member has to
+  say it themself, or the honesty layer (nobody confirms their own claim)
+  would mean nothing. Tell the asker the housemate has to do it.
 - Admin actions stay unavailable, on anyone's behalf.
 - To turn a name into a member id, read the roster: `list_reminders` answers
   `members` (id, name) for every active member; `get_standings` lists them
@@ -200,11 +207,11 @@ waiting on Sam?": send `X-Baumy-On-Behalf-Of: <Sam's member id>`.
 | [`list_chores`](#list_chores-list-chores) | read | safe | never | yes |
 | [`log_completion`](#log_completion-log-a-chore) | write | confirm | always | no, use `doneBy` |
 | [`get_pending_confirmations`](#get_pending_confirmations-claims-waiting-for-an-ok) | read | safe | never | yes |
-| [`confirm_completion`](#confirm_completion-confirm-a-chore) | write | confirm | always | yes |
-| [`dispute_completion`](#dispute_completion-dispute-a-chore) | write | confirm | always | yes |
-| [`undo_completion`](#undo_completion-undo-a-logged-chore) | write | confirm | always | yes |
-| [`withdraw_dispute`](#withdraw_dispute-withdraw-a-dispute) | write | confirm | always | yes |
-| [`concede_completion`](#concede_completion-concede-a-dispute) | write | confirm | always | yes |
+| [`confirm_completion`](#confirm_completion-confirm-a-chore) | write | confirm | always | no, only themself |
+| [`dispute_completion`](#dispute_completion-dispute-a-chore) | write | confirm | always | no, only themself |
+| [`undo_completion`](#undo_completion-undo-a-logged-chore) | write | confirm | always | no, only themself |
+| [`withdraw_dispute`](#withdraw_dispute-withdraw-a-dispute) | write | confirm | always | no, only themself |
+| [`concede_completion`](#concede_completion-concede-a-dispute) | write | confirm | always | no, only themself |
 | [`get_standings`](#get_standings-get-the-standings) | read | safe | never | yes |
 | [`get_streaks`](#get_streaks-get-the-streaks) | read | safe | never | yes |
 | [`get_pot`](#get_pot-get-the-pot) | read | safe | never | yes |
@@ -215,10 +222,10 @@ waiting on Sam?": send `X-Baumy-On-Behalf-Of: <Sam's member id>`.
 | [`update_event`](#update_event-change-a-calendar-event) | write | confirm | always | yes |
 | [`delete_event`](#delete_event-delete-a-calendar-event) | write | destructive | always | yes |
 | [`list_notes`](#list_notes-notes) | read | safe | never | yes |
-| [`create_note`](#create_note-add-a-note) | write | safe | on behalf only | yes |
-| [`update_note`](#update_note-change-a-note) | write | confirm | always | yes |
-| [`pin_note`](#pin_note-pin-a-note) | write | safe | on behalf only | yes |
-| [`delete_note`](#delete_note-delete-a-note) | write | destructive | always | yes |
+| [`create_note`](#create_note-add-a-note) | write | safe | never | no, only themself |
+| [`update_note`](#update_note-change-a-note) | write | confirm | always | no, only themself |
+| [`pin_note`](#pin_note-pin-a-note) | write | safe | never | no, only themself |
+| [`delete_note`](#delete_note-delete-a-note) | write | destructive | always | no, only themself |
 | [`list_shopping`](#list_shopping-shopping-list) | read | safe | never | yes |
 | [`list_reminders`](#list_reminders-reminders) | read | safe | never | yes |
 | [`create_reminder`](#create_reminder-post-a-reminder) | write | safe | on behalf only | yes |
@@ -465,11 +472,11 @@ Confirms a housemate's self-claimed chore, which verifies it.
 | Kind | `write` |
 | Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
 | Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
-| On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
+| On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 
-**When to use it.** When someone says a housemate really did it ("yes, Sam did clean the bathroom"). Not for your own claims.
+**When to use it.** When someone says a housemate really did it ("yes, Sam did clean the bathroom"). Not for your own claims, and never on behalf of someone else (403): if Jo says Sam did it, Jo confirms it herself.
 
 **Tool description** (the registry's, verbatim): Confirms a housemate's self-claimed chore that is waiting for an OK (pending), which verifies it. You cannot confirm your own. Refused with INVALID_STATE once it has finalized, expired or been disputed. Get ids from get_pending_confirmations.
 
@@ -512,7 +519,7 @@ Disputes a housemate's self-claimed chore inside its 24-hour window, with a reas
 | Kind | `write` |
 | Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
 | Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
-| On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
+| On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 
@@ -566,7 +573,7 @@ Undoes a chore the asker logged, within 10 minutes of logging it.
 | Kind | `write` |
 | Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
 | Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
-| On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
+| On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 
@@ -613,7 +620,7 @@ Withdraws a dispute the asker raised; the claim counts again.
 | Kind | `write` |
 | Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
 | Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
-| On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
+| On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 
@@ -660,7 +667,7 @@ Concedes a dispute on the asker's own claim; it is voided.
 | Kind | `write` |
 | Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
 | Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
-| On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
+| On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 
@@ -1268,9 +1275,9 @@ Posts a note on the household message board.
 | | |
 | --- | --- |
 | Kind | `write` |
-| Risk | `safe`: runs straight away for the asker; on a housemate's behalf it needs `X-Baumy-Confirmed: 1` |
+| Risk | `safe`: runs straight away |
 | Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
-| On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
+| On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 
@@ -1358,7 +1365,7 @@ Rewrites a note: title, body and colour are all replaced.
 | Kind | `write` |
 | Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
 | Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
-| On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
+| On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 
@@ -1435,9 +1442,9 @@ Pins a note to the hub and the kitchen screen, or unpins it.
 | | |
 | --- | --- |
 | Kind | `write` |
-| Risk | `safe`: runs straight away for the asker; on a housemate's behalf it needs `X-Baumy-Confirmed: 1` |
+| Risk | `safe`: runs straight away |
 | Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
-| On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
+| On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 
@@ -1501,7 +1508,7 @@ Deletes a note for everyone.
 | Kind | `write` |
 | Risk | `destructive`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
 | Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
-| On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
+| On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 
