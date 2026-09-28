@@ -99,6 +99,40 @@ the attribution, or a row id.
   "egg"), counted only when exactly ONE open item has that key. "milk" never ticks "almond milk" and an
   ambiguous pair is reported as a miss (audit K4, 2026-09-26). The add/dedupe key is unchanged.
 
+## Kitchen API (the kiosk's front door)
+
+The house kitchen kiosk (Baumy Olympics, ADR 0003 there) shares this list over HTTP, so there is
+ONE list whether a housemate DMs Baumy or taps the kiosk. `lib/lists/kitchen-api.ts`, routes under
+`app/api/kitchen/shopping/` (`runtime = 'nodejs'`, never cached):
+
+| Route | Body | Response |
+|---|---|---|
+| `GET /api/kitchen/shopping` | — | `{ ok, items: [{ id, item, addedBy, createdAt }] }` (open items, oldest first) |
+| `POST /api/kitchen/shopping/add` | `{ items: string[1..30], telegramUserId? }` | `{ ok, added, already, attributedTo, items }` |
+| `POST /api/kitchen/shopping/checkoff` | `{ items: string[1..30], telegramUserId? }` | `{ ok, checkedOff, notFound, attributedTo, items }` |
+
+Errors: `401 unauthorized` (missing/wrong token, or `KITCHEN_API_TOKEN` unset), `503 not_configured`
+(no house yet), `400 bad_request` (malformed body).
+
+Invariants:
+
+- **K-I1 — Token wall.** `Authorization: Bearer $KITCHEN_API_TOKEN`, compared in constant time
+  (`tokenMatches` in `lib/telegram/verify.ts`, shared with the webhook). An unset token authorizes
+  nobody. The dashboard `middleware.ts` matcher (`/admin/:path*`) does not cover these routes — a kiosk
+  has no session cookie.
+- **K-I2 — Scope from config, never the request.** The house is `getHouseChatId(db)` — the stable
+  SCOPE id, honouring the `BAUMY_HOUSE_CHAT_ID` pin, never the send id. A `groupId` in the query or
+  body is ignored. `''` (the bot has not been added to a group) → `503 not_configured` before any read
+  or write. A write registers the scope chat (`ensureRegistered`, idempotent) for the FK, as the
+  Telegram lane does.
+- **K-I3 — Attribution only for a real member.** `added_by`/`checked_by` is `null`, or the supplied
+  `telegramUserId` when it is an ACTIVE roster member (`mapMember`); an unknown or deactivated id is
+  attributed to nobody (`attributedTo: null` in the response). The kiosk is one shared device, so this
+  is a convenience label, not authentication.
+- **K-I4 — Same dispose layer.** `addListItems` / `checkOffItems` / `currentList` unchanged: re-adding
+  an open item is a no-op (`already`, partial-unique index backstop); check-off is exact-normalized
+  then the unambiguous loose key. Like the Telegram lane it auto-commits (capture tier, I5).
+
 ## Deliberately deferred
 
 - **Multi-list** (`todo`, `guests`, …): `list_name` exists; wiring a second list is additive, no
