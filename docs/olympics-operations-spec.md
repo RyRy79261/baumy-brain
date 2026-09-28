@@ -1,4 +1,4 @@
-<!-- A copy of baumy-olympics docs/brain-operations-spec.md (commit bf42e90, RyRy79261/baumy-olympics#72 on top of #71). Olympics generates it from its action registry with `pnpm brain:spec`; do not edit it here. To refresh it, copy the file again from baumy-olympics main. -->
+<!-- A copy of baumy-olympics docs/brain-operations-spec.md (commit 1d9a54b, RyRy79261/baumy-olympics main after #78). Olympics generates it from its action registry with `pnpm brain:spec`; do not edit it here. To refresh it, copy the file again from baumy-olympics main. -->
 
 # Baumy Olympics: operations spec for Baumy (baumy-brain)
 
@@ -132,7 +132,8 @@ waiting on Sam?": send `X-Baumy-On-Behalf-Of: <Sam's member id>`.
   `source=brain`.
 - Any **write** on someone's behalf needs the asker's tap (section 3). Reads
   do not.
-- The asker's own id in the header is the same as no header.
+- The asker's own id in the header is the same as no header, for every
+  action: the refusals below are only for acting for someone else.
 - Not for `link_telegram`, and not for an action that names its member in its
   own input (`member_field` in the tool list): those answer 400. Today that is
   `log_completion`: "Jo did the dishes" is `log_completion` with
@@ -333,7 +334,7 @@ Lists the bounties (chores): what is due, urgent or new, and what each would sco
 
 **When to use it.** To answer "what needs doing?", and to turn a chore someone names into its `choreId` before log_completion. Match the words to exactly one chore; if none or several match, list them and ask.
 
-**Tool description** (the registry's, verbatim): Lists the household's chores with their ids, kind (consumable: buy or refill; maintenance: clean or fix), base points, cooldown, who holds each chore's streak this season and how long it is, whether each is due, cooling down (with availableAt) or done for now, `urgent` (due now or falling due before midnight in Berlin), `isNew` (added in the last 3 days), and `next`: what logging it right now would score for you (total points, streak length, break bonus). Times are ISO 8601 in UTC; the household lives in Europe/Berlin. Archived chores are left out unless includeArchived is true.
+**Tool description** (the registry's, verbatim): Lists the household's chores with their ids, kind (consumable: buy or refill; maintenance: clean or fix), base points, cooldown, who holds each chore's streak this season and how long it is, whether each is due, cooling down (with availableAt) or done for now, `urgent` (due now or falling due before midnight in Berlin), `isNew` (added in the last 3 days), `createdAt`, and `next`: what logging it right now would score for you (total points, streak length, break bonus). Times are ISO 8601 in UTC; the household lives in Europe/Berlin. Archived chores are left out unless includeArchived is true.
 
 **Examples.**
 
@@ -1223,7 +1224,7 @@ The household message board.
 
 **When to use it.** For "what's on the board?", and to find a `noteId` before changing, pinning or deleting a note.
 
-**Tool description** (the registry's, verbatim): Lists the household's notes, pinned ones first and then the most recently changed, each with its id, title, markdown body, colour, whether it is pinned to the hub, who wrote it (member id and name) and when it was created and last changed (ISO 8601, UTC). Notes are shared household text, never secrets.
+**Tool description** (the registry's, verbatim): Lists the household's notes, pinned ones first and then the most recently changed, each with its id, title, markdown body, colour, whether it is pinned to the hub, who wrote it (member id and name) and when it was created, last changed and last edited (editedAt: its words; pinning is not an edit) (ISO 8601, UTC), and `recentCount`: how many notes were added or edited in the last 24 hours. Notes are shared household text, never secrets.
 
 **Examples.**
 
