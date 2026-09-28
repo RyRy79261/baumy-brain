@@ -71,6 +71,9 @@ describe('redaction — a secret is never persisted', () => {
     expect(redactForWindow('the wifi password: hunter2')).toBe('[a message containing the wifi password — withheld]')
     expect(redactForWindow('new door code 4821, tell the guests')).not.toContain('4821')
     expect(redactForWindow('  Zosia lands friday  ')).toBe('Zosia lands friday')
+    expect(redactForWindow('/link AB12CD34EF')).toBe('[a /link command — code withheld]')
+    expect(redactForWindow('/link@baumy_bot ab12cd34ef')).not.toContain('ab12cd34ef')
+    expect(redactForWindow('the link to the flat listing')).toBe('the link to the flat listing')
   })
 
   it('no column of the stored row holds the secret — inbound or a Baumy send', async () => {

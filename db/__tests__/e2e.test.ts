@@ -263,6 +263,8 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
       expect(results.map((r) => r.status)).toEqual([200, 200, 200])
       const bodies = (await Promise.all(results.map((r) => r.json()))) as { added: string[]; already: string[] }[]
       expect(bodies.flatMap((b) => b.added)).toEqual(['Oat Milk']) // exactly one insert won the race
+      // …and every answer names the item: the winner as added, each loser as already there.
+      for (const b of bodies) expect([...b.added, ...b.already]).toEqual(['Oat Milk'])
       const list = await kitchenList(new Request('http://local/api/kitchen/shopping', { headers: { authorization: 'Bearer e2e-kitchen-token-0123456789abcdef' } }))
       expect(((await list.json()) as { items: { item: string }[] }).items.map((i) => i.item)).toEqual(['Oat Milk'])
       expect((await currentList(h.db, KITCHEN)).length).toBe(1)

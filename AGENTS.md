@@ -121,7 +121,10 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   opposite case — it removes something the house may rely on — so it stays behind the tap.) A reminder is
   only created from a **directed** ask (DM / @mention / reply / console topic — `decide()`, A9), is
   not confidence-gated, and every failure (no time / unreadable / past) is an explicit outcome the
-  reply turns into a clarifying question — never a silent drop or a ✍.
+  reply turns into a clarifying question — never a silent drop or a ✍. A **Sign in with Baumy** card (`olympics.login`,
+  `docs/spec/olympics.md` §Sign-in approval) is sent only by Olympics' kitchen-token call, only to the
+  named ACTIVE member's own DM, and only that member's tap on a number (or Deny) resolves it; code
+  sends `approve_login` / `deny_login` AS them. The LLM never touches it.
 - **LLM errors (I2):** only a *malformed object* degrades to a safe default
   (`lib/ai/errors.ts` `isMalformedObjectError`); a transient provider error (429/529/timeout)
   **rethrows** so the Inngest step retries — never swallow it into a memoized degraded value.

@@ -68,7 +68,7 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 | `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` | **auto-injected** by the Vercel↔Inngest integration |
 | `GITHUB_TOKEN` | *(optional)* a token with **issues:write** on the repo below — enables `/bug` + `/feature` to file GitHub issues. Unset = the feature politely says it's not set up. |
 | `GITHUB_REPO` | *(optional)* `owner/name` the issues are filed to (e.g. `RyRy79261/baumy-brain`) — required alongside `GITHUB_TOKEN`. |
-| `OLYMPICS_BASE_URL` | *(optional)* the Baumy Olympics origin, e.g. `https://<olympics>.vercel.app` (HTTPS only; plain HTTP just for localhost). Enables the calendar + chore intents and `/link`. Unset = Baumy says Olympics isn't connected. |
+| `OLYMPICS_BASE_URL` | *(optional)* the Baumy Olympics origin, exactly `https://www.baumy.tech` (the apex redirects, and Baumy never follows a redirect; HTTPS only; plain HTTP just for localhost). Enables the calendar + chore intents and `/link`. Unset = Baumy says Olympics isn't connected. |
 | `BRAIN_SERVICE_TOKEN` | *(optional)* the service token Olympics minted for `baumy-brain` (see below) — required alongside `OLYMPICS_BASE_URL`. A token Olympics rejects (401) reads as "not connected". |
 | `KITCHEN_API_TOKEN` | *(optional)* a random ≥32-char value (`openssl rand -hex 32`) the kitchen kiosk (Baumy Olympics) sends as `Authorization: Bearer …` to read/write the shared shopping list (`/api/kitchen/shopping`). Set the SAME value on the kiosk side. Unset = the kitchen API answers 401 to everyone. |
 
@@ -87,7 +87,7 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 >    `DATABASE_URL_UNPOOLED='<olympics neon direct url>' pnpm --filter @baumy/db --silent service-token mint baumy-brain`
 > 2. Set these in brain's Vercel env (Production), then redeploy:
 >    ```
->    OLYMPICS_BASE_URL=https://<olympics-domain>
+>    OLYMPICS_BASE_URL=https://www.baumy.tech
 >    BRAIN_SERVICE_TOKEN=<the token from step 1>
 >    ```
 > 3. Each housemate opens Olympics → **Settings** → **Create a link code** and DMs Baumy
