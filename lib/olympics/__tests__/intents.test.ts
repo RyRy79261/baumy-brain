@@ -105,6 +105,12 @@ describe('matchChore — the model describes, code resolves to exactly one liste
     expect(matchChore(chores, 'old one')).toEqual({ kind: 'none' })
     expect(matchChore(chores, '')).toEqual({ kind: 'none' })
   })
+  it('one shared generic word is not a match', () => {
+    const house = [chore('Clean bathroom'), chore('Take out the trash')]
+    expect(matchChore(house, 'cleaned the oven')).toEqual({ kind: 'none' })
+    expect(matchChore(house, 'clean the bathroom')).toMatchObject({ kind: 'one', chore: { name: 'Clean bathroom' } })
+    expect(matchChore(house, 'took the trash bags out')).toMatchObject({ kind: 'one', chore: { name: 'Take out the trash' } })
+  })
   it('a chore cooling down or without points gets no card', () => {
     expect(choreBlocked(chore('Dishes'), NOW, TZ)).toBeNull()
     expect(choreBlocked(chore('Dishes', { state: 'cooldown', availableAt: '2026-10-01T18:30:00Z' }), NOW, TZ)).toMatch(/from 20:30/)

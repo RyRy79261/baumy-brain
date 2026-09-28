@@ -243,10 +243,15 @@ export function matchChore(chores: ChoreView[], description: string): ChoreMatch
   if (want.length === 0) return { kind: 'none' }
   const exact = live.filter((c) => words(c.name).join(' ') === want.join(' '))
   if (exact.length === 1) return { kind: 'one', chore: exact[0] }
+  // One side's words must ALL be in the other's: "vacuum" → "Vacuum stairs", "took the trash bags
+  // out" → "Take out the trash", but "cleaned the oven" never lands on "Clean bathroom" on "clean".
+  const wantSet = new Set(want)
   const scored = live
     .map((c) => {
-      const have = new Set(words(c.name))
-      return { c, score: want.filter((w) => have.has(w)).length }
+      const name = words(c.name)
+      const have = new Set(name)
+      const covers = want.every((w) => have.has(w)) || name.every((w) => wantSet.has(w))
+      return { c, score: covers ? want.filter((w) => have.has(w)).length : 0 }
     })
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
