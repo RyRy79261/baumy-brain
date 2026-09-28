@@ -78,6 +78,13 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
     const result = (await step.run('olympics-login-call', () =>
       callOlympicsAction<{ outcome?: string }>(o.name, o.input, { actor: tapper, idempotencyKey: key, confirmed: true }),
     )) as OlympicsResult<{ outcome?: string }>
+    if (!result.ok && result.kind === 'unavailable' && o.name === 'deny_login') {
+      // The Deny already spent the card (cancelled, never reopened), so nobody can approve this
+      // sign-in from Telegram. Only the notice to Olympics was lost: its screen waits out the request.
+      await answerCallback(callbackId, 'Denied. Olympics didn\'t answer, so its screen may wait until the sign-in times out.')
+      if (messageId) await editMessageText(chatId, messageId, '🚫 Denied — this sign-in can\'t be approved now. Olympics didn\'t answer, so the sign-in screen may wait until it times out.')
+      return { login: o.name, olympics: 'unavailable', reopened: false }
+    }
     if (!result.ok && result.kind === 'unavailable') {
       const reopened = await step.run('olympics-login-reopen', () => reopenPendingAction(db, o.id))
       await answerCallback(callbackId, reopened ? "Olympics didn't answer — tap again in a moment." : "Olympics didn't answer, and this sign-in has expired.")

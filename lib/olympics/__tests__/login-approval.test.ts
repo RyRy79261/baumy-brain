@@ -218,6 +218,18 @@ describe('the tap', () => {
     const [row] = await dbh.db.select().from(pendingActions)
     expect(row.status).toBe('pending')
   })
+
+  it('a Deny Olympics did not hear still reads as denied, never as expired or not done', async () => {
+    olympicsAnswer = { status: 503, body: { ok: false, code: 'UNAVAILABLE', message: 'x' } }
+    const id = await cardId()
+    const res = await tap(RYAN, `x:${id}`)
+    expect(res).toMatchObject({ login: 'deny_login', olympics: 'unavailable', reopened: false })
+    const [row] = await dbh.db.select().from(pendingActions)
+    expect(row.status).toBe('cancelled')
+    const [, , text] = editMessageText.mock.lastCall as unknown as [string, number, string]
+    expect(text).toMatch(/^🚫 Denied/)
+    expect(text).not.toMatch(/expired|Not done/)
+  })
 })
 
 describe('helpers', () => {

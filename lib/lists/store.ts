@@ -92,9 +92,16 @@ export async function addListItems(
   let added: string[] = []
   if (rows.length) {
     // onConflictDoNothing backstops a concurrent double-add against the partial-unique index;
-    // RETURNING gives the rows ACTUALLY inserted, so the ack never over-counts a raced dup.
-    const inserted = await db.insert(listItems).values(rows).onConflictDoNothing().returning({ item: listItems.item })
+    // RETURNING gives the rows ACTUALLY inserted, so the ack never over-counts a raced dup — and a
+    // row a concurrent add won is on the list all the same, so it is reported as already there.
+    const inserted = await db
+      .insert(listItems)
+      .values(rows)
+      .onConflictDoNothing()
+      .returning({ item: listItems.item, n: listItems.itemNormalized })
     added = inserted.map((r) => r.item)
+    const won = new Set(inserted.map((r) => r.n))
+    for (const r of rows) if (!won.has(r.itemNormalized)) already.push(r.item)
   }
   return { added, already }
 }
