@@ -472,8 +472,9 @@ Olympics, read `docs/olympics-operations-spec.md`**: the household model, the he
 the asker's confirm tap, and every action with its input schema, errors, example phrasings and what
 Baumy must say back. It is a copy of a doc Olympics generates from its registry; refresh it from
 there, never edit it here. Owner rulings of 2026-09-28: Baumy gets every member action (deletes
-included) behind the confirm tap, and may act on a housemate's behalf; admin actions stay in the
-Olympics app.
+included) and may act on a housemate's behalf; a `confirm` or `destructive` action, and any write on
+someone's behalf, waits for the asker's tap (reads and the asker's own `safe` writes do not); admin
+actions stay in the Olympics app.
 
 ---
 
