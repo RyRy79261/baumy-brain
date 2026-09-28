@@ -10,6 +10,7 @@ import { writeAudit } from '@/lib/audit'
 import { answerCallback, editMessageText } from '@/lib/telegram/client'
 import { callOlympicsAction, type OlympicsResult } from '@/lib/olympics/client'
 import { tapResultLine, type OlympicsPending } from '@/lib/olympics/intents'
+import { LOGIN_ACTION_TYPE, loginCardChoices, loginResultLine, parseLoginTap, type LoginPending } from '@/lib/olympics/login-approval'
 
 // Deterministic confirm handler (security Stage D / B4). A callback_query is a
 // Telegram-authenticated button press; only an ACTIVE member/owner from.id may
@@ -39,7 +40,7 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
   }
 
   const [verb, id] = data.split(':')
-  if ((verb !== 'c' && verb !== 'x') || !id) {
+  if ((verb !== 'c' && verb !== 'x' && verb !== 'l') || !id) {
     await answerCallback(callbackId)
     return { ignored: 'bad-data' }
   }
@@ -52,15 +53,78 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
     return other != null
   }
 
+  // A number on a Sign in with Baumy card (`l:<id>:<n>`): Olympics decides whether it is the one
+  // on the screen. Only the member the card was sent to resolves it (REQUESTER_ONLY_ACTIONS).
+  if (verb === 'l') {
+    const t = parseLoginTap(data)
+    const choices = t ? await step.run('login-card', () => loginCardChoices(db, t.actionId)) : null
+    if (!t || (choices && !choices.includes(t.code))) {
+      await answerCallback(callbackId)
+      return { ignored: 'bad-data' }
+    }
+    const action = await step.run('login-resolve', () => resolvePendingAction(db, t.actionId, 'confirmed', tapper))
+    if (!action && (await notYours())) return { ignored: 'not-requester' }
+    if (!action || action.actionType !== LOGIN_ACTION_TYPE) {
+      await answerCallback(callbackId, 'This already expired or was handled.')
+      return { ignored: 'not-pending' }
+    }
+    const p = action.payload as unknown as LoginPending
+    return runLoginTap({ id: t.actionId, p, name: 'approve_login', input: { requestId: p.requestId, code: t.code } })
+  }
+
+  async function runLoginTap(o: { id: string; p: LoginPending; name: 'approve_login' | 'deny_login'; input: Record<string, unknown> }) {
+    // One key per answer: a retried tap resends it; a different number after a reopen is a new call.
+    const key = `login-${o.id}-${'code' in o.input ? String(o.input.code) : 'deny'}`
+    const result = (await step.run('olympics-login-call', () =>
+      callOlympicsAction<{ outcome?: string }>(o.name, o.input, { actor: tapper, idempotencyKey: key, confirmed: true }),
+    )) as OlympicsResult<{ outcome?: string }>
+    if (!result.ok && result.kind === 'unavailable' && o.name === 'deny_login') {
+      // The Deny already spent the card (cancelled, never reopened), so nobody can approve this
+      // sign-in from Telegram. Only the notice to Olympics was lost: its screen waits out the request.
+      await answerCallback(callbackId, 'Denied. Olympics didn\'t answer, so its screen may wait until the sign-in times out.')
+      if (messageId) await editMessageText(chatId, messageId, '🚫 Denied — this sign-in can\'t be approved now. Olympics didn\'t answer, so the sign-in screen may wait until it times out.')
+      return { login: o.name, olympics: 'unavailable', reopened: false }
+    }
+    if (!result.ok && result.kind === 'unavailable') {
+      const reopened = await step.run('olympics-login-reopen', () => reopenPendingAction(db, o.id))
+      await answerCallback(callbackId, reopened ? "Olympics didn't answer — tap again in a moment." : "Olympics didn't answer, and this sign-in has expired.")
+      if (!reopened && messageId) await editMessageText(chatId, messageId, '⚠️ Not done — Olympics didn\'t answer and the sign-in expired.')
+      return { login: o.name, olympics: 'unavailable', reopened }
+    }
+    await step.run('olympics-login-audit', () =>
+      writeAudit(db, 'olympics.login', tapper, o.p.device, {
+        action: o.name,
+        requestId: o.p.requestId,
+        ok: result.ok,
+        ...(result.ok ? { outcome: result.data?.outcome ?? null } : { kind: result.kind, code: result.kind === 'refused' ? result.code : null }),
+      }),
+    )
+    await answerCallback(callbackId, result.ok ? 'Done' : 'Not done')
+    if (messageId) await editMessageText(chatId, messageId, loginResultLine(o.p, result))
+    return { login: o.name, olympics: result.ok ? (result.data?.outcome ?? 'ok') : result.kind }
+  }
+
   if (verb === 'x') {
     const dropped = await step.run('cancel', () => resolvePendingAction(db, id, 'cancelled', tapper))
     if (!dropped && (await notYours())) return { ignored: 'not-requester' }
+    // Deny on a Sign in with Baumy card: tell Olympics, so the waiting screen hears it at once.
+    if (dropped?.actionType === LOGIN_ACTION_TYPE) {
+      const p = dropped.payload as unknown as LoginPending
+      return runLoginTap({ id, p, name: 'deny_login', input: { requestId: p.requestId } })
+    }
     // On a reminder-cancellation card "Cancelled" would read as "the reminder was cancelled" — the
     // opposite of what the tap did. Say what happened: the reminder is kept.
     const keep = dropped?.actionType === 'reminder.cancel'
     await answerCallback(callbackId, keep ? 'Kept' : 'Cancelled')
     if (messageId) await editMessageText(chatId, messageId, keep ? '✖️ Kept — no reminder was cancelled.' : '✖️ Cancelled.')
     return { cancelled: id }
+  }
+
+  // A sign-in card has no Confirm button; only its numbers (verb `l`) and Deny resolve it. Check the
+  // kind BEFORE resolving, so crafted `c:<id>` data can never spend a sign-in card.
+  if ((await step.run('login-card-check', () => loginCardChoices(db, id))) !== null) {
+    await answerCallback(callbackId)
+    return { ignored: 'bad-data' }
   }
 
   // Resolve in its OWN step so the result is MEMOIZED: a retry after a downstream effect

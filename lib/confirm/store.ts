@@ -40,12 +40,14 @@ export interface ResolvedAction {
 // The action types a confirm TAP may resolve — the ones a card with buttons is ever sent for. Other
 // rows in this table (a reminder draft waiting for its time, lib/reminders/draft.ts) are internal
 // state: a callback naming one is refused rather than flipping it.
-export const TAPPABLE_ACTIONS = ['memory.forget', 'github.issue', 'reminder.cancel', 'olympics.action'] as const
+export const TAPPABLE_ACTIONS = ['memory.forget', 'github.issue', 'reminder.cancel', 'olympics.action', 'olympics.login'] as const
 
 // Actions that run AS the person who asked (a Baumy Olympics write goes out with their Telegram id as
 // X-Baumy-Actor — docs/spec/olympics.md): only THAT person's tap may confirm or cancel one. Any
 // member may resolve the others (they act on the house, not as someone).
-export const REQUESTER_ONLY_ACTIONS = ['olympics.action'] as const
+// An Olympics sign-in approval card (`olympics.login`, lib/olympics/login-approval.ts) is the named
+// member's alone too: it answers for them.
+export const REQUESTER_ONLY_ACTIONS = ['olympics.action', 'olympics.login'] as const
 
 // Atomic single-use resolve: flips pending → confirmed|cancelled ONLY if still
 // pending AND unexpired, returning the action to the first caller (exactly-once).

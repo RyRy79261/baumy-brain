@@ -96,6 +96,24 @@ export async function sendConfirmCard(
   await windowed(sent.message_id)
 }
 
+// Baumy Olympics "Sign in with Baumy" card (docs/spec/olympics.md §Sign-in approval): one button per
+// number (`l:<actionId>:<n>`, in the order Olympics gave) and Deny (`x:<actionId>`). The destination is
+// the member's OWN DM, resolved by the caller from the roster for the Telegram id Olympics named — never
+// the group, never text. Not windowed: it is not conversation, and the numbers must not linger.
+export async function sendLoginApprovalCard(chatId: string, text: string, actionId: string, choices: number[]): Promise<void> {
+  if (!chatId) throw new Error('[baumy/telegram] no chat id for the login approval card')
+  if (record({ kind: 'confirm-card', chatId, text, meta: actionId }, now())) return
+  await api().sendMessage(chatId, text, {
+    ...NO_PREVIEW,
+    reply_markup: {
+      inline_keyboard: [
+        choices.map((n) => ({ text: String(n), callback_data: `l:${actionId}:${n}` })),
+        [{ text: '✖️ Deny', callback_data: `x:${actionId}` }],
+      ],
+    },
+  })
+}
+
 // DM reply — permitted ONLY for the auth/login response path to the originating
 // member (architecture D9). Never for house content.
 export async function sendDmLoginResponse(chatId: number | string, text: string): Promise<void> {

@@ -37,6 +37,8 @@ export function redactForWindow(text: string): string {
   const sens = scanSensitivity(text)
   if (sens.isSecure) return `[a message containing ${sens.descriptor} — withheld]`
   const t = text.trim()
+  // A one-time Olympics link code is a credential until it is used: never keep it (group or DM).
+  if (/^\/link(?:@\w+)?\s+\S/i.test(t)) return '[a /link command — code withheld]'
   return t.length > MAX_STORED ? `${t.slice(0, MAX_STORED)}…` : t
 }
 
