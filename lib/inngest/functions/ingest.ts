@@ -2,7 +2,7 @@ import { inngest, type TelegramMessageData } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { telegramUpdates } from '@/db/schema'
 import { resolveOriginParts, isRelayed } from '@/lib/core/origin'
-import { decide, shouldCapture, listOpProposed, reminderFollowUpAllowed } from '@/lib/core/decide'
+import { decide, shouldCapture, listOpProposed, reminderFollowUpAllowed, olympicsOpProposed } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
 import { ensureRegistered } from '@/lib/memory/write'
@@ -17,7 +17,7 @@ import { sendToHouse, getBotUsername, getBotId } from '@/lib/telegram/client'
 import { buildTurnContext, type ReplyToContext } from '@/lib/turn/context'
 import { planResponse } from '@/lib/turn/plan'
 import { runCapture } from '@/lib/turn/capture'
-import { runList, runReminder, runForget, runCancelReminder, primaryReminder } from '@/lib/turn/actions'
+import { runList, runReminder, runForget, runCancelReminder, runOlympics, primaryReminder } from '@/lib/turn/actions'
 import { takeReminderDraft } from '@/lib/reminders/draft'
 import { executePlan } from '@/lib/turn/respond'
 import { runCommands } from '@/lib/turn/commands'
@@ -280,6 +280,14 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     ctx.outcome.list = await runList(step, ctx)
   }
 
+  // Baumy Olympics (docs/spec/olympics.md): the house calendar and the chore game, AS the sender. A
+  // directed ask from an authenticated housemate only (olympicsOpProposed); reads answer straight away,
+  // a write is only a confirm card until the asker taps it. Like a list op it is not also captured as
+  // a memory note — the calendar / the chore log is where it lives. Not on an edit (it never speaks).
+  if (houseScope && canReply && !isEdit && !ctx.outcome.list && olympicsOpProposed(origin, verdict, directed.value, authorId, policy.global_enabled)) {
+    ctx.outcome.olympics = await runOlympics(step, ctx)
+  }
+
   // Reminders honour pause in BOTH lanes (they post to the house group) — unchanged from pre-v2 —
   // but a paused one is an explicit outcome, so a DM ask hears WHY nothing was scheduled.
   // A directed message may also complete an earlier reminder still waiting for its time (the answer
@@ -315,7 +323,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // still remembered. Never a question or chatter (I3), never a forget request (storing "delete X"
   // re-adds X), never a question that mentions a secret (I9), never a list op (A11), never a private
   // DM reminder (D2, above).
-  if (!ctx.outcome.list && !privateDmReminder && shouldCapture(origin, verdict) && decision !== 'forget' && !isSecretQuestion(text, verdict.intent)) {
+  if (!ctx.outcome.list && !ctx.outcome.olympics && !privateDmReminder && shouldCapture(origin, verdict) && decision !== 'forget' && !isSecretQuestion(text, verdict.intent)) {
     ctx.outcome.captured = await runCapture(step, ctx)
     // The window-append redacted on the raw text; the fact layer scans the extracted TRIPLE, which
     // catches more ("wifi is hunter2 now" → wifi · has_password · hunter2 is secure, the sentence is
@@ -385,7 +393,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
 
   return {
     updateId,
-    decision: ctx.outcome.list ? ('list' as const) : decision,
+    decision: ctx.outcome.list ? ('list' as const) : ctx.outcome.olympics ? ('olympics' as const) : decision,
     directed: directed.value,
     directedWhy: directed.why,
     plan: plan.kind === 'words' ? `words:${plan.mode}` : plan.kind,

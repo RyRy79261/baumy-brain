@@ -33,6 +33,10 @@ export const classifierVerdict = z.object({
   // Shopping-list routing (docs/spec/shopping-list.md). Routing ONLY — the concrete items are
   // pulled later by extractListOp (Sonnet). The disposition is deterministic + lane-gated.
   list: z.enum(['add', 'checkoff', 'query', 'none']),
+  // Baumy Olympics routing (docs/spec/olympics.md): the house calendar and the chore game. Routing
+  // ONLY — the op and its slots are pulled later by extractOlympicsOp, validated by code, and a write
+  // waits for a member's confirm tap.
+  olympics: z.enum(['calendar_add', 'calendar_list', 'chore_log', 'standings', 'none']),
 })
 export type ClassifierVerdict = z.infer<typeof classifierVerdict> & {
   /** Set by code (never the model) when triage produced no usable object — see SAFE_VERDICT. */
@@ -53,6 +57,7 @@ export const SAFE_VERDICT: ClassifierVerdict = {
   tier: 'quick',
   webSearch: false,
   list: 'none',
+  olympics: 'none',
   degraded: true,
 }
 

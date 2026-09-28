@@ -42,6 +42,7 @@ const CHATTER: ClassifierVerdict = {
   tier: 'quick',
   webSearch: false,
   list: 'none',
+  olympics: 'none',
 }
 const FACT: ClassifierVerdict = { ...CHATTER, worthRemembering: true, intent: 'statement' }
 const REMINDER: ClassifierVerdict = { ...CHATTER, worthRemembering: true, intent: 'reminder', asksBaumy: true }

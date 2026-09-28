@@ -84,6 +84,7 @@ const V = (o: Partial<ClassifierVerdict> = {}): ClassifierVerdict => ({
   tier: 'quick',
   webSearch: false,
   list: 'none',
+  olympics: 'none',
   ...o,
 })
 const reactions = () => reactToMessage.mock.calls.map((c) => c[2])

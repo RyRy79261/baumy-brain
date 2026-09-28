@@ -12,6 +12,7 @@ const gen = vi.fn(async (_args?: { prompt?: string; system?: string }) => ({
     tier: 'quick',
     webSearch: false,
     list: 'none',
+    olympics: 'none',
   },
 }))
 vi.mock('ai', async (importOriginal) => {

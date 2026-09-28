@@ -108,3 +108,27 @@ export function listOpProposed(
   if (!isAllowed(origin, 'mutate_list')) return false
   return origin.lane === 'member_dm' || policyEnabled
 }
+
+// A Baumy Olympics op (docs/spec/olympics.md): the calendar and the chore game, run AS the
+// authenticated sender. The classifier's `olympics` flag PROPOSES; this disposes whether to look at
+// all. Like a reminder it needs a DIRECTED ask (A9) — "I took the trash out" said to the group is not
+// a request to log it — and an authenticated author (never relayed content, never an anonymous admin:
+// Olympics maps the Telegram id to a member). An explicit reminder / cancellation / forget and a
+// shopping-list op win. A paused GROUP stays silent; a DM still works (pause is lane-scoped). Writes
+// are only PROPOSED here: the confirm tap is what sends them (functions/callback.ts).
+export function olympicsOpProposed(
+  origin: Origin,
+  v: Pick<Verdict, 'intent'> & { olympics?: string; list?: string },
+  directed: boolean,
+  authorId: string | null,
+  policyEnabled: boolean,
+): boolean {
+  if (origin.lane === 'ignore' || !authorId) return false
+  if (!v.olympics || v.olympics === 'none') return false
+  if (v.intent === 'reminder' || v.intent === 'cancel_reminder' || v.intent === 'forget') return false
+  if (v.list != null && v.list !== 'none') return false
+  if (!(directed || origin.lane === 'member_dm')) return false
+  if (isRelayed(origin.memoryTrust) || origin.anonymous) return false
+  if (!isAllowed(origin, 'olympics')) return false
+  return origin.lane === 'member_dm' || policyEnabled
+}

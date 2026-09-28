@@ -96,6 +96,14 @@ export type CancelReminderOutcome =
       scheduled: string[]
     }
 
+// What a Baumy Olympics op did (docs/spec/olympics.md). `proposed` = a confirm card for a write is
+// ready (nothing reaches Olympics until the asker taps it); otherwise `text` is the deterministic
+// line to send — a read's answer (the calendar, the standings) or why nothing can go ahead (not
+// linked, not connected, which chore?, a past date…). Never worded by a model.
+export type OlympicsOutcome =
+  | { op: 'calendar_add' | 'chore_log'; proposed: true; pendingId: string; card: string }
+  | { op: 'calendar_add' | 'calendar_list' | 'chore_log' | 'standings'; proposed: false; text: string }
+
 export interface TurnOutcome {
   captured?: {
     memoryItemId: string
@@ -120,6 +128,7 @@ export interface TurnOutcome {
   list?: ListOutcome
   forget?: ForgetOutcome
   cancelReminder?: CancelReminderOutcome
+  olympics?: OlympicsOutcome
 }
 
 // The message this one replies to, as the models may be told it. `text` is set ONLY when the replied-

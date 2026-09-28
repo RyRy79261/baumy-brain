@@ -94,6 +94,7 @@ const verdict = (over: Partial<ClassifierVerdict>): ClassifierVerdict => ({
   tier: 'quick',
   webSearch: false,
   list: 'none',
+  olympics: 'none',
   ...over,
 })
 

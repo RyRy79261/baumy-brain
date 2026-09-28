@@ -79,6 +79,16 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
     return
   }
 
+  if (plan.kind === 'olympics') {
+    const ol = ctx.outcome.olympics
+    if (!ol) return
+    await once('olympics-send', async () => {
+      if (ol.proposed) await sendConfirmCard(ctx.chatId, ol.card, ol.pendingId, threadId, ctx.messageId)
+      else await say(ol.text)
+    })
+    return
+  }
+
   if (plan.kind === 'cancel-reminder') {
     const c = ctx.outcome.cancelReminder
     if (!c?.proposed) return
