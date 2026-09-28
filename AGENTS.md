@@ -93,6 +93,8 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   THROUGH to the house's group-scoped list. Classifier `list` flag proposes → `listOpProposed`
   (quarantine-excluded, pause lane-scoped) + the store dispose. First-class stateful table (crosses
   the memory-core "graduation rule"), not a fact; auto-commits (capture tier), never confirm-gated.
+  The kitchen kiosk reads/writes the SAME list over `app/api/kitchen/shopping/*` (Bearer
+  `KITCHEN_API_TOKEN`, scope = `getHouseChatId`, never request input; 503 before a house exists).
 - **Two human-authorization walls (don't conflate them):** (1) the **confirm-tap wall** —
   `callback_query` from a member's authenticated `from.id` (`lib/confirm/*`,
   `functions/callback.ts`) gates the chat-initiated privileged actions: **memory deletion /
@@ -428,6 +430,7 @@ crown jewels. The pipeline:
   (both auto-captured when the bot is added to the group), `BAUMY_PUBLIC_URL`, `BAUMY_TIMEZONE`.
   Optional feature: `OLYMPICS_BASE_URL` + `BRAIN_SERVICE_TOKEN` (Baumy Olympics — the calendar and chore
   intents and `/link`; `lib/olympics/client.ts`, 5s timeout, never throws; unset = "not connected").
+  Optional feature: `KITCHEN_API_TOKEN` (Bearer for the kitchen kiosk's shopping API — unset = 401).
 - Boot is **non-fatal** and `/api/health` **reports which required vars are missing** (503 with
   a `notReady` list) — use it to diagnose, don't crash the whole app on a missing secret.
 - Env changes need a **redeploy** to take effect. Secrets can be any random ≥32-char value

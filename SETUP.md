@@ -70,6 +70,7 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 | `GITHUB_REPO` | *(optional)* `owner/name` the issues are filed to (e.g. `RyRy79261/baumy-brain`) — required alongside `GITHUB_TOKEN`. |
 | `OLYMPICS_BASE_URL` | *(optional)* the Baumy Olympics origin, e.g. `https://<olympics>.vercel.app` (HTTPS only; plain HTTP just for localhost). Enables the calendar + chore intents and `/link`. Unset = Baumy says Olympics isn't connected. |
 | `BRAIN_SERVICE_TOKEN` | *(optional)* the service token Olympics minted for `baumy-brain` (see below) — required alongside `OLYMPICS_BASE_URL`. A token Olympics rejects (401) reads as "not connected". |
+| `KITCHEN_API_TOKEN` | *(optional)* a random ≥32-char value (`openssl rand -hex 32`) the kitchen kiosk (Baumy Olympics) sends as `Authorization: Bearer …` to read/write the shared shopping list (`/api/kitchen/shopping`). Set the SAME value on the kiosk side. Unset = the kitchen API answers 401 to everyone. |
 
 > **Optional overrides — you normally set neither:** `BAUMY_HOUSE_CHAT_ID` pins the
 > house group (otherwise it's captured on bot-add) and `BAUMY_OWNER_ID` pins the
@@ -148,6 +149,8 @@ cloudflared tunnel --url http://localhost:3000   # public URL for the webhook
 ```
 
 ## Notes / current gaps (see project memory)
+- **`.env.example` is missing `KITCHEN_API_TOKEN=`** (agents can't edit `.env*` files) — add
+  `KITCHEN_API_TOKEN=            # optional: Bearer for the kitchen kiosk shopping API (>=32 chars)` by hand.
 - **Model ids + web-search provider** are verify-at-build / pluggable seams — not wired to a live provider yet.
 - **Deferred enrichment:** full fact-extraction/reconcile (M2), Better Auth swap-in, `/pause` kill-switch, ad-hoc nudge scorer. None block core operation.
 - The `run pnpm test` suite (78 tests) runs fully offline (PGlite) — no accounts needed.
