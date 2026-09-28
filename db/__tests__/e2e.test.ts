@@ -19,6 +19,9 @@ import { loadResponsePolicy, setGlobalEnabled } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
 import { embedSync } from '@/lib/ai/embed'
 import { withSimulatedTime } from '@/lib/core/clock'
+import { __setDbOverride } from '@/db/client'
+import { POST as kitchenAdd } from '@/app/api/kitchen/shopping/add/route'
+import { GET as kitchenList } from '@/app/api/kitchen/shopping/route'
 
 // Secure-value capture needs the app-side key.
 process.env.BAUMY_ENCRYPTION_KEY = Buffer.alloc(32, 3).toString('base64')
@@ -240,6 +243,33 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     const re = await addListItems(h.db, { groupId: GROUP, items: ['oat milk'], addedBy: null })
     expect(re.added).toEqual(['oat milk'])
     expect((await currentList(h.db, GROUP)).map((r) => r.item).sort()).toEqual(['bin bags', 'oat milk'])
+  })
+
+  it('kitchen API: concurrent adds of the same item leave ONE open row on real Postgres (the partial-unique index holds)', async () => {
+    const KITCHEN = '-100e2eKitchen'
+    vi.stubEnv('KITCHEN_API_TOKEN', 'e2e-kitchen-token-0123456789abcdef')
+    vi.stubEnv('BAUMY_HOUSE_CHAT_ID', KITCHEN) // the pinned scope; the add registers the chat for the FK
+    __setDbOverride(h.db)
+    try {
+      const post = () =>
+        kitchenAdd(
+          new Request('http://local/api/kitchen/shopping/add', {
+            method: 'POST',
+            headers: { authorization: 'Bearer e2e-kitchen-token-0123456789abcdef', 'content-type': 'application/json' },
+            body: JSON.stringify({ items: ['Oat Milk'] }),
+          }),
+        )
+      const results = await Promise.all([post(), post(), post()])
+      expect(results.map((r) => r.status)).toEqual([200, 200, 200])
+      const bodies = (await Promise.all(results.map((r) => r.json()))) as { added: string[]; already: string[] }[]
+      expect(bodies.flatMap((b) => b.added)).toEqual(['Oat Milk']) // exactly one insert won the race
+      const list = await kitchenList(new Request('http://local/api/kitchen/shopping', { headers: { authorization: 'Bearer e2e-kitchen-token-0123456789abcdef' } }))
+      expect(((await list.json()) as { items: { item: string }[] }).items.map((i) => i.item)).toEqual(['Oat Milk'])
+      expect((await currentList(h.db, KITCHEN)).length).toBe(1)
+    } finally {
+      __setDbOverride(null)
+      vi.unstubAllEnvs()
+    }
   })
 
   it('event surfacing: a dated fact schedules event-anchored heads-ups on real Postgres', async () => {
