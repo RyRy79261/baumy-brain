@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { createHttpDb, type Database } from '@/db/client'
 import { loadRoster, setDmChatId } from '@/lib/identity/roster'
 import { issueLoginToken } from '@/lib/auth/tokens'
@@ -6,10 +7,14 @@ import { writeAudit } from '@/lib/audit'
 import { sendDmLoginResponse } from '@/lib/telegram/client'
 import { START_MESSAGE } from '@/lib/ai/prompts'
 import type { Origin } from '@/lib/core/origin'
+import { callOlympicsAction } from '@/lib/olympics/client'
+import { NOT_CONNECTED, UNAVAILABLE } from '@/lib/olympics/intents'
 
 // House-management commands over the member-DM lane (deterministic; no LLM).
 // origin.chatId for a member DM is that member's private chat id.
-export async function handleCommand(origin: Origin, text: string, db: Database = createHttpDb()): Promise<void> {
+// `messageId` (the command's Telegram message) keys the /link Idempotency-Key, so a retried step
+// replays Olympics' stored answer instead of claiming the one-time code a second time.
+export async function handleCommand(origin: Origin, text: string, db: Database = createHttpDb(), opts: { messageId?: number } = {}): Promise<void> {
   const parts = text.trim().split(/\s+/)
   // Strip a "@botusername" suffix so "/dashboard@baumy_bot" === "/dashboard".
   const cmd = (parts[0] ?? '').split('@')[0].toLowerCase()
@@ -62,5 +67,34 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
     return
   }
 
+  if (cmd === '/link') {
+    if (origin.fromId == null) return
+    await sendDmLoginResponse(origin.chatId, await linkTelegram(String(origin.fromId), parts[1] ?? '', `tglink-${origin.chatId}-${opts.messageId ?? randomUUID()}`))
+    return
+  }
+
   await sendDmLoginResponse(origin.chatId, 'Unknown command.')
+}
+
+// ── /link <code> — Baumy Olympics member linking (docs/spec/olympics.md) ─────────────────────────
+// The member creates a one-time code in Olympics → Settings and DMs it here. Olympics' `link_telegram`
+// maps the code to its member and records THIS Telegram id — the authenticated sender (X-Baumy-Actor),
+// never anything in the text. The one Olympics action an unlinked Telegram user may call.
+
+export const LINK_USAGE = 'Send it like this: /link ABCD1234EF — create the code in Baumy Olympics → Settings → Create a link code (it lasts 10 minutes). 🔗'
+const LINK_CODE = /^[A-Za-z0-9]{8,32}$/
+
+export async function linkTelegram(telegramId: string, code: string, idempotencyKey: string): Promise<string> {
+  const c = code.trim()
+  if (!LINK_CODE.test(c)) return LINK_USAGE
+  const r = await callOlympicsAction<{ memberId: string; displayName: string }>('link_telegram', { code: c }, { actor: telegramId, idempotencyKey })
+  if (r.ok) return `🔗 Linked — you're ${r.data?.displayName ?? 'in'} in Baumy Olympics. You can now ask me to add calendar events and log your chores.`
+  if (r.kind === 'not_configured') return NOT_CONNECTED
+  if (r.kind === 'unavailable') return UNAVAILABLE
+  if (r.code === 'LINK_CODE_INVALID') return "That code didn't work — it's wrong, already used or expired (codes last 10 minutes). Create a new one in Olympics → Settings. 🔗"
+  if (r.code === 'TELEGRAM_ALREADY_LINKED')
+    return 'This Telegram account is already linked to another Olympics member. An Olympics admin can clear it on the members page. 🔗'
+  if (r.code === 'RATE_LIMITED') return 'Too many tries — wait a few minutes, then send /link again. 🔗'
+  if (r.code === 'INVALID_INPUT') return LINK_USAGE
+  return `⚠️ ${r.message}`
 }

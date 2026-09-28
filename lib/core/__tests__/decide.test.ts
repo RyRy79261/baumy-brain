@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { resolveOriginParts, type Roster } from '@/lib/core/origin'
-import { decide, shouldCapture, listOpProposed, reminderFollowUpAllowed, type Verdict } from '@/lib/core/decide'
+import { decide, shouldCapture, listOpProposed, reminderFollowUpAllowed, olympicsOpProposed, type Verdict } from '@/lib/core/decide'
 
 const HOUSE = '-1001234567890'
 beforeAll(() => {
@@ -187,5 +187,34 @@ describe('decide — forwarded content (D4)', () => {
     expect(shouldCapture(fwdHouse(), V({ intent: 'question', worthRemembering: true }))).toBe(true) // "can someone be home Tuesday 10am?"
     expect(shouldCapture(fwdHouse(), V({ intent: 'chatter', worthRemembering: false }))).toBe(false)
     expect(shouldCapture(fwdDm(), V({ intent: 'forget', worthRemembering: true }))).toBe(false)
+  })
+})
+
+describe('olympicsOpProposed — Baumy Olympics ops run AS the authenticated sender', () => {
+  const fwd = () => resolveOriginParts({ chatId: HOUSE, fromId: 100, text: 'x', isPrivate: false, isForwarded: true }, roster)
+  const ignored = () => resolveOriginParts({ chatId: '-999', fromId: 5, text: 'x', isPrivate: false }, roster)
+  const v = (olympics: string, intent: Verdict['intent'] = 'request', list = 'none') => ({ intent, olympics, list })
+  it('a directed ask from a member (DM, or @mention in the group) is looked at', () => {
+    expect(olympicsOpProposed(memberDm(), v('calendar_add'), false, '200', true)).toBe(true)
+    expect(olympicsOpProposed(houseOrigin(), v('chore_log', 'statement'), true, '100', true)).toBe(true)
+  })
+  it('A9: undirected group text never proposes one ("I took the trash out" said to the house)', () => {
+    expect(olympicsOpProposed(houseOrigin(), v('chore_log', 'statement'), false, '100', true)).toBe(false)
+  })
+  it('needs an authenticated author; relayed content and ignored lanes never', () => {
+    expect(olympicsOpProposed(memberDm(), v('calendar_add'), true, null, true)).toBe(false)
+    expect(olympicsOpProposed(fwd(), v('calendar_add'), true, '100', true)).toBe(false)
+    expect(olympicsOpProposed(ignored(), v('calendar_add'), true, '5', true)).toBe(false)
+  })
+  it("an explicit reminder / cancellation / forget, or a list op, wins; 'none' is nothing", () => {
+    expect(olympicsOpProposed(memberDm(), v('calendar_add', 'reminder'), true, '200', true)).toBe(false)
+    expect(olympicsOpProposed(memberDm(), v('calendar_add', 'forget'), true, '200', true)).toBe(false)
+    expect(olympicsOpProposed(memberDm(), v('calendar_add', 'cancel_reminder'), true, '200', true)).toBe(false)
+    expect(olympicsOpProposed(memberDm(), v('chore_log', 'statement', 'checkoff'), true, '200', true)).toBe(false)
+    expect(olympicsOpProposed(memberDm(), v('none'), true, '200', true)).toBe(false)
+  })
+  it('a paused group goes silent; a DM still works', () => {
+    expect(olympicsOpProposed(houseOrigin(), v('standings', 'question'), true, '100', false)).toBe(false)
+    expect(olympicsOpProposed(memberDm(), v('standings', 'question'), true, '200', false)).toBe(true)
   })
 })

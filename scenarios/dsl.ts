@@ -8,6 +8,8 @@ import { embedSync, setEmbedOverride } from '@/lib/ai/embed'
 import { setConsoleThread } from '@/lib/identity/house'
 import { inngest } from '@/lib/inngest/client'
 import { createSandbox, sendAs, tapAs, advanceBy, type Sandbox, type SandboxPerson, type SendOptions, type TranscriptEntry } from '@/lib/sandbox/harness'
+import { setOlympicsTransport } from '@/lib/olympics/client'
+import { FAKE_OLYMPICS_TOKEN, FAKE_OLYMPICS_URL, type FakeOlympics } from './olympics-fake'
 import { installFakeModels, installRecordingModels, type CallRole, type Fixtures, type ModelCall, type ModelRecorder } from './fake-model'
 import { judgeReply } from './judge'
 
@@ -55,6 +57,9 @@ export interface ScenarioSpec {
   knownGap?: KnownGap
   /** Why this can only run offline (e.g. it scripts a provider outage). Skipped in live mode. */
   offlineOnly?: string
+  /** An in-memory Baumy Olympics (scenarios/olympics-fake.ts) the client talks to — in BOTH modes, so
+   *  a live run never reaches a real Olympics. A factory: each run gets a fresh one. */
+  olympics?: () => FakeOlympics
 }
 
 export interface Step {
@@ -76,6 +81,8 @@ export interface Turn {
 
 export interface Run {
   sb: Sandbox
+  /** The scenario's in-memory Olympics, when it has one. */
+  olympics?: FakeOlympics
   db: Database
   mode: 'offline' | 'live'
   models: ModelRecorder
@@ -135,10 +142,26 @@ const DEFAULT_KEY = Buffer.alloc(32, 13).toString('base64')
 
 async function runScenario(spec: ScenarioSpec, mode: 'offline' | 'live'): Promise<void> {
   const tz = spec.tz ?? 'Europe/Berlin'
-  const saved = { tz: process.env.BAUMY_TIMEZONE, key: process.env.BAUMY_ENCRYPTION_KEY, house: process.env.BAUMY_HOUSE_CHAT_ID }
+  const saved = {
+    tz: process.env.BAUMY_TIMEZONE,
+    key: process.env.BAUMY_ENCRYPTION_KEY,
+    house: process.env.BAUMY_HOUSE_CHAT_ID,
+    olyUrl: process.env.OLYMPICS_BASE_URL,
+    olyToken: process.env.BRAIN_SERVICE_TOKEN,
+  }
   process.env.BAUMY_TIMEZONE = tz
   process.env.BAUMY_ENCRYPTION_KEY ??= DEFAULT_KEY
   delete process.env.BAUMY_HOUSE_CHAT_ID
+  // Olympics: the scenario's fake, or not connected at all (never a real one from a scenario).
+  const olympics = spec.olympics?.()
+  if (olympics) {
+    process.env.OLYMPICS_BASE_URL = FAKE_OLYMPICS_URL
+    process.env.BRAIN_SERVICE_TOKEN = FAKE_OLYMPICS_TOKEN
+    setOlympicsTransport(olympics.transport)
+  } else {
+    delete process.env.OLYMPICS_BASE_URL
+    delete process.env.BRAIN_SERVICE_TOKEN
+  }
 
   const db = await makeTestDb()
   __setDbOverride(db)
@@ -166,7 +189,7 @@ async function runScenario(spec: ScenarioSpec, mode: 'offline' | 'live'): Promis
     if (!startAt.isValid) throw new Error(`[scenarios] bad startAt: ${spec.startAt}`)
     const sb = await createSandbox({ db, startAt: startAt.toJSDate(), people, tz })
     if (spec.consoleTopic != null) await setConsoleThread(db, spec.consoleTopic)
-    const r: Run = { sb, db, mode, models, spec: { ...spec, people }, turns: [], events }
+    const r: Run = { sb, db, mode, models, spec: { ...spec, people }, turns: [], events, olympics }
     for (const [i, step] of spec.steps.entries()) {
       try {
         const faults = models.harnessErrors.length
@@ -188,6 +211,9 @@ async function runScenario(spec: ScenarioSpec, mode: 'offline' | 'live'): Promis
     restoreEnv('BAUMY_TIMEZONE', saved.tz)
     restoreEnv('BAUMY_ENCRYPTION_KEY', saved.key)
     restoreEnv('BAUMY_HOUSE_CHAT_ID', saved.house)
+    setOlympicsTransport(null)
+    restoreEnv('OLYMPICS_BASE_URL', saved.olyUrl)
+    restoreEnv('BRAIN_SERVICE_TOKEN', saved.olyToken)
   }
 }
 
