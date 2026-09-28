@@ -459,6 +459,19 @@ crown jewels. The pipeline:
   capture resolver + precision guards: coverage + known-day, a past marker read literally), never a
   bare chrono call over arbitrary values.
 
+## Baumy Olympics (the chores game, house calendar and message board)
+
+Baumy Olympics (`RyRy79261/baumy-olympics`) owns the chores ("bounties"), the season scoreboard,
+the house Google Calendar, the kitchen-screen reminders and the notes board. Baumy reaches them
+through Olympics' action endpoint (`/api/v1/actions`). **Before touching anything that calls
+Olympics, read `docs/olympics-operations-spec.md`**: the household model, the headers
+(`X-Baumy-Actor`, `X-Baumy-Confirmed`, `Idempotency-Key`, `X-Baumy-On-Behalf-Of`), which calls need
+the asker's confirm tap, and every action with its input schema, errors, example phrasings and what
+Baumy must say back. It is a copy of a doc Olympics generates from its registry; refresh it from
+there, never edit it here. Owner rulings of 2026-09-28: Baumy gets every member action (deletes
+included) behind the confirm tap, and may act on a housemate's behalf; admin actions stay in the
+Olympics app.
+
 ---
 
 *For Claude Code specifically: add a `CLAUDE.md` containing `@AGENTS.md` to auto-load this file.*
