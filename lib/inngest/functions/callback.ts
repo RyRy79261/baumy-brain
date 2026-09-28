@@ -113,6 +113,13 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
     return { cancelled: id }
   }
 
+  // A sign-in card has no Confirm button; only its numbers (verb `l`) and Deny resolve it. Check the
+  // kind BEFORE resolving, so crafted `c:<id>` data can never spend a sign-in card.
+  if ((await step.run('login-card-check', () => loginCardChoices(db, id))) !== null) {
+    await answerCallback(callbackId)
+    return { ignored: 'bad-data' }
+  }
+
   // Resolve in its OWN step so the result is MEMOIZED: a retry after a downstream effect
   // fails replays the action here WITHOUT re-flipping the row, so the effect can safely
   // re-run instead of being silently lost to "already handled".
@@ -121,11 +128,6 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
   if (!action) {
     await answerCallback(callbackId, 'This already expired or was handled.')
     return { ignored: 'not-pending' }
-  }
-  // A sign-in card has no Confirm button; only its numbers (verb `l`) and Deny resolve it.
-  if (action.actionType === LOGIN_ACTION_TYPE) {
-    await answerCallback(callbackId)
-    return { ignored: 'bad-data' }
   }
 
   // NOTE: reminders AUTO-COMMIT (they only post text to the fixed house group) — they are

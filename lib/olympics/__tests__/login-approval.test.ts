@@ -47,7 +47,7 @@ const body = (over: Record<string, unknown> = {}) => ({
   requestId: REQUEST_ID,
   telegramUserId: RYAN,
   device: 'Safari on iPad',
-  choices: [12, 47, 83],
+  choices: [12, 30, 47, 65, 83],
   expiresAt: new Date(Date.now() + 120_000).toISOString(),
   ...over,
 })
@@ -72,7 +72,7 @@ async function cardId(): Promise<string> {
 beforeEach(async () => {
   vi.stubEnv('KITCHEN_API_TOKEN', TOKEN)
   vi.stubEnv('BAUMY_HOUSE_CHAT_ID', '')
-  vi.stubEnv('OLYMPICS_BASE_URL', 'https://baumy.tech')
+  vi.stubEnv('OLYMPICS_BASE_URL', 'https://www.baumy.tech')
   vi.stubEnv('BRAIN_SERVICE_TOKEN', 'svc-token-0123456789abcdef0123456789')
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   dbh.db = await makeTestDb()
@@ -110,10 +110,10 @@ describe('POST /api/kitchen/login-approval', () => {
       actionType: 'olympics.login',
       requestedBy: String(RYAN),
       status: 'pending',
-      payload: { requestId: REQUEST_ID, choices: [12, 47, 83], device: 'Safari on iPad' },
+      payload: { requestId: REQUEST_ID, choices: [12, 30, 47, 65, 83], device: 'Safari on iPad' },
     })
     // To their own DM (their Telegram id is their private chat), never the group.
-    expect(sendLoginApprovalCard).toHaveBeenCalledWith(String(RYAN), expect.stringContaining('Safari on iPad'), id, [12, 47, 83])
+    expect(sendLoginApprovalCard).toHaveBeenCalledWith(String(RYAN), expect.stringContaining('Safari on iPad'), id, [12, 30, 47, 65, 83])
     expect(String(sendLoginApprovalCard.mock.calls[0]![1])).toContain('Tap the number on the screen')
   })
 
@@ -144,7 +144,7 @@ describe('POST /api/kitchen/login-approval', () => {
   it('refuses a wrong token, a bad body, and answers 503 before a house', async () => {
     expect((await post(body(), 'Bearer nope')).status).toBe(401)
     expect((await post(body(), null)).status).toBe(401)
-    for (const b of ['x', body({ choices: [12, 12, 83] }), body({ choices: [1, 47, 83] }), body({ requestId: 'r' }), body({ device: '' })]) {
+    for (const b of ['x', body({ choices: [12, 12, 47, 65, 83] }), body({ choices: [1, 30, 47, 65, 83] }), body({ choices: [12, 47, 83] }), body({ requestId: 'r' }), body({ device: '' })]) {
       expect((await post(b)).status).toBe(400)
     }
     await dbh.db.delete(houseConfig)
@@ -159,7 +159,7 @@ describe('the tap', () => {
     const res = await tap(RYAN, `l:${id}:47`)
     expect(res).toMatchObject({ login: 'approve_login', olympics: 'approved' })
     expect(seen).toHaveLength(1)
-    expect(seen[0]!.url).toBe('https://baumy.tech/api/v1/actions/approve_login')
+    expect(seen[0]!.url).toBe('https://www.baumy.tech/api/v1/actions/approve_login')
     expect(seen[0]!.body).toEqual({ requestId: REQUEST_ID, code: 47 })
     expect(seen[0]!.headers.get('x-baumy-actor')).toBe(`tg:${RYAN}`)
     expect(seen[0]!.headers.get('x-baumy-confirmed')).toBe('1')
@@ -187,8 +187,11 @@ describe('the tap', () => {
     // Neither spent the card.
     expect((await dbh.db.select().from(pendingActions))[0].status).toBe('pending')
     expect(await tap(RYAN, `c:${id}`)).toEqual({ ignored: 'bad-data' })
+    // Not even a crafted Confirm spends it: the member can still answer.
+    expect((await dbh.db.select().from(pendingActions))[0].status).toBe('pending')
+    expect(await tap(RYAN, `l:${id}:47`)).toMatchObject({ login: 'approve_login' })
     expect(await tap(9999, `l:${id}:47`)).toEqual({ ignored: 'not-member' })
-    expect(seen).toEqual([])
+    expect(seen).toHaveLength(1)
   })
 
   it('sends Deny as deny_login', async () => {
@@ -196,7 +199,7 @@ describe('the tap', () => {
     const id = await cardId()
     const res = await tap(RYAN, `x:${id}`)
     expect(res).toMatchObject({ login: 'deny_login', olympics: 'denied' })
-    expect(seen[0]!.url).toBe('https://baumy.tech/api/v1/actions/deny_login')
+    expect(seen[0]!.url).toBe('https://www.baumy.tech/api/v1/actions/deny_login')
     expect(seen[0]!.body).toEqual({ requestId: REQUEST_ID })
     expect(editMessageText).toHaveBeenLastCalledWith(String(RYAN), 9, '✖️ Denied the sign-in on Safari on iPad.')
   })

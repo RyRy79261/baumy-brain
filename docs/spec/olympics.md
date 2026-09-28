@@ -49,17 +49,17 @@ Olympics' sign-in page can sign someone in without a password: it shows a two-di
 Baumy to DM that member (Olympics' ADR 0006, `docs/brain-integration.md` there).
 
 1. **Olympics → Baumy:** `POST /api/kitchen/login-approval` (Bearer `KITCHEN_API_TOKEN`, the kitchen
-   API's wall and house scope) with `{requestId, telegramUserId, device, choices: [3 two-digit
+   API's wall and house scope) with `{requestId, telegramUserId, device, choices: [5 two-digit
    numbers], expiresAt}`. Only an ACTIVE member gets a DM, at their own DM chat (`dm_chat_id`, else
    their Telegram id); anyone else, an expired request or a DM Telegram refuses (the member never
    pressed Start) answers `{ok: true, sent: false}` and sends nothing. The card is a pending action,
    type `olympics.login`, requester-only, expiring with Olympics' request
    (`lib/olympics/login-approval.ts`).
 2. **The card** (`sendLoginApprovalCard`): "Sign in to Baumy Olympics on <device> at <time>? Tap the
-   number on the screen." One button per number (`l:<card id>:<n>`) and Deny (`x:<card id>`). Code
+   number on the screen." One button per number (the right one and four decoys, `l:<card id>:<n>`) and Deny (`x:<card id>`). Code
    writes every word; it is not added to the conversation window.
 3. **The tap** (`functions/callback.ts`): only the member it was sent to (anyone else hears "Only the
-   person who asked…"); a number not on the card is ignored without spending it. A number calls
+   person who asked…"); a number not on the card, or a crafted Confirm (`c:`), is ignored without spending it. A number calls
    `approve_login {requestId, code}`, Deny calls `deny_login {requestId}`, AS the tapper, with
    `X-Baumy-Confirmed: 1` and the key `login-<card id>-<n|deny>`. Olympics decides whether it was the
    number on the screen (`outcome`: `approved`, `blocked`, `denied`); the card is edited to say so,

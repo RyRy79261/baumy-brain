@@ -36,14 +36,17 @@ export interface LoginPending {
 
 const TWO_DIGITS = z.number().int().min(10).max(99)
 
+/** The number on the screen and four decoys: a blind tap is right 1 time in 5. */
+export const LOGIN_CHOICES = 5
+
 const Body = z.object({
   requestId: z.string().uuid(),
   telegramUserId: z.union([z.string().regex(/^\d{1,20}$/), z.number().int().positive()]).transform(String),
   device: z.string().trim().min(1).max(80),
   choices: z
     .array(TWO_DIGITS)
-    .length(3)
-    .refine((c) => new Set(c).size === 3, 'distinct'),
+    .length(LOGIN_CHOICES)
+    .refine((c) => new Set(c).size === LOGIN_CHOICES, 'distinct'),
   expiresAt: z.string().datetime(),
 })
 
@@ -66,7 +69,7 @@ export async function handleLoginApproval(req: Request): Promise<Response> {
     }
     const parsed = Body.safeParse(raw)
     if (!parsed.success) {
-      return json({ ok: false, error: 'bad_request', message: 'Expected { requestId, telegramUserId, device, choices[3], expiresAt }.' }, 400)
+      return json({ ok: false, error: 'bad_request', message: 'Expected { requestId, telegramUserId, device, choices[5], expiresAt }.' }, 400)
     }
     const b = parsed.data
     const ttlSec = Math.floor((Date.parse(b.expiresAt) - now().getTime()) / 1000)
