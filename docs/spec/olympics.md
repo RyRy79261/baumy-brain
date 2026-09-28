@@ -62,7 +62,7 @@ Baumy to DM that member (Olympics' ADR 0006, `docs/brain-integration.md` there).
    person who asked…"); a number not on the card, or a crafted Confirm (`c:`), is ignored without spending it. A number calls
    `approve_login {requestId, code}`, Deny calls `deny_login {requestId}`, AS the tapper, with
    `X-Baumy-Confirmed: 1` and the key `login-<card id>-<n|deny>`. Olympics decides whether it was the
-   number on the screen (`outcome`: `approved`, `blocked`, `denied`); the card is edited to say so,
+   number on the screen (`outcome`: `approved`, `blocked`, `denied`); the card is edited to say so (after a denial, that Sign in with Baumy is off for that member for 15 minutes),
    and audited (`olympics.login`). If Olympics did not answer, a number tap puts the card back.
 4. The LLM never proposes, sees or resolves any of it.
 

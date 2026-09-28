@@ -12,7 +12,7 @@ import type { OlympicsResult } from './client'
 // "Sign in with Baumy" (docs/spec/olympics.md §Sign-in approval; Olympics' ADR 0006 and
 // docs/brain-integration.md). Someone taps Sign in with Baumy on an Olympics screen; Olympics asks
 // Baumy to DM that member "Sign in on <device>? Tap the number on the screen" with the number the
-// screen shows and two decoys. The member's tap goes back to Olympics as `approve_login` /
+// screen shows and four decoys. The member's tap goes back to Olympics as `approve_login` /
 // `deny_login` (lib/inngest/functions/callback.ts).
 //
 // Walls:
@@ -133,7 +133,7 @@ export function loginResultLine(p: LoginPending, result: OlympicsResult<{ outcom
       case 'blocked':
         return "🚫 That wasn't the number on the screen, so I blocked this sign-in. If it wasn't you, nothing happened; if it was, use your password (Sign in with Baumy is off for 15 minutes)."
       case 'denied':
-        return `✖️ Denied the sign-in on ${p.device}.`
+        return `✖️ Denied the sign-in on ${p.device}. Sign in with Baumy is off for you for 15 minutes; your password still works.`
     }
     return '✅ Done.'
   }

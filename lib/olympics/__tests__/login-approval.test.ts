@@ -201,7 +201,7 @@ describe('the tap', () => {
     expect(res).toMatchObject({ login: 'deny_login', olympics: 'denied' })
     expect(seen[0]!.url).toBe('https://www.baumy.tech/api/v1/actions/deny_login')
     expect(seen[0]!.body).toEqual({ requestId: REQUEST_ID })
-    expect(editMessageText).toHaveBeenLastCalledWith(String(RYAN), 9, '✖️ Denied the sign-in on Safari on iPad.')
+    expect(editMessageText).toHaveBeenLastCalledWith(String(RYAN), 9, '✖️ Denied the sign-in on Safari on iPad. Sign in with Baumy is off for you for 15 minutes; your password still works.')
   })
 
   it("shows Olympics' refusal, and puts the card back when Olympics does not answer", async () => {
