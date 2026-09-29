@@ -104,6 +104,35 @@ describe('handleCommand — /link <code> (Baumy Olympics member linking)', async
     teardown()
   })
 
+  it('/start link_<code> (the Olympics deep link) links the sender exactly like /link <code>', async () => {
+    const f = setup()
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 200)
+    await handleCommand(dmOrigin(200, '200'), '/start link_ANNACODE12', db, { messageId: 42 })
+    expect(sendDm).toHaveBeenCalledTimes(1) // the confirmation only, not the intro as well
+    expect(reply()).toBe("🔗 Linked — you're Anna in Baumy Olympics. You can now ask me to add calendar events and log your chores.")
+    expect(f.members.find((m) => m.id === 'm-anna')?.telegramUserId).toBe('200')
+    expect(f.calls[0]).toMatchObject({ name: 'link_telegram', actor: '200', idempotencyKey: 'tglink-200-42', confirmed: false, body: { code: 'ANNACODE12' } })
+    // Still a /start: the DM chat id is captured for later proactive DMs.
+    const [row] = await db.select({ dm: members.dmChatId }).from(members).where(eq(members.telegramUserId, '200'))
+    expect(row.dm).toBe('200')
+    // A spent code answers like /link does.
+    await handleCommand(dmOrigin(200, '200'), '/start@baumy_bot link_ANNACODE12', db, { messageId: 43 })
+    expect(reply()).toMatch(/That code didn't work/)
+    teardown()
+  })
+
+  it('/start with any other payload is the plain intro and never calls Olympics', async () => {
+    const f = setup()
+    const db = await makeTestDb()
+    for (const [i, t] of ['/start', '/start hello', '/start link_', '/start link_BAD!CODE', '/start link_ABC', '/start xlink_ANNACODE12'].entries()) {
+      await handleCommand(dmOrigin(200, '200'), t, db, { messageId: 50 + i })
+      expect(reply()).toContain('/dashboard')
+    }
+    expect(f.calls).toHaveLength(0)
+    teardown()
+  })
+
   it('Olympics not set up or down → a friendly line, never an error', async () => {
     const f = setup()
     const db = await makeTestDb()

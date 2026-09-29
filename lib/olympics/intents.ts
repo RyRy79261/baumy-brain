@@ -27,7 +27,7 @@ export interface OlympicsPending {
 // ── The fixed lines ──────────────────────────────────────────────────────────────────────────────
 
 export const LINK_FIRST =
-  "I don't know who you are in Baumy Olympics yet. Open Olympics → Settings → Create a link code, then DM me /link <code> — after that I can add events and log chores for you. 🔗"
+  "I don't know who you are in Baumy Olympics yet. Open Olympics → Settings → Link Telegram and tap Start here (or DM me /link <code>) — after that I can add events and log chores for you. 🔗"
 export const NOT_CONNECTED = "Baumy Olympics isn't connected to me yet — the house owner needs to set that up. 🐈‍⬛"
 export const UNAVAILABLE = "Baumy Olympics isn't answering right now — try again in a minute. 🐈‍⬛"
 
