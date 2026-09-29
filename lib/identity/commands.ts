@@ -23,6 +23,15 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
   // caller is a known housemate — record their DM chat id for future proactive DMs.
   if (cmd === '/start') {
     if (origin.fromId != null) await setDmChatId(db, String(origin.fromId), origin.chatId)
+    // Olympics' "Link Telegram" button opens t.me/<bot>?start=link_<code>; Telegram then sends
+    // `/start link_<code>` from the member's own DM when they tap Start. It is exactly `/link <code>`
+    // (same action, same Idempotency-Key shape, same replies). DM only by construction: this path
+    // runs only in the member-DM lane, and a /start in the group is ignored (I7).
+    const deepLink = START_LINK.exec(parts[1] ?? '')
+    if (deepLink && origin.fromId != null) {
+      await sendDmLoginResponse(origin.chatId, await linkTelegram(String(origin.fromId), deepLink[1], linkKey(origin, opts)))
+      return
+    }
     await sendDmLoginResponse(origin.chatId, START_MESSAGE)
     return
   }
@@ -69,7 +78,7 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
 
   if (cmd === '/link') {
     if (origin.fromId == null) return
-    await sendDmLoginResponse(origin.chatId, await linkTelegram(String(origin.fromId), parts[1] ?? '', `tglink-${origin.chatId}-${opts.messageId ?? randomUUID()}`))
+    await sendDmLoginResponse(origin.chatId, await linkTelegram(String(origin.fromId), parts[1] ?? '', linkKey(origin, opts)))
     return
   }
 
@@ -81,7 +90,15 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
 // maps the code to its member and records THIS Telegram id — the authenticated sender (X-Baumy-Actor),
 // never anything in the text. The one Olympics action an unlinked Telegram user may call.
 
-export const LINK_USAGE = 'Send it like this: /link ABCD1234EF — create the code in Baumy Olympics → Settings → Create a link code (it lasts 10 minutes). 🔗'
+/** The deep-link payload Olympics puts after `?start=`: `link_<code>` (Telegram allows [A-Za-z0-9_-]). */
+const START_LINK = /^link_([A-Za-z0-9]{1,58})$/
+
+/** One key per Telegram message, so a retried step replays Olympics' answer instead of re-claiming. */
+function linkKey(origin: Origin, opts: { messageId?: number }): string {
+  return `tglink-${origin.chatId}-${opts.messageId ?? randomUUID()}`
+}
+
+export const LINK_USAGE = 'Send it like this: /link ABCD1234EF — get the code in Baumy Olympics → Settings → Link Telegram (it lasts 10 minutes), or just tap Open Telegram there. 🔗'
 const LINK_CODE = /^[A-Za-z0-9]{8,32}$/
 
 export async function linkTelegram(telegramId: string, code: string, idempotencyKey: string): Promise<string> {
