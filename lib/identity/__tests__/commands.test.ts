@@ -125,7 +125,7 @@ describe('handleCommand — /link <code> (Baumy Olympics member linking)', async
   it('/start with any other payload is the plain intro and never calls Olympics', async () => {
     const f = setup()
     const db = await makeTestDb()
-    for (const [i, t] of ['/start', '/start hello', '/start link_', '/start link_BAD!CODE', '/start xlink_ANNACODE12'].entries()) {
+    for (const [i, t] of ['/start', '/start hello', '/start link_', '/start link_BAD!CODE', '/start link_ABC', '/start xlink_ANNACODE12'].entries()) {
       await handleCommand(dmOrigin(200, '200'), t, db, { messageId: 50 + i })
       expect(reply()).toContain('/dashboard')
     }

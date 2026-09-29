@@ -91,7 +91,7 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
 // never anything in the text. The one Olympics action an unlinked Telegram user may call.
 
 /** The deep-link payload Olympics puts after `?start=`: `link_<code>` (Telegram allows [A-Za-z0-9_-]). */
-const START_LINK = /^link_([A-Za-z0-9]{1,58})$/
+const START_LINK = /^link_([A-Za-z0-9]{8,32})$/
 
 /** One key per Telegram message, so a retried step replays Olympics' answer instead of re-claiming. */
 function linkKey(origin: Origin, opts: { messageId?: number }): string {
