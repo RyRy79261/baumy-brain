@@ -53,21 +53,21 @@ plus `issues` (with `INVALID_INPUT`), `retryAt` (with `COOLDOWN`) or
 `retryAfterSeconds` (with `RATE_LIMITED`, also sent as `Retry-After`).
 `message` is a sentence written to be shown to the person as it is.
 
-| Status | `code`                          | What Baumy does                                                                                           |
-| ------ | ------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| 400    | `INVALID_INPUT`                 | A bug on our side or a bad slot: `issues` says which field or header. Ask the person to rephrase.         |
-| 401    | `UNAUTHENTICATED`               | Olympics is not (correctly) connected. "Baumy Olympics isn't connected to me yet."                        |
-| 403    | `FORBIDDEN`                     | Not allowed for this member (for example confirming your own claim). Show `message`.                      |
-| 403    | `SURFACE_FORBIDDEN`             | Not Baumy's to do (admin or app-only). "That's done in the Olympics app."                                 |
-| 403    | `TELEGRAM_NOT_LINKED`           | "Link your Telegram first: Olympics → Settings → Create a link code, then DM me /link <code>."            |
-| 404    | `UNKNOWN_ACTION`, `NOT_FOUND`   | No such action, or the thing (event, note, reminder, claim, housemate) is gone. Show `message`.           |
-| 409    | `IDEMPOTENCY_CONFLICT`          | The key was used for a different call: our bug. Mint a new key and propose again.                         |
-| 409    | `IN_PROGRESS`                   | The same key is still running. Retry with the same key in a moment.                                       |
-| 422    | domain codes (`COOLDOWN`, …)    | The action understood and said no. Show `message`; each action below lists its own.                       |
-| 428    | `CONFIRMATION_REQUIRED`         | The call needed the confirm tap. Show the card; never retry without a tap.                                |
-| 429    | `RATE_LIMITED`                  | Wait `retryAfterSeconds`.                                                                                 |
-| 500    | `INTERNAL`                      | Something broke on Olympics' side. Retry with the same key, then say it is not answering.                 |
-| 503    | `NOT_CONFIGURED`, `UNAVAILABLE` | Google Calendar (or brain itself) is not set up or did not answer. Say so; retry later with the same key. |
+| Status | `code`                          | What Baumy does                                                                                               |
+| ------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 400    | `INVALID_INPUT`                 | A bug on our side or a bad slot: `issues` says which field or header. Ask the person to rephrase.             |
+| 401    | `UNAUTHENTICATED`               | Olympics is not (correctly) connected. "Baumy Olympics isn't connected to me yet."                            |
+| 403    | `FORBIDDEN`                     | Not allowed for this member (for example confirming your own claim). Show `message`.                          |
+| 403    | `SURFACE_FORBIDDEN`             | Not Baumy's to do (admin or app-only). "That's done in the Olympics app."                                     |
+| 403    | `TELEGRAM_NOT_LINKED`           | "Link your Telegram first: Olympics → Settings → Link Telegram, then tap Start here (or DM me /link <code>)." |
+| 404    | `UNKNOWN_ACTION`, `NOT_FOUND`   | No such action, or the thing (event, note, reminder, claim, housemate) is gone. Show `message`.               |
+| 409    | `IDEMPOTENCY_CONFLICT`          | The key was used for a different call: our bug. Mint a new key and propose again.                             |
+| 409    | `IN_PROGRESS`                   | The same key is still running. Retry with the same key in a moment.                                           |
+| 422    | domain codes (`COOLDOWN`, …)    | The action understood and said no. Show `message`; each action below lists its own.                           |
+| 428    | `CONFIRMATION_REQUIRED`         | The call needed the confirm tap. Show the card; never retry without a tap.                                    |
+| 429    | `RATE_LIMITED`                  | Wait `retryAfterSeconds`.                                                                                     |
+| 500    | `INTERNAL`                      | Something broke on Olympics' side. Retry with the same key, then say it is not answering.                     |
+| 503    | `NOT_CONFIGURED`, `UNAVAILABLE` | Google Calendar (or brain itself) is not set up or did not answer. Say so; retry later with the same key.     |
 
 ### Idempotency
 
@@ -86,10 +86,13 @@ convert them to Berlin time before showing them. An instant sent to Olympics
 
 ## 2. Linking Telegram (`/link`)
 
-1. The member opens **Settings** in Olympics and taps **Create a link code**
-   (10 characters, valid 10 minutes, single use).
-2. They DM Baumy `/link <code>`. Refuse `/link` in the group: whoever reads a
-   code first could claim it.
+1. The member opens **Settings** in Olympics and taps **Link Telegram**
+   (a code of 10 characters, valid 10 minutes, single use).
+2. Settings shows it as the deep link `https://t.me/baumy_bot?start=link_<code>`
+   (a button and a QR code). Tapping **Start** sends Baumy `/start link_<code>`
+   in the member's DM: treat it exactly like `/link <code>`. The fallback is
+   DMing `/link <code>`. Refuse `/link` in the group: whoever reads a code first
+   could claim it.
 3. Baumy calls `link_telegram` `{"code": "<code>"}` with the sender in
    `X-Baumy-Actor` and an `Idempotency-Key` fixed for that message (a retry
    replays the answer instead of spending the code twice). This is the only
@@ -289,13 +292,14 @@ Links the sender's Telegram account to the member who created the code in Olympi
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 5 per Telegram user and 30 per IP in 10 minutes |
 
-**When to use it.** Only for `/link <code>` sent in a DM. Refuse it in the group: anyone who reads a code there could claim it first.
+**When to use it.** Only for `/link <code>` sent in a DM, or `/start link_<code>` (the Settings deep link, the same thing). Refuse it in the group: anyone who reads a code there could claim it first.
 
-**Tool description** (the registry's, verbatim): Links the calling Telegram user to the household member who created the one-time link code in Baumy's Settings. Call it when someone sends /link <code>.
+**Tool description** (the registry's, verbatim): Links the calling Telegram user to the household member who created the one-time link code in Baumy's Settings. Call it when someone sends /link <code>, or /start link_<code> from the Settings deep link.
 
 **Examples.**
 
 - "/link K7PQ2MX9RT" → `link_telegram {"code": "K7PQ2MX9RT"}`
+- "/start link_K7PQ2MX9RT" → `link_telegram {"code": "K7PQ2MX9RT"}`
 
 **Input** (JSON Schema of the body):
 

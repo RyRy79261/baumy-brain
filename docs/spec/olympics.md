@@ -13,6 +13,7 @@ season scoreboard. Baumy reaches them through Olympics' action endpoint; the con
 | "I took the trash out" | `chore_log` → `log_completion` (`confirm`) | a confirm card; the tap logs it for the asker |
 | "who's winning?" | `standings` → `get_standings` (read) | the table, straight away |
 | `/link <code>` (DM only) | `link_telegram` (`safe`) | links the sender's Telegram id to the Olympics member who made the code |
+| `/start link_<code>` (DM only; Olympics' **Link Telegram** deep link `t.me/<bot>?start=link_<code>`) | `link_telegram` (`safe`) | exactly `/link <code>`: same action, key and replies; a `/start` without that payload is the plain intro |
 
 ## The flow (LLM proposes, code disposes)
 

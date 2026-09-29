@@ -90,9 +90,10 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 >    OLYMPICS_BASE_URL=https://www.baumy.tech
 >    BRAIN_SERVICE_TOKEN=<the token from step 1>
 >    ```
-> 3. Each housemate opens Olympics → **Settings** → **Create a link code** and DMs Baumy
->    `/link <code>` (never in the group — Baumy refuses it there). An Olympics admin can also set
->    a member's Telegram id on `/admin/members`.
+> 3. Each housemate opens Olympics → **Settings** → **Link Telegram** → **Open Telegram** (or scans
+>    its QR code) and taps **Start**: Telegram sends `/start link_<code>`, which links them. The
+>    fallback is DMing Baumy `/link <code>` (never in the group — Baumy refuses it there). An
+>    Olympics admin can also set a member's Telegram id on `/admin/members`.
 > 4. Re-run `node --experimental-strip-types scripts/set-commands.ts` so `/link` shows in the DM menu.
 >
 > Rotate with `service-token rotate baumy-brain` (then update `BRAIN_SERVICE_TOKEN` and redeploy).
