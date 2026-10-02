@@ -32,16 +32,12 @@ export default async function SettingsPage() {
           ? 'Replying and reminding normally.'
           : 'Staying quiet (still captures memory) until resumed.'}
       </p>
-      {isOwner ? (
-        <form action={setPolicyEnabledAction}>
-          <input type="hidden" name="enabled" value={policy.global_enabled ? 'off' : 'on'} />
-          <button type="submit" style={{ cursor: 'pointer' }}>
-            {policy.global_enabled ? '⏸️ Pause Baumy' : '▶️ Resume Baumy'}
-          </button>
-        </form>
-      ) : (
-        <p style={{ color: '#888' }}>Only the owner can change these.</p>
-      )}
+      <form action={setPolicyEnabledAction}>
+        <input type="hidden" name="enabled" value={policy.global_enabled ? 'off' : 'on'} />
+        <button type="submit" style={{ cursor: 'pointer' }}>
+          {policy.global_enabled ? '⏸️ Pause Baumy' : '▶️ Resume Baumy'}
+        </button>
+      </form>
 
       <h2 style={{ marginTop: '2rem' }}>Reply frequency</h2>
       <p style={{ color: '#888', fontSize: 14 }}>
@@ -51,23 +47,21 @@ export default async function SettingsPage() {
       <p style={{ color: '#aaa', fontSize: 14 }}>
         Currently: <strong>{FREQ_LABEL[policy.reply_frequency]}</strong>.
       </p>
-      {isOwner ? (
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          {(['quiet', 'balanced', 'chatty'] as ReplyFrequency[]).map((lvl) => (
-            <form key={lvl} action={setReplyFrequencyAction}>
-              <input type="hidden" name="level" value={lvl} />
-              <button
-                type="submit"
-                disabled={policy.reply_frequency === lvl}
-                style={{ cursor: policy.reply_frequency === lvl ? 'default' : 'pointer', fontWeight: policy.reply_frequency === lvl ? 700 : 400 }}
-              >
-                {FREQ_LABEL[lvl]}
-                {policy.reply_frequency === lvl ? ' ✓' : ''}
-              </button>
-            </form>
-          ))}
-        </div>
-      ) : null}
+      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+        {(['quiet', 'balanced', 'chatty'] as ReplyFrequency[]).map((lvl) => (
+          <form key={lvl} action={setReplyFrequencyAction}>
+            <input type="hidden" name="level" value={lvl} />
+            <button
+              type="submit"
+              disabled={policy.reply_frequency === lvl}
+              style={{ cursor: policy.reply_frequency === lvl ? 'default' : 'pointer', fontWeight: policy.reply_frequency === lvl ? 700 : 400 }}
+            >
+              {FREQ_LABEL[lvl]}
+              {policy.reply_frequency === lvl ? ' ✓' : ''}
+            </button>
+          </form>
+        ))}
+      </div>
 
       <h2 style={{ marginTop: '2rem' }}>Muted topics</h2>
       <p style={{ color: '#888', fontSize: 14 }}>Baumy won&rsquo;t chime in on messages mentioning these words.</p>
@@ -78,32 +72,33 @@ export default async function SettingsPage() {
           {policy.muted_topics.map((t) => (
             <li key={t} style={{ marginBottom: 4 }}>
               {t}{' '}
-              {isOwner && (
-                <form action={removeMutedTopicAction} style={{ display: 'inline' }}>
-                  <input type="hidden" name="topic" value={t} />
-                  <button type="submit" style={{ cursor: 'pointer', fontSize: 12, color: '#c33' }}>
-                    remove
-                  </button>
-                </form>
-              )}
+              <form action={removeMutedTopicAction} style={{ display: 'inline' }}>
+                <input type="hidden" name="topic" value={t} />
+                <button type="submit" style={{ cursor: 'pointer', fontSize: 12, color: '#c33' }}>
+                  remove
+                </button>
+              </form>
             </li>
           ))}
         </ul>
       )}
-      {isOwner && (
-        <form action={addMutedTopicAction} style={{ marginTop: '0.5rem' }}>
-          <input name="topic" placeholder="topic to mute" style={{ padding: '0.3rem' }} />{' '}
-          <button type="submit" style={{ cursor: 'pointer' }}>
-            Mute
-          </button>
-        </form>
-      )}
+      <form action={addMutedTopicAction} style={{ marginTop: '0.5rem' }}>
+        <input name="topic" placeholder="topic to mute" style={{ padding: '0.3rem' }} />{' '}
+        <button type="submit" style={{ cursor: 'pointer' }}>
+          Mute
+        </button>
+      </form>
 
-      <h2 style={{ marginTop: '2rem' }}>Spend</h2>
-      <p style={{ color: '#888', fontSize: 14 }}>
-        Usage metering isn&rsquo;t recording yet, so there&rsquo;s nothing to show — spend views land once it&rsquo;s
-        wired. Daily cap: <code>${dailySpendCapUsd().toFixed(2)}</code>.
-      </p>
+      {/* Inference spend is infrastructure: owner-only and not shown to housemates at all. */}
+      {isOwner && (
+        <>
+          <h2 style={{ marginTop: '2rem' }}>Spend</h2>
+          <p style={{ color: '#888', fontSize: 14 }}>
+            Usage metering isn&rsquo;t recording yet, so there&rsquo;s nothing to show — spend views land once it&rsquo;s
+            wired. Daily cap: <code>${dailySpendCapUsd().toFixed(2)}</code>.
+          </p>
+        </>
+      )}
     </main>
   )
 }
