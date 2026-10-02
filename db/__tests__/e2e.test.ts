@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { and, eq } from 'drizzle-orm'
 import { startPgHarness, dockerAvailable, type PgHarness } from './pg-harness'
-import { entities, facts, memoryItems, reminders } from '@/db/schema'
+import { auditLog, entities, facts, memoryItems, reminders } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
 import { reconcileFact, reconcileFactDetailed, currentFactsForQuery, upcomingDatedFacts, eventGroupFacts, ensureSpeakerEntity } from '@/lib/memory/facts'
@@ -15,7 +15,7 @@ import { createReminder, claimReminder, markSent, releaseReminder, scheduleNextO
 import { lookupEdit, withdrawForEdit, settleEditedFacts } from '@/lib/turn/edit'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
-import { loadResponsePolicy, setGlobalEnabled } from '@/lib/policy'
+import { loadResponsePolicy, setGlobalEnabled, addMutedTopic, removeMutedTopic } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
 import { embedSync } from '@/lib/ai/embed'
 import { withSimulatedTime } from '@/lib/core/clock'
@@ -201,6 +201,18 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     await setGlobalEnabled(h.db, false)
     expect((await loadResponsePolicy(h.db)).global_enabled).toBe(false)
     await setGlobalEnabled(h.db, true)
+  })
+
+  it('policy field patches + their audit row run as one statement on real Postgres (PR #13 review)', async () => {
+    await addMutedTopic(h.db, 'Politics', { actor: '7', action: 'policy.muted_topic.add', metadata: { topic: 'Politics' } })
+    await addMutedTopic(h.db, 'politics')
+    await removeMutedTopic(h.db, 'nothing-there')
+    expect((await loadResponsePolicy(h.db)).muted_topics).toEqual(['politics'])
+    const audits = await h.db.select().from(auditLog).where(eq(auditLog.action, 'policy.muted_topic.add'))
+    expect(audits).toHaveLength(1)
+    expect(audits[0]).toMatchObject({ actorMemberId: '7', metadata: { topic: 'Politics' } })
+    await removeMutedTopic(h.db, 'politics')
+    expect((await loadResponsePolicy(h.db)).muted_topics).toEqual([])
   })
 
   it('forget on request: purge redacts the fact + surgically scrubs the message (real SQL)', async () => {

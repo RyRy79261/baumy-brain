@@ -1,4 +1,5 @@
 import { type Database } from '@/db/client'
+import { sql, type SQL } from 'drizzle-orm'
 import { houseConfig } from '@/db/schema'
 import { now as clockNow } from '@/lib/core/clock'
 
@@ -62,58 +63,84 @@ export async function loadResponsePolicy(db: Database): Promise<ResponsePolicy> 
   }
 }
 
-// Set how readily Baumy volunteers replies (owner-only, via the dashboard). Upserts the singleton.
-export async function setReplyFrequency(db: Database, level: ReplyFrequency): Promise<void> {
+// Who changed the policy: the audit row is written by the SAME statement as the change.
+export interface PolicyAudit {
+  actor: string
+  action: string
+  metadata?: Record<string, unknown> | null
+}
+
+// The stored document as it is in the conflicting singleton row (only valid inside DO UPDATE).
+const STORED = sql`coalesce(baumy_house_config.response_policy, '{}'::jsonb)`
+
+// One atomic statement per change. The singleton is patched field by field — never a read-modify-
+// write of the whole document, so two housemates changing different settings at once can't undo
+// each other. When audited, the audit row is inserted from that same statement, so a policy change
+// never lands without its row (neon-http has no transactions; one statement is atomic).
+async function patchPolicy(db: Database, merged: SQL, seed: Record<string, unknown>, audit?: PolicyAudit): Promise<void> {
+  const upsert = sql`INSERT INTO baumy_house_config (id, response_policy)
+    VALUES (true, ${JSON.stringify({ ...DEFAULT, ...seed })}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET response_policy = ${merged}, updated_at = ${clockNow().toISOString()}::timestamptz`
+  if (!audit) {
+    await db.execute(upsert)
+    return
+  }
+  const metadata = audit.metadata == null ? sql`NULL` : sql`${JSON.stringify(audit.metadata)}::jsonb`
+  await db.execute(sql`WITH changed AS (${upsert} RETURNING id)
+    INSERT INTO baumy_audit_log (action, actor_member_id, target, metadata)
+    SELECT ${audit.action}, ${audit.actor}, NULL, ${metadata} FROM changed`)
+}
+
+// Merge top-level keys into the stored document.
+function setFields(db: Database, fields: Partial<ResponsePolicy>, audit?: PolicyAudit): Promise<void> {
+  return patchPolicy(db, sql`${STORED} || ${JSON.stringify(fields)}::jsonb`, fields, audit)
+}
+
+// Set how readily Baumy volunteers replies (any dashboard member). Upserts the singleton.
+export async function setReplyFrequency(db: Database, level: ReplyFrequency, audit?: PolicyAudit): Promise<void> {
   if (!(level in REPLY_FLOORS)) return // fail closed on a bad value
-  const current = await loadResponsePolicy(db)
-  const next = { ...current, reply_frequency: level }
-  await db
-    .insert(houseConfig)
-    .values({ id: true, responsePolicy: next })
-    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: clockNow() } })
+  await setFields(db, { reply_frequency: level }, audit)
 }
 
-// Set how often the reminder/event digest fires (owner-only, via the dashboard). Upserts the singleton.
-export async function setReminderFrequency(db: Database, level: ReminderFrequency): Promise<void> {
+// Set how often the reminder/event digest fires (via the dashboard). Upserts the singleton.
+export async function setReminderFrequency(db: Database, level: ReminderFrequency, audit?: PolicyAudit): Promise<void> {
   if (level !== 'once' && level !== 'twice') return // fail closed on a bad value
-  const current = await loadResponsePolicy(db)
-  const next = { ...current, reminder_frequency: level }
-  await db
-    .insert(houseConfig)
-    .values({ id: true, responsePolicy: next })
-    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: clockNow() } })
+  await setFields(db, { reminder_frequency: level }, audit)
 }
 
-// Owner kill-switch. Upserts so it works whether or not the singleton is seeded.
-export async function setGlobalEnabled(db: Database, enabled: boolean): Promise<void> {
-  const current = await loadResponsePolicy(db)
-  const next = { ...current, global_enabled: enabled }
-  await db
-    .insert(houseConfig)
-    .values({ id: true, responsePolicy: next })
-    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: clockNow() } })
+// The pause switch. Upserts so it works whether or not the singleton is seeded.
+export async function setGlobalEnabled(db: Database, enabled: boolean, audit?: PolicyAudit): Promise<void> {
+  await setFields(db, { global_enabled: enabled }, audit)
 }
 
-// Replace the muted-topic list (owner-only, via the dashboard). Upserts the singleton.
-export async function setMutedTopics(db: Database, topics: string[]): Promise<void> {
-  const current = await loadResponsePolicy(db)
-  const next = { ...current, muted_topics: topics }
-  await db
-    .insert(houseConfig)
-    .values({ id: true, responsePolicy: next })
-    .onConflictDoUpdate({ target: houseConfig.id, set: { responsePolicy: next, updatedAt: clockNow() } })
+// Replace the muted-topic list. Upserts the singleton.
+export async function setMutedTopics(db: Database, topics: string[], audit?: PolicyAudit): Promise<void> {
+  await setFields(db, { muted_topics: topics }, audit)
 }
 
-export async function addMutedTopic(db: Database, topic: string): Promise<void> {
+const STORED_TOPICS = sql`coalesce(${STORED} -> 'muted_topics', '[]'::jsonb)`
+
+// Add one topic in place (lowercased, de-duped by the database, not by a stale read).
+export async function addMutedTopic(db: Database, topic: string, audit?: PolicyAudit): Promise<void> {
   const t = topic.trim().toLowerCase()
   if (!t) return
-  const p = await loadResponsePolicy(db)
-  if (!p.muted_topics.includes(t)) await setMutedTopics(db, [...p.muted_topics, t])
+  const one = JSON.stringify([t])
+  await patchPolicy(
+    db,
+    sql`jsonb_set(${STORED}, '{muted_topics}', CASE WHEN ${STORED_TOPICS} @> ${one}::jsonb THEN ${STORED_TOPICS} ELSE ${STORED_TOPICS} || ${one}::jsonb END)`,
+    { muted_topics: [t] },
+    audit,
+  )
 }
 
-export async function removeMutedTopic(db: Database, topic: string): Promise<void> {
-  const p = await loadResponsePolicy(db)
-  await setMutedTopics(db, p.muted_topics.filter((t) => t !== topic))
+// Remove one topic in place.
+export async function removeMutedTopic(db: Database, topic: string, audit?: PolicyAudit): Promise<void> {
+  await patchPolicy(
+    db,
+    sql`jsonb_set(${STORED}, '{muted_topics}', coalesce((SELECT jsonb_agg(e) FROM jsonb_array_elements(${STORED_TOPICS}) AS e WHERE e <> ${JSON.stringify(topic)}::jsonb), '[]'::jsonb))`,
+    { muted_topics: [] },
+    audit,
+  )
 }
 
 // Deterministic reply filter layered on top of the write-gate: the paused

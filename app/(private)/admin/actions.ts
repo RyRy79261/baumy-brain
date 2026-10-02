@@ -4,7 +4,6 @@ import { revalidatePath } from 'next/cache'
 import { createHttpDb } from '@/db/client'
 import { requireAdmin } from '@/lib/auth/require-admin'
 import { applyMemberAccess } from '@/lib/identity/access'
-import { writeAudit } from '@/lib/audit'
 import { cancelReminder } from '@/lib/reminders/store'
 import { setGlobalEnabled, addMutedTopic, removeMutedTopic, setReplyFrequency, REPLY_FLOORS, type ReplyFrequency } from '@/lib/policy'
 
@@ -35,10 +34,8 @@ export async function cancelReminderAction(formData: FormData): Promise<void> {
 export async function setPolicyEnabledAction(formData: FormData): Promise<void> {
   const session = await requireAdmin()
   if (!session) return
-  const db = createHttpDb()
   const enabled = formData.get('enabled') === 'on'
-  await setGlobalEnabled(db, enabled)
-  await writeAudit(db, 'policy.enabled', session.uid, null, { enabled })
+  await setGlobalEnabled(createHttpDb(), enabled, { actor: session.uid, action: 'policy.enabled', metadata: { enabled } })
   revalidatePath('/admin/settings')
 }
 
@@ -47,9 +44,7 @@ export async function setReplyFrequencyAction(formData: FormData): Promise<void>
   if (!session) return
   const level = String(formData.get('level') ?? '') as ReplyFrequency
   if (level in REPLY_FLOORS) {
-    const db = createHttpDb()
-    await setReplyFrequency(db, level)
-    await writeAudit(db, 'policy.reply_frequency', session.uid, null, { level })
+    await setReplyFrequency(createHttpDb(), level, { actor: session.uid, action: 'policy.reply_frequency', metadata: { level } })
   }
   revalidatePath('/admin/settings')
 }
@@ -59,9 +54,7 @@ export async function addMutedTopicAction(formData: FormData): Promise<void> {
   if (!session) return
   const topic = String(formData.get('topic') ?? '')
   if (topic.trim()) {
-    const db = createHttpDb()
-    await addMutedTopic(db, topic)
-    await writeAudit(db, 'policy.muted_topic.add', session.uid, null, { topic: topic.trim() })
+    await addMutedTopic(createHttpDb(), topic, { actor: session.uid, action: 'policy.muted_topic.add', metadata: { topic: topic.trim() } })
   }
   revalidatePath('/admin/settings')
 }
@@ -71,9 +64,7 @@ export async function removeMutedTopicAction(formData: FormData): Promise<void> 
   if (!session) return
   const topic = String(formData.get('topic') ?? '')
   if (topic) {
-    const db = createHttpDb()
-    await removeMutedTopic(db, topic)
-    await writeAudit(db, 'policy.muted_topic.remove', session.uid, null, { topic })
+    await removeMutedTopic(createHttpDb(), topic, { actor: session.uid, action: 'policy.muted_topic.remove', metadata: { topic } })
   }
   revalidatePath('/admin/settings')
 }
