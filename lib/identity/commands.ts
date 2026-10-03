@@ -3,7 +3,6 @@ import { createHttpDb, type Database } from '@/db/client'
 import { loadRoster, setDmChatId } from '@/lib/identity/roster'
 import { issueLoginToken } from '@/lib/auth/tokens'
 import { setGlobalEnabled } from '@/lib/policy'
-import { writeAudit } from '@/lib/audit'
 import { sendDmLoginResponse } from '@/lib/telegram/client'
 import { START_MESSAGE } from '@/lib/ai/prompts'
 import type { Origin } from '@/lib/core/origin'
@@ -67,8 +66,7 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
     // need a second tap). Owner-authenticated + audited; untrusted text can never
     // reach this. Always reversible with the opposite command / the dashboard.
     const enable = cmd === '/resume'
-    await setGlobalEnabled(db, enable)
-    await writeAudit(db, enable ? 'policy.resume' : 'policy.pause', String(origin.fromId), null, null)
+    await setGlobalEnabled(db, enable, { actor: String(origin.fromId), action: enable ? 'policy.resume' : 'policy.pause' })
     await sendDmLoginResponse(
       origin.chatId,
       enable ? '▶️ Baumy resumed — replies and reminders are back on.' : '⏸️ Baumy paused — it will stay quiet (still captures memory) until /resume.',
