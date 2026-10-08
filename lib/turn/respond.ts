@@ -7,7 +7,8 @@ import { sendToHouse, sendConfirmCard, reactToMessage } from '@/lib/telegram/cli
 import { gatherGrounding } from './grounding'
 import { forgetExplanation } from './actions'
 import type { Plan } from './plan'
-import type { TurnContext } from './context'
+import { fmtWhen, type TurnContext, type TurnOutcome } from './context'
+import { describeRecurrence } from '@/lib/reminders/recurrence'
 import type { TurnStep } from './step'
 
 // Carry out the planner's decision (lib/turn/plan.ts). The planner chose the SHAPE; this sends it:
@@ -82,9 +83,12 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
   if (plan.kind === 'olympics') {
     const ol = ctx.outcome.olympics
     if (!ol) return
+    // The same message may also have asked for reminders (a calendar add + "remind the group the day
+    // before"): one send per inbound, so what they did rides on the card / line, deterministically.
+    const also = reminderLines(ctx.outcome, ctx.tz)
     await once('olympics-send', async () => {
-      if (ol.proposed) await sendConfirmCard(ctx.chatId, ol.card, ol.pendingId, threadId, ctx.messageId)
-      else await say(ol.text)
+      if (ol.proposed) await sendConfirmCard(ctx.chatId, [ol.card, ...also].join('\n\n'), ol.pendingId, threadId, ctx.messageId)
+      else await say([ol.text, ...also].join('\n\n'))
     })
     return
   }
@@ -156,3 +160,17 @@ export function forwardAck(kept: boolean): string {
 
 /** What the conversation window keeps of a forget confirm card (the card itself names the target). */
 export const FORGET_CARD_WINDOW_TEXT = '[a confirm card for forgetting something — details withheld]'
+
+/** What the turn's reminders did, as deterministic lines — for a send that is not the reply model's
+ *  (an Olympics card): a set one with its resolved day + time, a failed one with why and what to say. */
+export function reminderLines(o: TurnOutcome, tz: string): string[] {
+  return (o.reminders ?? (o.reminder ? [o.reminder] : [])).map((r) => {
+    if (r.status === 'set') {
+      const repeat = describeRecurrence(r.recurrence)
+      return `⏰ Reminder set: ${fmtWhen(r.fireAt, tz)}${repeat ? ` (repeats ${repeat})` : ''} — ${r.content}`
+    }
+    if (r.status === 'paused') return "⏸️ No reminder set — I'm paused in the house group."
+    if (r.status === 'past') return `⚠️ No reminder set — that time is already past (${r.content}). Tell me a new time.`
+    return `⚠️ No reminder set — I couldn't work out when (${r.content}). Tell me a time.`
+  })
+}

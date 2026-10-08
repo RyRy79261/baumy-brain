@@ -1,7 +1,7 @@
 import { describe } from 'vitest'
 import { scenario, say, advance, expectPrompt, expectNoPrompt, expectWords, expectNoWords, expectSilent, expectReaction, check } from './dsl'
 import { memoryLines } from './fake-model'
-import { statement, question, chatter, fact } from './shapes'
+import { statement, question, request, chatter, fact } from './shapes'
 import { HOUSE } from './house'
 
 // Baumy's voice after phase 1 (docs/spec/chat-understanding-v2.md §1–§4): who it talks to, in which
@@ -132,6 +132,39 @@ describe('scenario: voice — addressing, modes and discretion', () => {
       say('Ryan', 'when is the plumber coming?', { mention: true }),
       expectPrompt('reply', (c) => memoryLines(c.prompt).length === 0, "Marco's old question is not MEMORY"),
       expectWords({ judge: 'Says nobody has mentioned when the plumber is coming. Must not claim Thursday.' }),
+    ],
+  })
+
+  scenario('a reminder only ASKED for in the chat is never promised as scheduled (#15)', {
+    people: HOUSE,
+    startAt: start,
+    fixtures: {
+      triage: (t) => (/ping the group/i.test(t) ? request({ asksBaumy: true }) : question({ asksBaumy: true })),
+      reply: (t) =>
+        /what reminders/i.test(t)
+          ? "None yet — I haven't set any reminder for the bed. Ask me with a time and I'll set it 🐈"
+          : 'Sure — tell me when the bed comes and when to ping 🐈',
+    },
+    steps: [
+      say('Ryan', 'can you ping the group the day before the bed comes?', { dm: true }),
+      say('Ryan', 'what reminders will you send to the group?', { dm: true }),
+      expectPrompt('reply', /THIS TURN: nothing was stored, scheduled or changed/, 'the reply is told nothing is scheduled'),
+      expectPrompt('reply', (c) => c.system.includes('Never say a reminder or ping is scheduled or will be sent unless THIS TURN or MEMORY shows it'), 'the system rule against promised reminders'),
+      expectWords({ judge: 'Says no reminder is set for the bed (none scheduled). Must NOT list any reminder or ping as scheduled or going to be sent.' }),
+    ],
+  })
+
+  scenario('"please log an issue for this" points to /bug and claims nothing (#16)', {
+    people: HOUSE,
+    startAt: start,
+    fixtures: {
+      triage: () => request({ asksBaumy: true }),
+      reply: () => "I can't file that myself — send /bug and what went wrong, and I'll turn it into an issue 🐈",
+    },
+    steps: [
+      say('Ryan', 'if you are able to log an issue for this please do', { dm: true }),
+      expectPrompt('reply', (c) => c.system.includes('send /bug <what went wrong>'), 'the system rule: issues go through /bug'),
+      expectWords({ judge: 'Tells them to use /bug to report it. Must NOT say the issue was logged, filed, noted or passed on, and must NOT describe what any logs show.' }),
     ],
   })
 })

@@ -129,6 +129,20 @@ export async function appendBaumySend(db: Database, s: BaumySend): Promise<void>
 }
 
 /**
+ * Rewrite one of Baumy's own windowed sends after Telegram edited it (a confirm card resolved by a tap:
+ * "Tap to confirm" → "✅ Added to the house calendar"). Without this the window kept the card's
+ * original text, so the next turn read the action as still waiting for a tap. Baumy rows only — a
+ * housemate's text is never rewritten from here. An unwindowed send (a sign-in card) matches nothing.
+ */
+export async function replaceBaumySend(db: Database, k: { chatId: string; messageId: number }, text: string): Promise<void> {
+  if (!text.trim()) return
+  await db
+    .update(messages)
+    .set({ textRedacted: redactForWindow(text) })
+    .where(and(eq(messages.chatId, k.chatId), eq(messages.messageId, String(k.messageId)), eq(messages.authorKind, 'baumy')))
+}
+
+/**
  * The last WINDOW_TURNS turns of ONE chat (and, in a forum, the same topic) within 48h before `at`,
  * newest last — excluding the message being answered (it is the MESSAGE line). Keyed on the chat as
  * well as the scope, so a member's DM never shows up in the group's window, nor the group's in a DM.
