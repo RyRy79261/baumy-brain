@@ -114,7 +114,7 @@ export function listOpProposed(
 // all. Like a reminder it needs a DIRECTED ask (A9) — "I took the trash out" said to the group is not
 // a request to log it — and an authenticated author (never relayed content, never an anonymous admin:
 // Olympics maps the Telegram id to a member). An explicit reminder / cancellation / forget and a
-// shopping-list op win. A paused GROUP stays silent; a DM still works (pause is lane-scoped). Writes
+// shopping-list op win (a calendar add alongside a reminder runs too — both were asked for). A paused GROUP stays silent; a DM still works (pause is lane-scoped). Writes
 // are only PROPOSED here: the confirm tap is what sends them (functions/callback.ts).
 export function olympicsOpProposed(
   origin: Origin,
@@ -125,7 +125,10 @@ export function olympicsOpProposed(
 ): boolean {
   if (origin.lane === 'ignore' || !authorId) return false
   if (!v.olympics || v.olympics === 'none') return false
-  if (v.intent === 'reminder' || v.intent === 'cancel_reminder' || v.intent === 'forget') return false
+  // A reminder ask wins — except a calendar add asked in the SAME message ("put the bed delivery on the
+  // calendar and remind the group the day before"): both run, the event as a card, the reminders as set.
+  if (v.intent === 'reminder' && v.olympics !== 'calendar_add') return false
+  if (v.intent === 'cancel_reminder' || v.intent === 'forget') return false
   if (v.list != null && v.list !== 'none') return false
   if (!(directed || origin.lane === 'member_dm')) return false
   if (isRelayed(origin.memoryTrust) || origin.anonymous) return false

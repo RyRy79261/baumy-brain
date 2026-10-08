@@ -3,7 +3,7 @@ import type { ReactionTypeEmoji } from 'grammy/types'
 import { record, isCapturing, sandboxChatMember } from '@/lib/telegram/outbox'
 import { now } from '@/lib/core/clock'
 import { createHttpDb } from '@/db/client'
-import { appendBaumySend, type BaumySend } from '@/lib/turn/window'
+import { appendBaumySend, replaceBaumySend, type BaumySend } from '@/lib/turn/window'
 import type { PlannerEmoji } from '@/lib/turn/emoji'
 
 // grammY typed Bot API client (transport layer). grammY owns the Bot API surface
@@ -127,10 +127,16 @@ export async function answerCallback(callbackId: string, text?: string): Promise
   await api().answerCallbackQuery(callbackId, text ? { text } : {})
 }
 
-// Rewrite a card after a decision, dropping the keyboard (no reply_markup).
+// Rewrite a card after a decision, dropping the keyboard (no reply_markup). The window row follows
+// the edit (best-effort, after it — like toWindow), so the next turn reads what the card says NOW
+// ("✅ Added…"), never the stale "confirm?" that made Baumy insist a done tap was still pending.
 export async function editMessageText(chatId: string, messageId: number, text: string): Promise<void> {
-  if (record({ kind: 'edit', chatId, text, meta: String(messageId) }, now())) return
-  await api().editMessageText(chatId, messageId, text, NO_PREVIEW)
+  if (!record({ kind: 'edit', chatId, text, meta: String(messageId) }, now())) await api().editMessageText(chatId, messageId, text, NO_PREVIEW)
+  try {
+    await replaceBaumySend(createHttpDb(), { chatId, messageId }, text)
+  } catch (err) {
+    console.warn('[baumy/telegram] conversation-window edit failed:', err instanceof Error ? err.message : err)
+  }
 }
 
 // Best-effort emoji reaction — Baumy's lightweight ack (👀 seen, ✍ noted it, 👎 no idea) on a

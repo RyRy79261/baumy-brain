@@ -207,11 +207,17 @@ describe('olympicsOpProposed — Baumy Olympics ops run AS the authenticated sen
     expect(olympicsOpProposed(ignored(), v('calendar_add'), true, '5', true)).toBe(false)
   })
   it("an explicit reminder / cancellation / forget, or a list op, wins; 'none' is nothing", () => {
-    expect(olympicsOpProposed(memberDm(), v('calendar_add', 'reminder'), true, '200', true)).toBe(false)
+    expect(olympicsOpProposed(memberDm(), v('chore_log', 'reminder'), true, '200', true)).toBe(false)
+    expect(olympicsOpProposed(memberDm(), v('standings', 'reminder'), true, '200', true)).toBe(false)
     expect(olympicsOpProposed(memberDm(), v('calendar_add', 'forget'), true, '200', true)).toBe(false)
     expect(olympicsOpProposed(memberDm(), v('calendar_add', 'cancel_reminder'), true, '200', true)).toBe(false)
     expect(olympicsOpProposed(memberDm(), v('chore_log', 'statement', 'checkoff'), true, '200', true)).toBe(false)
     expect(olympicsOpProposed(memberDm(), v('none'), true, '200', true)).toBe(false)
+  })
+  it('a calendar add asked alongside a reminder runs too (both were asked for)', () => {
+    expect(olympicsOpProposed(memberDm(), v('calendar_add', 'reminder'), true, '200', true)).toBe(true)
+    expect(olympicsOpProposed(houseOrigin(), v('calendar_add', 'reminder'), true, '100', true)).toBe(true)
+    expect(olympicsOpProposed(houseOrigin(), v('calendar_add', 'reminder'), false, '100', true)).toBe(false)
   })
   it('a paused group goes silent; a DM still works', () => {
     expect(olympicsOpProposed(houseOrigin(), v('standings', 'question'), true, '100', false)).toBe(false)
