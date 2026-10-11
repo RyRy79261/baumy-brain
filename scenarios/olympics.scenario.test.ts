@@ -1,6 +1,6 @@
 import { describe } from 'vitest'
-import { scenario, say, tap, expectWords, expectNoWords, expectNoPrompt, check, type Run } from './dsl'
-import { request, statement, question, chatter } from './shapes'
+import { scenario, say, tap, expectWords, expectNoWords, expectNoPrompt, expectPrompt, expectReminder, check, type Run } from './dsl'
+import { request, statement, question, chatter, reminderAsk, reminder } from './shapes'
 import { HOUSE } from './house'
 import { FakeOlympics } from './olympics-fake'
 
@@ -256,6 +256,30 @@ describe('scenario: Baumy Olympics from Telegram', () => {
       say('Ryan', TRASH),
       expectNoWords(),
       check('Olympics was never called', (r, e) => e(fake(r).calls).toHaveLength(0)),
+    ],
+  })
+
+  scenario('a calendar add + a group reminder in ONE message: both happen; after the tap Baumy knows it is done', {
+    people: HOUSE,
+    startAt: start,
+    fixtures: {
+      triage: (t: string) => (/bed/i.test(t) ? reminderAsk({ asksBaumy: true, olympics: 'calendar_add' }) : question({ asksBaumy: true })),
+      olympics: (t: string) => (/bed/i.test(t) ? { op: 'calendar_add' as const, title: 'Bed delivery', date: '2026-10-08', startTime: '', endTime: '' } : null),
+      reminder: (t: string) =>
+        /bed/i.test(t) ? reminder({ content: 'the bed arrives tomorrow', when: 'wednesday 9am', fireAt: '2026-10-07T09:00', forWhom: 'house' }) : null,
+      reply: () => "Yes — the bed delivery is on the calendar for Thu 8 Oct 🐈",
+    },
+    olympics: house,
+    steps: [
+      say('Ryan', 'put the bed delivery on the calendar for Thursday the 8th and remind the group wednesday 9am', { dm: true }),
+      expectWords({ contains: ['Add this to the house calendar?', 'Bed delivery', '⏰ Reminder set: Wed 7 Oct 09:00 — the bed arrives tomorrow'] }),
+      expectReminder({ content: /bed arrives/, at: '2026-10-07 09:00', status: 'scheduled', count: 1 }),
+      tap('Ryan'),
+      check('the tap added the event', (r, e) => e(fake(r).events).toHaveLength(1)),
+      say('Ryan', 'did that go through?', { dm: true }),
+      expectPrompt('reply', /✅ Added to the house calendar: Bed delivery/, 'the window shows the card as the tap left it'),
+      expectPrompt('reply', (c) => !c.prompt.includes('Tap to confirm'), 'the stale "confirm?" card text is gone from RECENT CHAT'),
+      expectWords({ judge: 'Says yes, the bed delivery is on the house calendar. Must NOT say it is still waiting for a confirm tap.' }),
     ],
   })
 })
