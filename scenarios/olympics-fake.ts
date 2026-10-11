@@ -125,7 +125,10 @@ export class FakeOlympics {
             name: c.name,
             archived: false,
             basePoints: c.basePoints,
-            state: cooling ? 'cooldown' : 'due',
+            cooldownMinutes: c.cooldownMinutes ?? null,
+            lastDoneAt: last ? new Date(last.at).toISOString() : null,
+            // Olympics' shape since its decision 35: ready | cooldown | unavailable, no due date.
+            state: cooling ? 'cooldown' : 'ready',
             availableAt: cooling ? new Date(until).toISOString() : null,
             next: { totalPts: c.basePoints, streakLen: 1 },
           }

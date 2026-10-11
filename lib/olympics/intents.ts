@@ -205,12 +205,16 @@ export function renderEvents(d: ListEventsData, tz: string): string {
 
 // ── Chores ──────────────────────────────────────────────────────────────────────────────────────
 
+// The fields of Olympics' `list_chores` that Baumy reads. A chore has no due date (Olympics SPEC
+// §12 decision 35, 2026-10-11): it is `ready` to log, `cooldown` until `availableAt`, or
+// `unavailable` (no points set, or archived). There is no `dueAt`, `urgent` or `intervalMinutes`.
 export interface ChoreView {
   id: string
   name: string
   archived: boolean
   basePoints: number | null
-  state: 'due' | 'cooldown' | 'done' | 'unavailable'
+  state: 'ready' | 'cooldown' | 'unavailable'
+  /** While cooling down: when it can be logged again (ISO 8601). */
   availableAt: string | null
   next: { totalPts: number; streakLen: number } | null
 }
@@ -285,6 +289,8 @@ export function choreBlocked(c: ChoreView, now: Date, tz: string): string | null
     const when = at?.isValid ? (at.hasSame(DateTime.fromJSDate(now).setZone(tz), 'day') ? at.toFormat('HH:mm') : at.toFormat('ccc d LLL HH:mm')) : 'a bit later'
     return `${c.name} was done recently — it can be logged again from ${when}. 🧹`
   }
+  // Only `ready` gets a card: a state this code does not know is not guessed to be loggable.
+  if (c.state !== 'ready') return `${c.name} can't be logged right now — have a look in Olympics. 🧹`
   return null
 }
 
