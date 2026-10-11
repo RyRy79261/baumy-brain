@@ -283,6 +283,7 @@ export function choreAmbiguous(chores: ChoreView[]): string {
 
 /** A chore that cannot be logged right now (so no card is shown), or null when it can. */
 export function choreBlocked(c: ChoreView, now: Date, tz: string): string | null {
+  if (c.archived) return `${c.name} is archived in Olympics, so it can't be logged. 🧹`
   if (c.state === 'unavailable' || c.basePoints == null) return `${c.name} can't be scored yet — it has no points set in Olympics. 🧹`
   if (c.state === 'cooldown') {
     const at = c.availableAt ? DateTime.fromISO(c.availableAt).setZone(tz) : null

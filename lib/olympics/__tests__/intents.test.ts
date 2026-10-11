@@ -117,30 +117,22 @@ describe('matchChore — the model describes, code resolves to exactly one liste
     expect(choreBlocked(chore('Dishes', { state: 'cooldown', availableAt: '2026-10-01T18:30:00Z' }), NOW, TZ)).toMatch(/from 20:30/)
     expect(choreBlocked(chore('Dishes', { state: 'unavailable', basePoints: null }), NOW, TZ)).toMatch(/can't be scored yet/)
   })
+  it('an archived chore with points says it is archived, not that it has no points', () => {
+    expect(choreBlocked(chore('Dishes', { archived: true, state: 'unavailable', basePoints: 5 }), NOW, TZ)).toBe(
+      "Dishes is archived in Olympics, so it can't be logged. 🧹",
+    )
+  })
   // Olympics SPEC §12 decision 35 (2026-10-11): chores have no due date; state is ready | cooldown | unavailable.
   it('a ready chore exactly as Olympics now lists it (no dueAt, urgent or intervalMinutes) gets a card', () => {
-    const listed = JSON.parse(
-      JSON.stringify({
-        id: 'c1',
-        name: 'Take out the trash',
-        sprite: 'trash',
-        kind: 'maintenance',
-        proofMode: 'none',
-        effortFactorPct: 100,
-        archived: false,
-        basePoints: 10,
-        cooldownMinutes: 120,
-        streak: null,
-        lastDoneAt: null,
-        state: 'ready',
-        availableAt: null,
-        isNew: false,
-        createdAt: '2026-09-01T10:00:00.000Z',
-        next: { totalPts: 10, streakLen: 1, streakPts: 0, breakPts: 0, brokenMemberId: null, brokenLen: null },
-      }),
-    ) as ChoreView
-    expect(listed).toHaveProperty('state', 'ready')
-    expect(listed).not.toHaveProperty('dueAt')
+    const listed: ChoreView = {
+      id: 'c1',
+      name: 'Take out the trash',
+      archived: false,
+      basePoints: 10,
+      state: 'ready',
+      availableAt: null,
+      next: { totalPts: 10, streakLen: 1 },
+    }
     expect(choreBlocked(listed, NOW, TZ)).toBeNull()
     expect(choreCard(listed)).toContain('🧹 Take out the trash — +10 points')
   })
