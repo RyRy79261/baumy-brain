@@ -1,0 +1,132 @@
+name: Delete Neon branch for closed PR
+
+# Copied as-is from camp-404 (.github/workflows/neon-pr-cleanup.yml, at
+# 8d6edf56); only this provenance note is added. Needs the repository
+# secrets NEON_API_KEY and NEON_PROJECT_ID (SETUP.md).
+#
+# When a PR closes (merged or not), delete the Neon branch that was
+# created for its preview deployment. The Vercel Neon integration names
+# preview branches after the git head branch:
+#
+#   preview/<head-branch-name>
+#
+# The integration uses the git branch name as it is, with only `preview/` in
+# front (Neon's docs), so this deletes the branch whose name is EXACTLY
+# `preview/<head-branch-name>`. It used to match by prefix, which also took
+# other open PRs' databases: closing `feat/prints` deleted the database of
+# `feat/prints-round`. A name that does not match exactly is left alone and
+# listed in the log, so a leak is visible and nothing else is ever deleted.
+
+# `pull_request_target`, not `pull_request`, so the repository's secrets are
+# there when Dependabot opens or closes the PR. Under `pull_request` a
+# Dependabot close gets the empty Dependabot secret store, NEON_API_KEY is
+# empty, and the job fails before it deletes anything: the branch leaks, and
+# once the project reaches its branch limit, Vercel previews fail in about a
+# second. `pull_request_target` is safe here because this job checks out no PR
+# code. It reads event data and calls the Neon API.
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  delete-neon-branch:
+    # PRs from forks don't get secrets injected, so the empty-secret guard
+    # below would always fail. Short-circuit such runs at the job level.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete Neon branch for this PR
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${NEON_API_KEY:-}" ] || [ -z "${NEON_PROJECT_ID:-}" ]; then
+            echo "::error::NEON_API_KEY or NEON_PROJECT_ID is empty"
+            exit 1
+          fi
+
+          target="preview/${HEAD_REF}"
+          echo "Looking up the Neon branch named: $target"
+
+          api="https://console.neon.tech/api/v2/projects/${NEON_PROJECT_ID}"
+          auth="Authorization: Bearer ${NEON_API_KEY}"
+
+          # Bounded timeouts + bounded retries: transient hangs/5xx get
+          # retried, but client errors are not (avoids --retry-all-errors).
+          curl_opts=(--connect-timeout 10 --max-time 30 --retry 3 --retry-delay 5)
+
+          # Page through ALL branches (cursor-based, following
+          # pagination.next). One unpaginated call can miss the target on a
+          # project with many branches: a false "nothing to delete" and a
+          # leak, on exactly the project where the leak matters.
+          all_branches='[]'
+          cursor=""
+          for page in $(seq 1 100); do
+            url="$api/branches?limit=10000"
+            if [ -n "$cursor" ]; then
+              url="${url}&cursor=${cursor}"
+            fi
+            resp=$(curl -sS "${curl_opts[@]}" -w "\n%{http_code}" -H "$auth" -H "Accept: application/json" "$url")
+            body=$(printf '%s' "$resp" | sed '$d')
+            status=$(printf '%s' "$resp" | tail -n1)
+            if [ "$status" != "200" ]; then
+              echo "::error::Neon API returned HTTP $status when listing branches"
+              echo "$body"
+              exit 1
+            fi
+            all_branches=$(jq -n --argjson acc "$all_branches" --argjson page "$body" '$acc + ($page.branches // [])')
+            next=$(printf '%s' "$body" | jq -r '.pagination.next // empty')
+            # Stop at the last page, and never loop on a cursor that repeats.
+            if [ -z "$next" ] || [ "$next" = "$cursor" ]; then
+              break
+            fi
+            cursor="$next"
+          done
+
+          # Find the non-primary branch whose name is exactly this PR's. The
+          # primary branch is production and is never a candidate. jq emits
+          # one "id<TAB>name" record per match.
+          targets=$(printf '%s' "$all_branches" | jq -r --arg target "$target" '
+            .[]
+            | select(.primary != true)
+            | select(.name == $target)
+            | [.id, .name] | @tsv
+          ')
+
+          if [ -z "$targets" ]; then
+            echo "No Neon branch named $target for PR #${PR_NUMBER}. Nothing to delete."
+            # Say what is near, without touching it, so a renamed or slugged
+            # branch shows up here instead of leaking quietly.
+            near=$(printf '%s' "$all_branches" | jq -r --arg target "$target" '
+              .[]
+              | select(.primary != true)
+              | select(.name | startswith($target))
+              | .name
+            ')
+            if [ -n "$near" ]; then
+              echo "Branches that start with that name, left alone:"
+              printf '%s\n' "$near"
+            fi
+            exit 0
+          fi
+
+          # One match in practice; the loop is defensive in case two branches
+          # ever share the exact name.
+          while IFS=$'\t' read -r id name; do
+            [ -z "$id" ] && continue
+            echo "Deleting branch: $name (id=$id)"
+            del_status=$(curl -sS "${curl_opts[@]}" -o /dev/null -w "%{http_code}" -X DELETE -H "$auth" "$api/branches/$id")
+            if [ "$del_status" = "200" ] || [ "$del_status" = "202" ]; then
+              echo "  ok"
+            else
+              echo "::error::Failed to delete $name (HTTP $del_status)"
+              exit 1
+            fi
+          done <<< "$targets"
