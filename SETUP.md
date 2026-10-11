@@ -112,6 +112,7 @@ DATABASE_URL_UNPOOLED='<neon-direct-url>' pnpm db:migrate
 1. Import the GitHub repo (`RyRy79261/baumy-brain`) into Vercel.
 2. Add the env vars from step 5.
 3. Add the **Inngest integration** (Vercel Marketplace) → it injects the Inngest keys and auto-syncs functions on deploy. *(Optionally add the Neon integration to auto-inject the DB URLs + get branch-per-preview.)*
+   With the Neon integration on, each preview gets a Neon branch `preview/<git-branch>`. `.github/workflows/neon-pr-cleanup.yml` deletes it when the PR closes. Add the GitHub repository secrets `NEON_API_KEY` (Neon → Account settings → API keys) and `NEON_PROJECT_ID` (Neon → project → Settings), or the job fails and the branches pile up until previews hit Neon's branch limit.
 4. Deploy. Note your production URL → set `BAUMY_PUBLIC_URL` to it and redeploy.
 
 ## 8. Register the Telegram webhook
