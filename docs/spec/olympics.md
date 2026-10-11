@@ -30,10 +30,19 @@ season scoreboard. Baumy reaches them through Olympics' action endpoint; the con
      slots (a day `YYYY-MM-DD`, not past, ≤ 2 years out; no time → all day; no end → one hour; an end
      before the start runs past midnight) — anything else is a clarifying line, never a card;
    - `chore_log`: `list_chores` (unlinked → "link first"), the description is resolved to exactly
-     one unarchived chore by its words (`matchChore`; none / ambiguous → the list of chores), and a
-     chore cooling down or without points gets a line, not a card;
+     one unarchived chore by its words (`matchChore`; none / ambiguous → the list of chores), and
+     only a `ready` chore gets a card (`choreBlocked`): one cooling down gets "it can be logged
+     again from <availableAt>", an archived one gets "is archived", one without points gets
+     "can't be scored yet", and any other state gets "can't be logged right now" — never a guess
+     that it is loggable;
    - a write is stored as a `pending_actions` row, type `olympics.action`, holding the exact Olympics
      input and an `Idempotency-Key` (`brain-<uuid>`) minted now, `requested_by` = the asker.
+
+   [CORRECTION 2026-10-11] Chores have no due date (Olympics SPEC §12 decision 35,
+   RyRy79261/baumy-olympics#189 / #190): `list_chores` no longer returns `dueAt`, `urgent` or
+   `intervalMinutes`, and `state` is `ready | cooldown | unavailable` (was
+   `due | cooldown | done | unavailable`). Baumy never reads or says "due", "overdue" or "urgent"
+   about a chore. The cooldown still blocks logging, and Olympics answers `COOLDOWN` too.
 5. **Voice** (`plan.ts` row `olympics`): the card or the line, deterministic — never the reply model.
    The message is not captured as a memory note (the calendar / chore log is its home).
 6. **Tap** (`functions/callback.ts`): only the asker's tap resolves an `olympics.action`

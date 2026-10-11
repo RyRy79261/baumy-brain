@@ -1,4 +1,4 @@
-<!-- A copy of baumy-olympics docs/brain-operations-spec.md (commit 934f840, RyRy79261/baumy-olympics#103 on top of main 83fb9cb). Olympics generates it from its action registry with `pnpm brain:spec`; do not edit it here. To refresh it, copy the file again from baumy-olympics main. -->
+<!-- A copy of baumy-olympics docs/brain-operations-spec.md (commit a912ef82, RyRy79261/baumy-olympics#190, on main ed1f0113). Olympics generates it from its action registry with `pnpm brain:spec`; do not edit it here. To refresh it, copy the file again from baumy-olympics main. -->
 
 # Baumy Olympics: operations spec for Baumy (baumy-brain)
 
@@ -17,7 +17,9 @@ they are exactly what the endpoint enforces. The short contract is
    (`delete_event`, `delete_note`). A `confirm` or `destructive` action always
    waits for the asker's inline confirm button; a read, or a `safe` write for
    the asker, does not (section 3). Admin actions stay in the Olympics app only
-   (SPEC §12 decision 10).
+   (SPEC §12 decision 10), except adding and editing a bounty and recording
+   money in the pot (amended 2026-09-29, issue #107): those only for a linked
+   admin, in their own name, behind the confirm button.
 2. **Baumy can act on behalf of housemates.** With `X-Baumy-On-Behalf-Of` the
    action runs as that housemate; the audit trail records both the housemate
    and the linked member who asked. Any write on someone's behalf needs the
@@ -57,7 +59,7 @@ plus `issues` (with `INVALID_INPUT`), `retryAt` (with `COOLDOWN`) or
 | ------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | 400    | `INVALID_INPUT`                 | A bug on our side or a bad slot: `issues` says which field or header. Ask the person to rephrase.             |
 | 401    | `UNAUTHENTICATED`               | Olympics is not (correctly) connected. "Baumy Olympics isn't connected to me yet."                            |
-| 403    | `FORBIDDEN`                     | Not allowed for this member (for example confirming your own claim). Show `message`.                          |
+| 403    | `FORBIDDEN`                     | Not allowed for this member (for example disputing your own claim). Show `message`.                           |
 | 403    | `SURFACE_FORBIDDEN`             | Not Baumy's to do (admin or app-only). "That's done in the Olympics app."                                     |
 | 403    | `TELEGRAM_NOT_LINKED`           | "Link your Telegram first: Olympics → Settings → Link Telegram, then tap Start here (or DM me /link <code>)." |
 | 404    | `UNKNOWN_ACTION`, `NOT_FOUND`   | No such action, or the thing (event, note, reminder, claim, housemate) is gone. Show `message`.               |
@@ -146,13 +148,17 @@ waiting on Sam?": send `X-Baumy-On-Behalf-Of: <Sam's member id>`.
   at once, and the record says truthfully who logged it. On-behalf would
   claim Jo logged it herself.
 - **Never for someone's own word** (403 `FORBIDDEN`, before any confirm
-  card): the claim events `confirm_completion`, `dispute_completion`,
-  `undo_completion`, `withdraw_dispute` and `concede_completion`
-  (`own_word_only` in the tool list). The member has to say it themself, or
-  the honesty layer (nobody confirms their own claim) would mean nothing.
+  card): the claim events `dispute_completion`, `undo_completion`,
+  `withdraw_dispute` and `concede_completion` (`own_word_only` in the tool
+  list). The member has to say it themself, or the honesty layer (nobody
+  disputes in someone else's name) would mean nothing.
   Tell the asker the housemate has to do it. Notes, reminders, calendar
   events and the rest do work on a housemate's behalf.
-- Admin actions stay unavailable, on anyone's behalf.
+- Admin actions stay unavailable, on anyone's behalf. The three admin writes
+  brain gets (`create_bounty`, `update_bounty`, `add_pot_contribution`) run
+  only for a linked admin in their own name (`admin_only` in the tool list):
+  a member gets 403 `FORBIDDEN`, and `X-Baumy-On-Behalf-Of` is refused with
+  403 "Admin changes can't be made on someone's behalf."
 - To turn a name into a member id, read the roster: `list_reminders` answers
   `members` (id, name) for every active member; `get_standings` lists them
   with their points. Match the name to exactly one member, or ask.
@@ -160,14 +166,18 @@ waiting on Sam?": send `X-Baumy-On-Behalf-Of: <Sam's member id>`.
 ## 5. The household, as Olympics models it
 
 - **Members.** Each housemate is a member with a display name, a colour and a
-  16-bit character. One or more are admins; admin work happens in the app.
+  gallery character, if picked. One or more are admins; admin work happens in the app,
+  except adding or editing a bounty and recording pot money, which an admin
+  may ask Baumy for.
   Nobody is hard-coded: always read names from Olympics.
 - **Bounties are chores.** Each chore has a `kind`: `consumable` (buy or
   refill: toilet paper, dish soap) or `maintenance` (clean or fix: trash,
-  bathroom). It has base points and a cooldown. `urgent` means due now or
-  falling due before midnight in Berlin; `isNew` means added in the last 3
-  days. Logging a chore inside its cooldown is refused (`COOLDOWN`, with
-  `retryAt`).
+  bathroom). It has base points and a cooldown. A chore has no due date and
+  is never urgent or overdue: its `state` is `ready` (it can be logged now)
+  or `cooldown` (done recently; it can be logged again from `availableAt`),
+  or `unavailable` (no points set, or archived). `isNew` means added in the
+  last 3 days. Logging a chore inside its cooldown is refused (`COOLDOWN`,
+  with `retryAt`).
 - **Streaks and break bonuses.** Each chore has one streak holder. Doing a
   chore again while you hold it grows the streak (+25% of base per step, no
   cap). Doing a chore someone else holds **breaks** their streak: you get a
@@ -177,15 +187,15 @@ waiting on Sam?": send `X-Baumy-On-Behalf-Of: <Sam's member id>`.
 - **Points and the pot.** Season points are scored completions plus approved
   adjustments. The pot is a savings ledger in euro cents; the leader at the
   end of the season takes it all (money moves at the bank, not in Olympics).
-- **Confirmations and the 24-hour dispute window.** Logging for someone else
-  verifies the claim at once. A self-claim is `pending`: it counts
-  provisionally and finalizes 24 hours after logging, unless someone confirms
-  it sooner or disputes it inside those 24 hours (a dispute needs a reason). A
-  disputed claim scores nothing; it is voided when the window ends unless the
-  doer attached a photo in time. The disputer can withdraw, the doer can
-  concede, and the logger can undo within 10 minutes. Some chores are in
-  partner mode: a self-claim counts only once someone confirms it (72 hours,
-  then it is voided).
+- **The 24-hour dispute window.** There is no confirming chores (owner,
+  2026-10-02): a self-claim is `pending`, counts at once and finalizes 24
+  hours after logging, unless someone disputes it inside those 24 hours (a
+  dispute needs a reason). Logging for someone else verifies the claim at
+  once. A disputed claim scores nothing; it is voided when the window ends
+  unless the doer attached a photo in time. The disputer can withdraw, the
+  doer can concede, and the logger can undo within 10 minutes.
+  `get_activity` is the activity log: what happened in the house, newest
+  first.
 - **Weights.** Every week Olympics suggests new points for chores from how
   often they are really done. An admin schedules a change; any other member
   may veto it before it applies (next Monday, 00:00 Berlin, at least 48 hours
@@ -214,8 +224,9 @@ waiting on Sam?": send `X-Baumy-On-Behalf-Of: <Sam's member id>`.
 | [`deny_login`](#deny_login-deny-a-sign-in) | write | safe | never | no, only themself |
 | [`list_chores`](#list_chores-list-chores) | read | safe | never | yes |
 | [`log_completion`](#log_completion-log-a-chore) | write | confirm | always | no, use `doneBy` |
-| [`get_pending_confirmations`](#get_pending_confirmations-claims-waiting-for-an-ok) | read | safe | never | yes |
-| [`confirm_completion`](#confirm_completion-confirm-a-chore) | write | confirm | always | no, only themself |
+| [`create_bounty`](#create_bounty-add-a-bounty) | write | confirm | always | no, only themself |
+| [`update_bounty`](#update_bounty-edit-a-bounty) | write | confirm | always | no, only themself |
+| [`get_activity`](#get_activity-activity-log) | read | safe | never | yes |
 | [`dispute_completion`](#dispute_completion-dispute-a-chore) | write | confirm | always | no, only themself |
 | [`undo_completion`](#undo_completion-undo-a-logged-chore) | write | confirm | always | no, only themself |
 | [`withdraw_dispute`](#withdraw_dispute-withdraw-a-dispute) | write | confirm | always | no, only themself |
@@ -223,8 +234,10 @@ waiting on Sam?": send `X-Baumy-On-Behalf-Of: <Sam's member id>`.
 | [`get_standings`](#get_standings-get-the-standings) | read | safe | never | yes |
 | [`get_streaks`](#get_streaks-get-the-streaks) | read | safe | never | yes |
 | [`get_pot`](#get_pot-get-the-pot) | read | safe | never | yes |
+| [`add_pot_contribution`](#add_pot_contribution-add-to-the-pot) | write | confirm | always | no, only themself |
 | [`get_weights`](#get_weights-weights) | read | safe | never | yes |
 | [`veto_weight`](#veto_weight-veto-a-weight-change) | write | confirm | always | yes |
+| [`get_points_history`](#get_points_history-points-history) | read | safe | never | yes |
 | [`list_events`](#list_events-calendar) | read | safe | never | yes |
 | [`create_event`](#create_event-add-a-calendar-event) | write | confirm | always | yes |
 | [`update_event`](#update_event-change-a-calendar-event) | write | confirm | always | yes |
@@ -373,11 +386,11 @@ Approves a 'Sign in with Baumy' request with the number the member tapped in the
 }
 ```
 
-**Returns** (`data`): `outcome`: `approved` (the browser signs in now) or `blocked` (that was not the number on the screen, so the sign-in was refused and Sign in with Baumy is off for this member for 15 minutes); `device`, e.g. `Chrome on macOS`.
+**Returns** (`data`): `outcome`: `approved` (the browser signs in now) or `blocked` (that was not the number on the screen, so the sign-in was refused and Sign in with Baumy is off for this member for 15 minutes); `device`, e.g. `Chrome on macOS`; `purpose`: `sign_in`, or `step_up` when the DM was a "Confirm it's you" request (`purpose: "step_up"` in the login-approval call): the member is already signed in on that device and is confirming a sensitive change there (issue #135). Approving one signs nobody in.
 
 **Its errors:** `NOT_FOUND` (404), `INVALID_STATE` (422). Every call can also get the endpoint's codes (above).
 
-**Say back:** Edit the DM, dropping the buttons. approved: "✅ Signed in on <device>." blocked: "🚫 That wasn't the number on the screen, so I blocked this sign-in. If it wasn't you, nothing happened; sign in with your password if it was." NOT_FOUND or INVALID_STATE: show `message`.
+**Say back:** Edit the DM, dropping the buttons. approved: "✅ Signed in on <device>." (`step_up`: "✅ Confirmed it's you on <device>.") blocked: "🚫 That wasn't the number on the screen, so I blocked this sign-in. If it wasn't you, nothing happened; sign in with your password if it was." (`step_up`: "🚫 That wasn't the number on the screen, so I didn't confirm it.") NOT_FOUND or INVALID_STATE: show `message`.
 
 ### `deny_login`: Deny a sign-in
 
@@ -419,15 +432,15 @@ Denies a 'Sign in with Baumy' request: the member tapped Deny.
 }
 ```
 
-**Returns** (`data`): `outcome`: `denied` (Sign in with Baumy is then off for this member for 15 minutes); `device`.
+**Returns** (`data`): `outcome`: `denied` (Sign in with Baumy is then off for this member for 15 minutes); `device`; `purpose` (`sign_in` or `step_up`, as for approve_login).
 
 **Its errors:** `NOT_FOUND` (404), `INVALID_STATE` (422). Every call can also get the endpoint's codes (above).
 
-**Say back:** Edit the DM, dropping the buttons: "✖️ Denied the sign-in on <device>." NOT_FOUND or INVALID_STATE: show `message`.
+**Say back:** Edit the DM, dropping the buttons: "✖️ Denied the sign-in on <device>." (`step_up`: "✖️ Didn't confirm it on <device>.") NOT_FOUND or INVALID_STATE: show `message`.
 
 ### `list_chores`: List chores
 
-Lists the bounties (chores): what is due, urgent or new, and what each would score now.
+Lists the bounties (chores): which are ready to log, which are cooling down and until when, which are new, and what each would score now.
 
 | | |
 | --- | --- |
@@ -440,12 +453,12 @@ Lists the bounties (chores): what is due, urgent or new, and what each would sco
 
 **When to use it.** To answer "what needs doing?", and to turn a chore someone names into its `choreId` before log_completion. Match the words to exactly one chore; if none or several match, list them and ask.
 
-**Tool description** (the registry's, verbatim): Lists the household's chores with their ids, kind (consumable: buy or refill; maintenance: clean or fix), base points, cooldown, who holds each chore's streak this season and how long it is, whether each is due, cooling down (with availableAt) or done for now, `urgent` (due now or falling due before midnight in Berlin), `isNew` (added in the last 3 days), `createdAt`, and `next`: what logging it right now would score for you (total points, streak length, break bonus). Times are ISO 8601 in UTC; the household lives in Europe/Berlin. Archived chores are left out unless includeArchived is true.
+**Tool description** (the registry's, verbatim): Lists the household's chores with their ids, kind (consumable: buy or refill; maintenance: clean or fix), base points, cooldown, who holds each chore's streak this season and how long it is, its `state`: ready (it can be logged now), cooldown (done recently; it can be logged again from availableAt) or unavailable (no points set, or archived); chores have no due date. Also `isNew` (added in the last 3 days), `createdAt`, and `next`: what logging it right now would score for you (total points, streak length, break bonus). Times are ISO 8601 in UTC; the household lives in Europe/Berlin. Archived chores are left out unless includeArchived is true.
 
 **Examples.**
 
 - "what needs doing?" → `list_chores {}`
-- "what's urgent?" → `list_chores {} (keep `urgent: true`)`
+- "what can I do right now?" → `list_chores {} (keep `state: "ready"`)`
 
 **Input** (JSON Schema of the body):
 
@@ -462,11 +475,11 @@ Lists the bounties (chores): what is due, urgent or new, and what each would sco
 }
 ```
 
-**Returns** (`data`): `chores`: each one's `id`, `name`, `kind` (consumable or maintenance), `basePoints`, `cooldownMinutes`, `state` (due, cooling down with `availableAt`, or done for now), `urgent`, `isNew`, `streak` (holder and length) and `next` (what logging it now would score the asker).
+**Returns** (`data`): `chores`: each one's `id`, `name`, `kind` (consumable or maintenance), `basePoints`, `cooldownMinutes`, `state` (`ready`; `cooldown`, with `availableAt`, when it can be logged again; or `unavailable`), `isNew`, `streak` (holder and length) and `next` (what logging it now would score the asker). There is no due date, `dueAt` or `urgent`: never call a chore due, late or overdue.
 
 **Its errors:** none of its own. Every call can also get the endpoint's codes (above).
 
-**Say back:** Urgent ones first, then due, then the rest; say points as "+N". Times in Berlin time.
+**Say back:** Ready ones first, then those cooling down ("again from <time>"); say points as "+N". Times in Berlin time.
 
 ### `log_completion`: Log a chore
 
@@ -476,7 +489,7 @@ Logs that someone did a chore, and scores it.
 | --- | --- |
 | Kind | `write` |
 | Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
-| Who may | any linked member; logging for someone else (`doneBy`) vouches for them, which brain may do as the asker (on the kiosk it would need a PIN). |
+| Who may | any linked member |
 | On a housemate's behalf | no (400): name the housemate in `doneBy` instead |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
@@ -527,15 +540,190 @@ Logs that someone did a chore, and scores it.
 }
 ```
 
-**Returns** (`data`): `completionId`, `choreName`, `doneBy`/`doneByName`, `status`, `counted` (false while a partner-mode claim waits for someone to confirm), `totalPts`, `streakLen`, and a break (`breakPts`, `brokenMemberName`, `brokenLen`) if one happened.
+**Returns** (`data`): `completionId`, `choreName`, `doneBy`/`doneByName`, `status`, `totalPts`, `streakLen`, and a break (`breakPts`, `brokenMemberName`, `brokenLen`) if one happened.
 
 **Its errors:** `COOLDOWN` (422), `FUTURE` (422), `BACKDATE_TOO_FAR` (422), `OUT_OF_ORDER` (422), `SEASON_CLOSED` (422), `PHOTO_REQUIRED` (422), `ARCHIVED_CHORE` (422), `NO_RULE_VERSION` (422), `NOT_FOUND` (404). Every call can also get the endpoint's codes (above).
 
-**Say back:** "Logged <choreName> for <doneByName>: +<totalPts> (streak <streakLen>)", plus "and broke <brokenMemberName>'s streak of <brokenLen> for +<breakPts>" when there was a break, or "it counts once someone confirms it" when `counted` is false. On COOLDOWN say when it can be logged again (`retryAt`, in Berlin time). On PHOTO_REQUIRED: "that one needs a photo, log it in the app".
+**Say back:** "Logged <choreName> for <doneByName>: +<totalPts> (streak <streakLen>)", plus "and broke <brokenMemberName>'s streak of <brokenLen> for +<breakPts>" when there was a break. On COOLDOWN say when it can be logged again (`retryAt`, in Berlin time). On PHOTO_REQUIRED: "that one needs a photo, log it in the app".
 
-### `get_pending_confirmations`: Claims waiting for an OK
+### `create_bounty`: Add a bounty
 
-Lists chore claims still waiting to settle, and what the asker may do to each.
+Adds a bounty (a chore that scores points) to the board, as an admin.
+
+| | |
+| --- | --- |
+| Kind | `write` |
+| Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
+| Who may | a linked admin, in their own name only (a member gets 403 `FORBIDDEN`) |
+| On a housemate's behalf | no (403 `FORBIDDEN`): an admin change is only ever made in the admin's own name |
+| `Idempotency-Key` | required; the same key again replays |
+| Rate limit | 30 per Telegram user and 120 per IP in a minute |
+
+**When to use it.** Only when an admin asks for a new bounty. A non-admin gets FORBIDDEN: say an admin adds it. Give a name and points; the rest has defaults (maintenance, 24 h cooldown, no photo, counts at once).
+
+**Tool description** (the registry's, verbatim): Adds a bounty (a household chore that scores points) to the board: its name, kind (consumable or maintenance, default maintenance), base points, cooldown in hours (default 24), proof mode (default none) and effort factor (default 100). Only a household admin may do this, in their own name.
+
+**Examples.**
+
+- "add a bounty for recycling paper, 15 points" → `create_bounty {"name": "Recycling (paper)", "points": 15}`
+- "new bounty: buy dish soap, 10 points" → `create_bounty {"name": "Dish soap", "kind": "consumable", "points": 10}`
+
+**Input** (JSON Schema of the body):
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "What the bounty is called, e.g. Recycling."
+    },
+    "kind": {
+      "default": "maintenance",
+      "type": "string",
+      "enum": [
+        "consumable",
+        "maintenance"
+      ],
+      "description": "consumable (something to buy or refill) or maintenance (something to clean or fix)."
+    },
+    "points": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200,
+      "description": "Base points for doing it, 1 to 200."
+    },
+    "cooldownHours": {
+      "default": 24,
+      "type": "number",
+      "minimum": 0,
+      "maximum": 720,
+      "description": "Hours before it scores again (0 to 720)."
+    },
+    "proofMode": {
+      "default": "none",
+      "type": "string",
+      "enum": [
+        "none",
+        "optional",
+        "required"
+      ],
+      "description": "Whether a proof photo is none, optional or required."
+    },
+    "effortFactorPct": {
+      "default": 100,
+      "type": "integer",
+      "minimum": 50,
+      "maximum": 300,
+      "description": "The effort factor in percent (100 is normal)."
+    }
+  },
+  "required": [
+    "name",
+    "points"
+  ],
+  "additionalProperties": false
+}
+```
+
+**Returns** (`data`): `choreId` and `name` of the new bounty.
+
+**Its errors:** `CHORE_NAME_TAKEN` (422). Every call can also get the endpoint's codes (above).
+
+**Say back:** "Added the <name> bounty: <points> points."
+
+### `update_bounty`: Edit a bounty
+
+Edits a bounty as an admin: only the fields sent change. A new weight counts from now.
+
+| | |
+| --- | --- |
+| Kind | `write` |
+| Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
+| Who may | a linked admin, in their own name only (a member gets 403 `FORBIDDEN`) |
+| On a housemate's behalf | no (403 `FORBIDDEN`): an admin change is only ever made in the admin's own name |
+| `Idempotency-Key` | required; the same key again replays |
+| Rate limit | 30 per Telegram user and 120 per IP in a minute |
+
+**When to use it.** Only when an admin asks to change a bounty's name, kind, points, cooldown or photo rule. Find the `choreId` with list_chores. Archiving is done in the app.
+
+**Tool description** (the registry's, verbatim): Edits a bounty on the board (choreId from the context or list_chores): only the fields given change (name, kind, base points, cooldown in hours, proof mode, effort factor). A new weight counts from now; nothing already scored changes. Only a household admin may do this, in their own name.
+
+**Examples.**
+
+- "make the trash worth 30 points" → `update_bounty {"choreId": "<from list_chores>", "points": 30}`
+
+**Input** (JSON Schema of the body):
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "choreId": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "What the bounty is called, e.g. Recycling."
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "consumable",
+        "maintenance"
+      ],
+      "description": "consumable (something to buy or refill) or maintenance (something to clean or fix)."
+    },
+    "points": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200,
+      "description": "Base points for doing it, 1 to 200."
+    },
+    "cooldownHours": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 720,
+      "description": "Hours before it scores again (0 to 720)."
+    },
+    "proofMode": {
+      "type": "string",
+      "enum": [
+        "none",
+        "optional",
+        "required"
+      ],
+      "description": "Whether a proof photo is none, optional or required."
+    },
+    "effortFactorPct": {
+      "type": "integer",
+      "minimum": 50,
+      "maximum": 300,
+      "description": "The effort factor in percent (100 is normal)."
+    }
+  },
+  "required": [
+    "choreId"
+  ],
+  "additionalProperties": false
+}
+```
+
+**Returns** (`data`): `choreId`, `name` and `weightChanged`.
+
+**Its errors:** `NOT_FOUND` (404), `ARCHIVED_CHORE` (422), `CHORE_NAME_TAKEN` (422). Every call can also get the endpoint's codes (above).
+
+**Say back:** "Done: <name> is now <what changed>."
+
+### `get_activity`: Activity log
+
+The activity log: what happened in the house in the last 30 days, newest first (chores logged, disputes, bounties added or edited, points changes scheduled, applied or vetoed), and what the asker may do to each.
 
 | | |
 | --- | --- |
@@ -546,50 +734,14 @@ Lists chore claims still waiting to settle, and what the asker may do to each.
 | `Idempotency-Key` | not needed |
 | Rate limit | 120 per Telegram user and 300 per IP in a minute |
 
-**When to use it.** For "anything waiting on me?", and to find the `completionId` before confirming, disputing, undoing, withdrawing or conceding. Use `can` to offer only what is allowed.
+**When to use it.** For "what happened today?" or "what did Sam log?", and to find the `completionId` before disputing, undoing, withdrawing or conceding. Use `can` (and `canVeto` on a scheduled points change) to offer only what is allowed. There is no confirming: a self-claim counts at once and settles when its 24-hour window ends.
 
-**Tool description** (the registry's, verbatim): Lists the household's chore claims still waiting to settle (pending or disputed), with who did and logged each, when its dispute window ends, any open dispute and its reason, and `can`: which of confirm, dispute, withdraw, concede, undo and attach a photo you may do to it now. `needsYou` marks the ones waiting on you. `recent` lists your own claims of the last 7 days that have settled (finalized, confirmed or voided). Times are ISO 8601 in UTC.
-
-**Examples.**
-
-- "anything I need to confirm?" → `get_pending_confirmations {}`
-
-**Input** (JSON Schema of the body):
-
-```json
-{
-  "type": "object",
-  "properties": {},
-  "additionalProperties": false
-}
-```
-
-**Returns** (`data`): `claims` (pending or disputed; who did and logged each, when its window ends, any dispute and reason, `can`, `needsYou`) and `recent` (the asker's own claims settled in the last 7 days).
-
-**Its errors:** none of its own. Every call can also get the endpoint's codes (above).
-
-**Say back:** The ones with `needsYou` first, each as "<doer> did <chore> <when>" with the actions `can` allows.
-
-### `confirm_completion`: Confirm a chore
-
-Confirms a housemate's self-claimed chore, which verifies it.
-
-| | |
-| --- | --- |
-| Kind | `write` |
-| Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
-| Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
-| On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
-| `Idempotency-Key` | required; the same key again replays |
-| Rate limit | 30 per Telegram user and 120 per IP in a minute |
-
-**When to use it.** When someone says a housemate really did it ("yes, Sam did clean the bathroom"). Not for your own claims, and never on behalf of someone else (403): if Jo says Sam did it, Jo confirms it herself.
-
-**Tool description** (the registry's, verbatim): Confirms a housemate's self-claimed chore that is waiting for an OK (pending), which verifies it. You cannot confirm your own. Refused with INVALID_STATE once it has finalized, expired or been disputed. Get ids from get_pending_confirmations.
+**Tool description** (the registry's, verbatim): Lists what happened in the house in the last 30 days, newest first: chores logged (who did and logged each, its status, points, any open dispute and when its dispute window ends), disputes raised and how they ended, bounties added or edited, and points changes scheduled, applied or vetoed. A chore entry's `can` says which of dispute, withdraw, concede, undo and attach a photo you may do to it now; a scheduled points change's `canVeto` says whether you may veto it. Times are ISO 8601 in UTC.
 
 **Examples.**
 
-- "yes Sam did the bathroom" → `confirm_completion {"completionId": "<from get_pending_confirmations>"}`
+- "what's been happening?" → `get_activity {}`
+- "anything I can still dispute?" → `get_activity {}`
 
 **Input** (JSON Schema of the body):
 
@@ -597,25 +749,22 @@ Confirms a housemate's self-claimed chore, which verifies it.
 {
   "type": "object",
   "properties": {
-    "completionId": {
-      "type": "string",
-      "format": "uuid",
-      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-      "description": "The completion's id, from get_pending_confirmations."
+    "limit": {
+      "description": "At most this many entries (default 50).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
     }
   },
-  "required": [
-    "completionId"
-  ],
   "additionalProperties": false
 }
 ```
 
-**Returns** (`data`): `completionId`, `choreName`, the new `status` and `finalizesAt`.
+**Returns** (`data`): `entries`, newest first, each with a `kind`: `chore` (who did and logged it, `status`, `totalPts`, any open `dispute`, `windowEndsAt` and `can`), `dispute` (who raised it, the reason and its `resolution`), `bounty` (`added` or `edited`, and by whom) or `points` (`scheduled`, `applied` or `vetoed`, from and to, and `canVeto`); and `days`, how far back it reads.
 
-**Its errors:** `NOT_FOUND` (404), `INVALID_STATE` (422), `WINDOW_CLOSED` (422), `FORBIDDEN` (403). Every call can also get the endpoint's codes (above).
+**Its errors:** none of its own. Every call can also get the endpoint's codes (above).
 
-**Say back:** "Confirmed <doer>'s <choreName>."
+**Say back:** A few lines, newest first, each as "<who> <did what> <when>", with the actions `can` allows on the ones the asker may act on.
 
 ### `dispute_completion`: Dispute a chore
 
@@ -630,9 +779,9 @@ Disputes a housemate's self-claimed chore inside its 24-hour window, with a reas
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 
-**When to use it.** When someone says a claimed chore was not done. Ask for the reason if none was given; it is required.
+**When to use it.** When someone says a claimed chore was not done. Ask for the reason if none was given; it is required. Find the `completionId` with get_activity.
 
-**Tool description** (the registry's, verbatim): Disputes a housemate's self-claimed chore within 24 hours of logging, with a reason. While disputed it scores nothing but still blocks the chore's cooldown. It is voided when the window ends unless the doer attached a photo in time. You cannot dispute your own.
+**Tool description** (the registry's, verbatim): Disputes a housemate's self-claimed chore within 24 hours of logging, with a reason. Get ids from get_activity. While disputed it scores nothing but still blocks the chore's cooldown. It is voided when the window ends unless the doer attached a photo in time. You cannot dispute your own.
 
 **Examples.**
 
@@ -648,7 +797,7 @@ Disputes a housemate's self-claimed chore inside its 24-hour window, with a reas
       "type": "string",
       "format": "uuid",
       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-      "description": "The completion's id, from get_pending_confirmations."
+      "description": "The completion's id, from get_activity."
     },
     "reason": {
       "type": "string",
@@ -679,7 +828,7 @@ Undoes a chore the asker logged, within 10 minutes of logging it.
 | --- | --- |
 | Kind | `write` |
 | Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
-| Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
+| Who may | any linked member |
 | On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
@@ -702,7 +851,7 @@ Undoes a chore the asker logged, within 10 minutes of logging it.
       "type": "string",
       "format": "uuid",
       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-      "description": "The completion's id, from get_pending_confirmations."
+      "description": "The completion's id, from get_activity."
     }
   },
   "required": [
@@ -726,7 +875,7 @@ Withdraws a dispute the asker raised; the claim counts again.
 | --- | --- |
 | Kind | `write` |
 | Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
-| Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
+| Who may | any linked member |
 | On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
@@ -749,7 +898,7 @@ Withdraws a dispute the asker raised; the claim counts again.
       "type": "string",
       "format": "uuid",
       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-      "description": "The completion's id, from get_pending_confirmations."
+      "description": "The completion's id, from get_activity."
     }
   },
   "required": [
@@ -773,7 +922,7 @@ Concedes a dispute on the asker's own claim; it is voided.
 | --- | --- |
 | Kind | `write` |
 | Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
-| Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
+| Who may | any linked member |
 | On a housemate's behalf | no (403 `FORBIDDEN`): only the member themself may, since it is their own word; ask them to do it in the app or in Telegram |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
@@ -796,7 +945,7 @@ Concedes a dispute on the asker's own claim; it is voided.
       "type": "string",
       "format": "uuid",
       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-      "description": "The completion's id, from get_pending_confirmations."
+      "description": "The completion's id, from get_activity."
     }
   },
   "required": [
@@ -957,6 +1106,67 @@ The season's savings pot (a ledger; money moves at the bank).
 
 **Say back:** Amounts in euros ("€120.00"), and who would take it now, or that nobody leads outright.
 
+### `add_pot_contribution`: Add to the pot
+
+Records money paid into the season's pot (a ledger; the money moves at the bank).
+
+| | |
+| --- | --- |
+| Kind | `write` |
+| Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
+| Who may | a linked admin, in their own name only (a member gets 403 `FORBIDDEN`) |
+| On a housemate's behalf | no (403 `FORBIDDEN`): an admin change is only ever made in the admin's own name |
+| `Idempotency-Key` | required; the same key again replays |
+| Rate limit | 30 per Telegram user and 120 per IP in a minute |
+
+**When to use it.** Only when an admin says they (or a named housemate) paid into the pot. A non-admin gets FORBIDDEN: say an admin records it. Leave `month` out for this month; set `contributedBy` to a member id when someone else paid.
+
+**Tool description** (the registry's, verbatim): Records a monthly contribution to the season's savings pot: the amount in euros, the month (YYYY-MM, default: this month), who paid it (a member id, default: you) and an optional note. Only a household admin may do this, in their own name.
+
+**Examples.**
+
+- "put €20 in the pot" → `add_pot_contribution {"amount": "20"}`
+- "Anna paid 25 for August" → `add_pot_contribution {"amount": "25", "month": "2026-08", "contributedBy": "<Anna's member id>"}`
+
+**Input** (JSON Schema of the body):
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "month": {
+      "type": "string",
+      "pattern": "^\\d{4}-(0[1-9]|1[0-2])$"
+    },
+    "amount": {
+      "type": [
+        "string",
+        "number"
+      ]
+    },
+    "contributedBy": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    },
+    "note": {
+      "type": "string",
+      "maxLength": 200
+    }
+  },
+  "required": [
+    "amount"
+  ],
+  "additionalProperties": false
+}
+```
+
+**Returns** (`data`): `contributionId`, `month`, `amountCents`, `contributedBy`.
+
+**Its errors:** `NOT_FOUND` (404), `FUTURE` (422), `SEASON_CLOSED` (422). Every call can also get the endpoint's codes (above).
+
+**Say back:** "Added €<amount> to the pot for <month>."
+
 ### `get_weights`: Weights
 
 Each chore's points and cooldown, how often it is really done, and the weight changes scheduled for next Monday.
@@ -1045,6 +1255,49 @@ Vetoes a scheduled weight change before it applies. Only a member other than the
 
 **Say back:** "Vetoed. <chore> keeps its points."
 
+### `get_points_history`: Points history
+
+Every change to the bounties' points, newest first: who set or scheduled it, the points and cooldown before and after, the reason, when it applies, and whether it landed, is waiting, was vetoed (by whom, when) or was cancelled.
+
+| | |
+| --- | --- |
+| Kind | `read` |
+| Risk | `safe`: runs straight away, on anyone's behalf too |
+| Who may | any linked member |
+| On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` |
+| `Idempotency-Key` | not needed |
+| Rate limit | 120 per Telegram user and 300 per IP in a minute |
+
+**When to use it.** For "who changed the trash points?" or "why is the bathroom worth 50 now?". Give `choreId` (from list_chores) for one bounty; leave it out for all of them.
+
+**Tool description** (the registry's, verbatim): Lists every change to the bounties' points, newest first, or one bounty's: who made or scheduled it, the points and cooldown before and after, the reason, when it was proposed and when it applies, and whether it landed, is waiting, was vetoed (by whom, when) or was cancelled.
+
+**Examples.**
+
+- "who changed the bathroom points?" → `get_points_history {"choreId": "<from list_chores>"}`
+
+**Input** (JSON Schema of the body):
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "choreId": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    }
+  },
+  "additionalProperties": false
+}
+```
+
+**Returns** (`data`): `changes`, newest first: `choreName`, `source` (seed, manual, measured, admin), `proposedBy`, `proposedAt`, `fromPoints` → `toPoints` and the cooldowns in minutes, `reason`, `appliesAt`, `outcome` (landed, pending, vetoed, cancelled), `decidedBy` and `decidedAt`.
+
+**Its errors:** none of its own. Every call can also get the endpoint's codes (above).
+
+**Say back:** "<name> changed <chore> from <old> to <new> points on <Berlin date> (<reason>); <vetoer> vetoed it." One line per change, newest first.
+
 ### `list_events`: Calendar
 
 The house calendar between two Berlin days.
@@ -1060,7 +1313,7 @@ The house calendar between two Berlin days.
 
 **When to use it.** For "what's on this weekend?", and to find an `eventId` before changing or deleting an event.
 
-**Tool description** (the registry's, verbatim): Lists the house calendar's events between two Berlin days (inclusive; both default to today), soonest first, with each event's id, title, notes, place, whether it is all day, its first and last day, its Berlin start and end time (HH:MM) and who added it (a member id). Private events are left out.
+**Tool description** (the registry's, verbatim): Lists the house calendar's events between two Berlin days (inclusive; both default to today), soonest first, with each event's id, title, notes, place, whether it is all day, its first and last day, its Berlin start and end time (HH:MM), who added it and who it is for (member ids; null for the whole house). Private events are left out.
 
 **Examples.**
 
@@ -1085,7 +1338,7 @@ The house calendar between two Berlin days.
 }
 ```
 
-**Returns** (`data`): `events`: id, title, notes, place, all day or not, first and last day, Berlin start and end (HH:MM), who added it.
+**Returns** (`data`): `events`: id, title, notes, place, all day or not, first and last day, Berlin start and end (HH:MM), who added it (`addedBy`) and who it is for (`forMember`, null for the whole house), as member ids.
 
 **Its errors:** `INVALID_INPUT` (400), `NOT_CONFIGURED` (503), `UNAVAILABLE` (503). Every call can also get the endpoint's codes (above).
 
@@ -1105,9 +1358,9 @@ Adds an event to the house Google Calendar.
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 | Calls out | yes (Google or brain): may answer 503 `NOT_CONFIGURED` or `UNAVAILABLE` |
 
-**When to use it.** When someone asks to add something to the calendar. Resolve the day and time to Berlin `YYYY-MM-DD` and `HH:MM` first; no time means `all_day`.
+**When to use it.** When someone asks to add something to the calendar. Resolve the day and time to Berlin `YYYY-MM-DD` and `HH:MM` first; no time means `all_day`. Only when it is clearly for one housemate ("Anna's dentist"), send their member id (from get_standings) as `forMemberId`; otherwise leave it out, and it is for the whole house.
 
-**Tool description** (the registry's, verbatim): Adds an event to the house calendar. Dates are Berlin days (YYYY-MM-DD) and times Berlin wall-clock times (HH:MM, 24h); give startTime and endTime for a `timed` event, or kind `all_day`. endDate is the last day, inclusive, and defaults to date.
+**Tool description** (the registry's, verbatim): Adds an event to the house calendar. Dates are Berlin days (YYYY-MM-DD) and times Berlin wall-clock times (HH:MM, 24h); give startTime and endTime for a `timed` event, or kind `all_day`. endDate is the last day, inclusive, and defaults to date. forMemberId names the one member it is for; leave it out (or null) for the whole house.
 
 **Examples.**
 
@@ -1160,6 +1413,19 @@ Adds an event to the house Google Calendar.
       "description": "Timed events: the Berlin wall-clock end, HH:MM (24h), on endDate.",
       "type": "string",
       "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+    },
+    "forMemberId": {
+      "description": "Who it is for: one member's id, or null for the whole house. On create, left out is the whole house; on update, left out keeps who it is for.",
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -1173,7 +1439,7 @@ Adds an event to the house Google Calendar.
 
 **Returns** (`data`): `event`: the event as stored, with its `id`.
 
-**Its errors:** `NOT_CONFIGURED` (503), `UNAVAILABLE` (503). Every call can also get the endpoint's codes (above).
+**Its errors:** `INVALID_INPUT` (400), `NOT_CONFIGURED` (503), `UNAVAILABLE` (503). Every call can also get the endpoint's codes (above).
 
 **Say back:** "Added <title> on <day> <time>."
 
@@ -1191,9 +1457,9 @@ Changes a calendar event; every field is replaced.
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
 | Calls out | yes (Google or brain): may answer 503 `NOT_CONFIGURED` or `UNAVAILABLE` |
 
-**When to use it.** When someone moves or renames an event. Read it with list_events and send ALL its fields, changed and unchanged.
+**When to use it.** When someone moves or renames an event. Read it with list_events and send ALL its fields, changed and unchanged. Leave `forMemberId` out to keep who it is for; send a member id to change it, or null to make it the whole house's.
 
-**Tool description** (the registry's, verbatim): Changes an event on the house calendar: send its id (from list_events) and ALL of its fields as they should be, the same as for create_event.
+**Tool description** (the registry's, verbatim): Changes an event on the house calendar: send its id (from list_events) and ALL of its fields as they should be, the same as for create_event, except forMemberId: leave it out to keep who it is for, or null to make it the whole house's.
 
 **Examples.**
 
@@ -1250,6 +1516,19 @@ Changes a calendar event; every field is replaced.
       "description": "Timed events: the Berlin wall-clock end, HH:MM (24h), on endDate.",
       "type": "string",
       "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+    },
+    "forMemberId": {
+      "description": "Who it is for: one member's id, or null for the whole house. On create, left out is the whole house; on update, left out keeps who it is for.",
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -1264,7 +1543,7 @@ Changes a calendar event; every field is replaced.
 
 **Returns** (`data`): `event`: the event as it is now.
 
-**Its errors:** `NOT_FOUND` (404), `NOT_CONFIGURED` (503), `UNAVAILABLE` (503). Every call can also get the endpoint's codes (above).
+**Its errors:** `INVALID_INPUT` (400), `NOT_FOUND` (404), `NOT_CONFIGURED` (503), `UNAVAILABLE` (503). Every call can also get the endpoint's codes (above).
 
 **Say back:** "Moved <title> to <day> <time>."
 
@@ -1330,7 +1609,7 @@ The household message board.
 
 **When to use it.** For "what's on the board?", and to find a `noteId` before changing, pinning or deleting a note.
 
-**Tool description** (the registry's, verbatim): Lists the household's notes, pinned ones first and then the most recently changed, each with its id, title, markdown body, colour, whether it is pinned to the hub, who wrote it (member id and name) and when it was created, last changed and last edited (editedAt: its words; pinning is not an edit) (ISO 8601, UTC), and `recentCount`: how many notes were added or edited in the last 24 hours. Notes are shared household text, never secrets.
+**Tool description** (the registry's, verbatim): Lists the household's notes, pinned ones first and then the most recently changed, each with its id, title, markdown body, colour, whether it is pinned to the hub, who wrote it (member id and name) and when it was created, last changed and last edited (editedAt: its words; pinning is not an edit) (ISO 8601, UTC), and seenBy: the member ids who have read it since its words last changed. Also `unseenCount`: how many notes you have not read yet, and `unseenByAnyoneCount`: how many notes not every member has read yet. Notes are shared household text, never secrets.
 
 **Examples.**
 
@@ -1369,7 +1648,7 @@ The household message board.
 }
 ```
 
-**Returns** (`data`): `notes`: id, title, markdown body, colour, pinned, author, created and changed times.
+**Returns** (`data`): `notes`: id, title, markdown body, colour, pinned, author, created and changed times, and `seenBy` (the member ids who have read its current words); `unseenCount` (the notes the sender has not read) and `unseenByAnyoneCount` (the notes not every member has read).
 
 **Its errors:** none of its own. Every call can also get the endpoint's codes (above).
 
@@ -1383,7 +1662,7 @@ Posts a note on the household message board.
 | --- | --- |
 | Kind | `write` |
 | Risk | `safe`: runs straight away for the asker; on a housemate's behalf it needs `X-Baumy-Confirmed: 1` |
-| Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
+| Who may | any linked member |
 | On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
@@ -1471,7 +1750,7 @@ Rewrites a note: title, body and colour are all replaced.
 | --- | --- |
 | Kind | `write` |
 | Risk | `confirm`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
-| Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
+| Who may | any linked member |
 | On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
@@ -1550,7 +1829,7 @@ Pins a note to the hub and the kitchen screen, or unpins it.
 | --- | --- |
 | Kind | `write` |
 | Risk | `safe`: runs straight away for the asker; on a housemate's behalf it needs `X-Baumy-Confirmed: 1` |
-| Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
+| Who may | any linked member |
 | On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
@@ -1614,7 +1893,7 @@ Deletes a note for everyone.
 | --- | --- |
 | Kind | `write` |
 | Risk | `destructive`: always send `X-Baumy-Confirmed: 1`, only after the asker tapped the confirm button (428 without it) |
-| Who may | the member themself: brain counts as the member (the kiosk would need their PIN) |
+| Who may | any linked member |
 | On a housemate's behalf | yes, with `X-Baumy-On-Behalf-Of` and the asker's confirm tap |
 | `Idempotency-Key` | required; the same key again replays |
 | Rate limit | 30 per Telegram user and 120 per IP in a minute |
@@ -1705,7 +1984,7 @@ The reminders on the kitchen screen, who has seen each, and the household's acti
 
 **When to use it.** For "any reminders up?" and "who hasn't seen the plumber one?". Its `members` is also the roster: use it to turn a housemate's name into the member id for X-Baumy-On-Behalf-Of or `doneBy`.
 
-**Tool description** (the registry's, verbatim): Lists the household's active reminders (posted, and neither dismissed nor seen by every member yet), the oldest first, each with its id, title, body, who posted it, when (ISO 8601, UTC), the member ids who have seen it and those still to see it; and the active members (id, name, colour, character).
+**Tool description** (the registry's, verbatim): Lists the household's active reminders (posted, and neither dismissed nor seen by every member yet), the oldest first, each with its id, title, body, who posted it, when (ISO 8601, UTC), the member ids who have seen it and those still to see it; and the active members (id, name, colour, and their gallery character if they picked one).
 
 **Examples.**
 
@@ -1721,7 +2000,7 @@ The reminders on the kitchen screen, who has seen each, and the household's acti
 }
 ```
 
-**Returns** (`data`): `members` (id, name, colour, character) and `reminders` (id, title, body, who posted it, when, `seenBy`, `waitingFor`).
+**Returns** (`data`): `members` (id, `displayName`, `color`, and `sprites`: their gallery character, or null) and `reminders` (id, title, body, who posted it, when, `seenBy`, `waitingFor`).
 
 **Its errors:** none of its own. Every call can also get the endpoint's codes (above).
 
@@ -1877,7 +2156,11 @@ Takes a reminder off the kitchen screen for everyone, seen or not.
 ## 8. Not available to Baumy
 
 - `update_my_profile`: The member's own account settings: only in the app, signed in.
-- `update_avatar`: The member's own account settings: only in the app, signed in.
+- `choose_avatar`: The member's own account settings: only in the app, signed in.
+- `preview_avatar`: An admin action: UI only (SPEC §12 decision 10).
+- `add_avatar`: An admin action: UI only (SPEC §12 decision 10).
+- `archive_avatar`: An admin action: UI only (SPEC §12 decision 10).
+- `restore_avatar`: An admin action: UI only (SPEC §12 decision 10).
 - `redeem_invite`: Joining the household: only in the app, signed in.
 - `join_as_founder`: Joining the household: only in the app, signed in.
 - `mint_invite`: An admin action: UI only (SPEC §12 decision 10).
@@ -1885,26 +2168,40 @@ Takes a reminder off the kitchen screen for everyone, seen or not.
 - `manage_members`: An admin action: UI only (SPEC §12 decision 10).
 - `set_kiosk_pin`: The member's own account settings: only in the app, signed in.
 - `create_telegram_link_code`: The member's own account settings: only in the app, signed in.
+- `get_telegram_link_status`: The member's own account settings: only in the app, signed in.
 - `authorize_mcp_client`: The member's own account settings: only in the app, signed in.
 - `list_mcp_connections`: The member's own account settings: only in the app, signed in.
 - `revoke_mcp_connection`: The member's own account settings: only in the app, signed in.
 - `get_account_security`: The member's own account settings: only in the app, signed in.
+- `get_my_data`: The member's own account settings: only in the app, signed in.
 - `revoke_session`: The member's own account settings: only in the app, signed in.
 - `revoke_other_sessions`: The member's own account settings: only in the app, signed in.
 - `rename_passkey`: The member's own account settings: only in the app, signed in.
 - `remove_passkey`: The member's own account settings: only in the app, signed in.
 - `unlink_google`: The member's own account settings: only in the app, signed in.
 - `set_first_password`: The member's own account settings: only in the app, signed in.
-- `pair_kiosk`: An admin action: UI only (SPEC §12 decision 10).
+- `get_step_up`: The member's own account settings: only in the app, signed in.
+- `confirm_identity`: The member's own account settings: only in the app, signed in.
+- `request_baumy_confirmation`: The member's own account settings: only in the app, signed in.
+- `get_baumy_confirmation`: The member's own account settings: only in the app, signed in.
+- `approve_kiosk_pairing`: An admin action: UI only (SPEC §12 decision 10).
+- `rename_kiosk`: An admin action: UI only (SPEC §12 decision 10).
 - `revoke_kiosk`: An admin action: UI only (SPEC §12 decision 10).
+- `create_service_token`: An admin action: UI only (SPEC §12 decision 10).
+- `rotate_service_token`: An admin action: UI only (SPEC §12 decision 10).
+- `revoke_service_token`: An admin action: UI only (SPEC §12 decision 10).
 - `check_kiosk_pin`: Checks a PIN typed on the kitchen screen; only the kiosk has one.
+- `set_kiosk_idle_minutes`: A setting of the kitchen screen itself (how long it waits before it forgets who is acting); only the kiosk has one. Tell the person to change it on the kitchen screen.
 - `manage_chore`: An admin action: UI only (SPEC §12 decision 10).
+- `update_bounties`: An admin action: UI only (SPEC §12 decision 10).
 - `resolve_dispute`: An admin action: UI only (SPEC §12 decision 10).
 - `attach_completion_photo`: A proof photo arrives only through the app's upload route, which stores the file first; brain cannot send one. Tell the person to attach it in the app.
 - `adjust_points`: An admin action: UI only (SPEC §12 decision 10).
-- `add_pot_contribution`: An admin action: UI only (SPEC §12 decision 10).
 - `set_prize_mode`: An admin action: UI only (SPEC §12 decision 10).
 - `schedule_weight`: An admin action: UI only (SPEC §12 decision 10).
+- `schedule_points_change`: An admin action: UI only (SPEC §12 decision 10).
 - `dismiss_weight`: An admin action: UI only (SPEC §12 decision 10).
+- `acknowledge_note`: Marks notes read when a member opens them on the phone or the kitchen screen. Brain's own read button comes later (issue #163); until then, reading the board through list_notes marks nothing.
 - `add_shopping_items`: The shopping list is brain's own (`baumy_list_items`); brain changes it directly, and Olympics calls brain to do the same.
 - `check_off_shopping_items`: The shopping list is brain's own; brain ticks items off directly.
+- `report_bug`: Files an issue on the public bug tracker from the in-app reporter (a shake, or Settings); a report is the person's own words in the app. Tell them to shake their phone or use Settings → Bugs and feature requests.

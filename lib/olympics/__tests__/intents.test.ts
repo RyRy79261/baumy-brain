@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   buildEventInput,
   choreBlocked,
+  choreCard,
   listRange,
   matchChore,
   normaliseTime,
@@ -86,7 +87,7 @@ const chore = (name: string, o: Partial<ChoreView> = {}): ChoreView => ({
   name,
   archived: false,
   basePoints: 5,
-  state: 'due',
+  state: 'ready',
   availableAt: null,
   next: { totalPts: 5, streakLen: 1 },
   ...o,
@@ -115,6 +116,34 @@ describe('matchChore — the model describes, code resolves to exactly one liste
     expect(choreBlocked(chore('Dishes'), NOW, TZ)).toBeNull()
     expect(choreBlocked(chore('Dishes', { state: 'cooldown', availableAt: '2026-10-01T18:30:00Z' }), NOW, TZ)).toMatch(/from 20:30/)
     expect(choreBlocked(chore('Dishes', { state: 'unavailable', basePoints: null }), NOW, TZ)).toMatch(/can't be scored yet/)
+  })
+  it('an archived chore with points says it is archived, not that it has no points', () => {
+    expect(choreBlocked(chore('Dishes', { archived: true, state: 'unavailable', basePoints: 5 }), NOW, TZ)).toBe(
+      "Dishes is archived in Olympics, so it can't be logged. 🧹",
+    )
+  })
+  // Olympics SPEC §12 decision 35 (2026-10-11): chores have no due date; state is ready | cooldown | unavailable.
+  it('a ready chore exactly as Olympics now lists it (no dueAt, urgent or intervalMinutes) gets a card', () => {
+    const listed: ChoreView = {
+      id: 'c1',
+      name: 'Take out the trash',
+      archived: false,
+      basePoints: 10,
+      state: 'ready',
+      availableAt: null,
+      next: { totalPts: 10, streakLen: 1 },
+    }
+    expect(choreBlocked(listed, NOW, TZ)).toBeNull()
+    expect(choreCard(listed)).toContain('🧹 Take out the trash — +10 points')
+  })
+  it('a chore cooling down is refused with the time it can be logged again', () => {
+    const later = chore('Dishes', { state: 'cooldown', availableAt: '2026-10-03T07:00:00Z' })
+    expect(choreBlocked(later, NOW, TZ)).toBe('Dishes was done recently — it can be logged again from Sat 3 Oct 09:00. 🧹')
+  })
+  it('only ready gets a card: the retired states (due, done) and anything unknown are not guessed loggable', () => {
+    for (const state of ['due', 'done', 'urgent', 'whatever']) {
+      expect(choreBlocked(chore('Dishes', { state: state as ChoreView['state'] }), NOW, TZ)).toBe("Dishes can't be logged right now — have a look in Olympics. 🧹")
+    }
   })
 })
 

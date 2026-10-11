@@ -143,7 +143,7 @@ describe('scenario: Baumy Olympics from Telegram', () => {
         e(lastEdit(r)).toMatch(/✅ Logged: Take out the trash — \+10 points/)
       }),
       say('Marco', TRASH, { dm: true }),
-      expectWords({ contains: 'was done recently' }),
+      expectWords({ contains: 'was done recently — it can be logged again from 20:00' }),
       check('a chore still cooling down gets no card', (r, e) => e(cards(r)).toHaveLength(0)),
     ],
   })
