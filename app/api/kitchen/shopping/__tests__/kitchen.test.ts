@@ -13,12 +13,23 @@ import { POST as ADD } from '@/app/api/kitchen/shopping/add/route'
 import { POST as CHECKOFF } from '@/app/api/kitchen/shopping/checkoff/route'
 import { POST as REMOVE } from '@/app/api/kitchen/shopping/remove/route'
 import { POST as RENAME } from '@/app/api/kitchen/shopping/rename/route'
+import { POST as CATEGORY } from '@/app/api/kitchen/shopping/category/route'
+import { listCategories } from '@/db/schema'
+import { rememberedCategory } from '@/lib/lists/store'
+import { autoCategorizeItem } from '@/lib/lists/categorize'
 
 // The shopping-topic repost trigger (docs/spec/shopping-list.md §Shopping topic) — spied, never sent.
 const noteShoppingChange = vi.fn(async (..._a: unknown[]) => {})
 vi.mock('@/lib/lists/board', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/lists/board')>()
   return { ...actual, noteShoppingChange: (...a: unknown[]) => noteShoppingChange(...a) }
+})
+
+// Auto-sorting after an add (issue #29) — spied, never sent (it runs as its own Inngest function).
+const requestCategorize = vi.fn(async (..._a: unknown[]) => true)
+vi.mock('@/lib/lists/categorize', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/lists/categorize')>()
+  return { ...actual, requestCategorize: (...a: unknown[]) => requestCategorize(...a) }
 })
 
 // The kitchen shopping API (lib/lists/kitchen-api.ts): Bearer-token wall, house scope from
@@ -29,7 +40,7 @@ const HOUSE = '-100kitchenHouse'
 const OTHER = '-100someOtherHouse'
 const URL_BASE = 'http://local/api/kitchen/shopping'
 
-function req(path: '' | '/add' | '/checkoff' | '/remove' | '/rename', opts: { body?: unknown; auth?: string | null; method?: string; query?: string } = {}): Request {
+function req(path: '' | '/add' | '/checkoff' | '/remove' | '/rename' | '/category', opts: { body?: unknown; auth?: string | null; method?: string; query?: string } = {}): Request {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   const auth = opts.auth === undefined ? `Bearer ${TOKEN}` : opts.auth
   if (auth !== null) headers.authorization = auth
@@ -55,6 +66,7 @@ beforeEach(async () => {
   vi.stubEnv('BAUMY_HOUSE_CHAT_ID', '')
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   noteShoppingChange.mockClear()
+  requestCategorize.mockClear()
 })
 afterEach(() => {
   __setDbOverride(null)
@@ -253,7 +265,7 @@ describe('kitchen shopping API — the live-list change signal (issues #21, #25)
 
 describe('kitchen shopping API — middleware', () => {
   it('the dashboard session gate never covers the kitchen routes (a kiosk has no cookie)', () => {
-    for (const url of [URL_BASE, `${URL_BASE}/add`, `${URL_BASE}/checkoff`, `${URL_BASE}/remove`, `${URL_BASE}/rename`]) {
+    for (const url of [URL_BASE, `${URL_BASE}/add`, `${URL_BASE}/checkoff`, `${URL_BASE}/remove`, `${URL_BASE}/rename`, `${URL_BASE}/category`]) {
       expect(unstable_doesMiddlewareMatch({ config: middlewareConfig, url })).toBe(false)
     }
     expect(unstable_doesMiddlewareMatch({ config: middlewareConfig, url: 'http://local/admin' })).toBe(true)
@@ -372,5 +384,125 @@ describe('kitchen shopping API — remove and rename (issue #23)', () => {
     await RENAME(req('/rename', { body: { from: 'mlik', to: 'oat milk' } })) // merged
     expect(noteShoppingChange).toHaveBeenCalledTimes(3)
     for (const c of noteShoppingChange.mock.calls) expect(c.slice(1)).toEqual([HOUSE, null])
+  })
+})
+
+describe('kitchen shopping API — categories (issue #29)', () => {
+  type Item = { id: string; item: string; addedBy: string | null; createdAt: string; category: string | null }
+  const json = async (res: Response) => (await res.json()) as Record<string, unknown> & { items: Item[] }
+
+  it('every item in every response carries `category` (null = Not sorted) — the exact shape', async () => {
+    await house(db)
+    const added = await json(await ADD(req('/add', { body: { items: ['oat milk'] } })))
+    expect(Object.keys(added.items[0]).sort()).toEqual(['addedBy', 'category', 'createdAt', 'id', 'item'])
+    expect(added.items[0]).toMatchObject({ item: 'oat milk', category: null })
+    await db.update(listItems).set({ category: 'fresh', categorySource: 'guessed' })
+    const list = await json(await GET(req('')))
+    expect(list.items[0]).toMatchObject({ item: 'oat milk', category: 'fresh' })
+    for (const res of [CHECKOFF(req('/checkoff', { body: { items: ['nutmeg'] } })), REMOVE(req('/remove', { body: { items: ['nutmeg'] } })), RENAME(req('/rename', { body: { from: 'x', to: 'y' } }))])
+      expect((await json(await res)).items[0]).toMatchObject({ item: 'oat milk', category: 'fresh' })
+  })
+
+  it('an add asks for auto-sorting of exactly the rows it inserted, after the write; a no-op add asks for none', async () => {
+    await house(db)
+    const res = await json(await ADD(req('/add', { body: { items: ['oat milk', 'coffee'] } })))
+    expect(requestCategorize).toHaveBeenCalledTimes(1)
+    const [scope, ids] = requestCategorize.mock.calls[0] as [string, string[]]
+    expect(scope).toBe(HOUSE)
+    expect([...ids].sort()).toEqual(res.items.map((i) => i.id).sort())
+    requestCategorize.mockClear()
+    await ADD(req('/add', { body: { items: ['oat milk'] } })) // already open
+    expect(requestCategorize.mock.calls.every((c) => (c[1] as string[]).length === 0)).toBe(true)
+  })
+
+  it('the add never waits on (or fails with) auto-sorting: Inngest down → still 200, item listed, Not sorted', async () => {
+    await house(db)
+    requestCategorize.mockImplementationOnce(async () => false)
+    const res = await ADD(req('/add', { body: { items: ['oat milk'] } }))
+    expect(res.status).toBe(200)
+    expect((await json(res)).items).toEqual([expect.objectContaining({ item: 'oat milk', category: null })])
+  })
+
+  it('401 without the token, 503 before a house exists — nothing changes', async () => {
+    const before = await CATEGORY(req('/category', { body: { item: 'milk', category: 'fresh' } }))
+    expect(before.status).toBe(503)
+    await house(db)
+    await addListItems(db, { groupId: HOUSE, items: ['milk'], addedBy: null })
+    for (const auth of [null, 'Bearer nope']) expect((await CATEGORY(req('/category', { auth, body: { item: 'milk', category: 'fresh' } }))).status).toBe(401)
+    expect((await currentList(db, HOUSE))[0].category).toBeNull()
+    expect(await rememberedCategory(db, HOUSE, 'milk')).toBeNull()
+  })
+
+  it('400s a body outside the contract and changes nothing', async () => {
+    await house(db)
+    await addListItems(db, { groupId: HOUSE, items: ['milk'], addedBy: null })
+    for (const body of [
+      'nope',
+      {},
+      { item: 'milk' }, // category missing (null must be explicit)
+      { category: 'fresh' }, // neither id nor item
+      { item: 'milk', category: 'Fresh' }, // a label, not a key
+      { item: 'milk', category: 'dairy' },
+      { id: 'not-a-uuid', category: 'fresh' },
+      { item: '   ', category: 'fresh' },
+      { item: 'milk', category: 'fresh', telegramUserId: 'marco' },
+    ]) {
+      const res = await CATEGORY(req('/category', { body }))
+      expect(res.status).toBe(400)
+      expect(await res.json()).toMatchObject({ ok: false, error: 'bad_request' })
+    }
+    expect((await currentList(db, HOUSE))[0].category).toBeNull()
+    expect(noteShoppingChange).not.toHaveBeenCalled()
+  })
+
+  it('sets by item text or by id (id wins over item), source picked, attributed to an active member only; signals the live list', async () => {
+    await house(db)
+    await upsertMember(db, HOUSE, '702', 'Marco')
+    await addListItems(db, { groupId: HOUSE, items: ['coffee filters', 'bin bags'], addedBy: null })
+    const byText = await json(await CATEGORY(req('/category', { body: { item: 'the coffee filter', category: 'coffee', telegramUserId: 702 } })))
+    expect(byText).toMatchObject({ ok: true, outcome: 'set', item: 'coffee filters', category: 'coffee', attributedTo: '702' })
+    expect(byText.items.find((i) => i.item === 'coffee filters')?.category).toBe('coffee')
+    expect(noteShoppingChange.mock.calls.at(-1)!.slice(1)).toEqual([HOUSE, '702'])
+    const binId = (await currentList(db, HOUSE)).find((r) => r.item === 'bin bags')!.id
+    const byId = await json(await CATEGORY(req('/category', { body: { id: binId, item: 'coffee filters', category: 'cleaning', telegramUserId: '999' } })))
+    expect(byId).toMatchObject({ outcome: 'set', id: binId, item: 'bin bags', category: 'cleaning', attributedTo: null })
+    const [row] = await db.select().from(listItems).where(eq(listItems.id, binId))
+    expect(row).toMatchObject({ category: 'cleaning', categorySource: 'picked', categorizedBy: null })
+    // null = "Not sorted"
+    const unsort = await json(await CATEGORY(req('/category', { body: { id: binId, category: null } })))
+    expect(unsort).toMatchObject({ outcome: 'set', category: null })
+  })
+
+  it('teaches the house memory: a later add of the same item is sorted as remembered', async () => {
+    await house(db)
+    await ADD(req('/add', { body: { items: ['oat milk'] } }))
+    await CATEGORY(req('/category', { body: { item: 'oat milk', category: 'coffee' } }))
+    expect(await db.select({ n: listCategories.itemNormalized, c: listCategories.category }).from(listCategories)).toEqual([{ n: 'oat milk', c: 'coffee' }])
+    await CHECKOFF(req('/checkoff', { body: { items: ['oat milk'] } }))
+    requestCategorize.mockClear()
+    const again = await json(await ADD(req('/add', { body: { items: ['Oat Milk'] } })))
+    const [, ids] = requestCategorize.mock.calls[0] as [string, string[]]
+    const guess = vi.fn(async () => 'fresh' as const)
+    expect(await autoCategorizeItem(db, { groupId: HOUSE, itemId: ids[0] }, { embed: async () => Promise.reject(new Error('offline')), guess })).toMatchObject({
+      source: 'remembered',
+      category: 'coffee',
+    })
+    expect(guess).not.toHaveBeenCalled()
+    expect(again.items[0].id).toBe(ids[0])
+  })
+
+  it('a miss and an ambiguous name are 200s that change nothing; another house\'s item id is a miss', async () => {
+    await house(db)
+    await addListItems(db, { groupId: HOUSE, items: ['sponge', 'sponges'], addedBy: null })
+    expect(await json(await CATEGORY(req('/category', { body: { item: 'nutmeg', category: 'pantry' } })))).toMatchObject({ ok: true, outcome: 'not_found', item: 'nutmeg' })
+    const amb = await json(await CATEGORY(req('/category', { body: { item: 'a sponge', category: 'cleaning' } })))
+    expect(amb).toMatchObject({ ok: true, outcome: 'ambiguous', item: 'a sponge' })
+    expect([...(amb.matches as string[])].sort()).toEqual(['sponge', 'sponges'])
+    await ensureRegistered(db, OTHER, null)
+    const [theirs] = (await addListItems(db, { groupId: OTHER, items: ['bread'], addedBy: null })).addedIds
+    expect(await json(await CATEGORY(req('/category', { body: { id: theirs, category: 'fresh' } })))).toMatchObject({ outcome: 'not_found', item: null })
+    expect((await db.select().from(listItems).where(eq(listItems.id, theirs)))[0].category).toBeNull()
+    expect(await db.select().from(listCategories)).toEqual([])
+    expect(noteShoppingChange).not.toHaveBeenCalled()
   })
 })

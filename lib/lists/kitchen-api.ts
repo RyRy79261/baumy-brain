@@ -5,8 +5,10 @@ import { members } from '@/db/schema'
 import { getHouseChatId } from '@/lib/identity/house'
 import { ensureRegistered } from '@/lib/memory/write'
 import { tokenMatches } from '@/lib/telegram/verify'
-import { addListItems, checkOffItems, currentList, removeItems, renameItem, type ListRow } from '@/lib/lists/store'
+import { addListItems, checkOffItems, currentList, removeItems, renameItem, setItemCategory, type ListRow } from '@/lib/lists/store'
 import { noteShoppingChange } from '@/lib/lists/board'
+import { requestCategorize } from '@/lib/lists/categorize'
+import { CATEGORIES } from '@/lib/lists/categories'
 
 // The kitchen shopping API (docs/spec/shopping-list.md §Kitchen API): the house kiosk (Baumy
 // Olympics) reads and writes the SAME group-scoped list Telegram does, so there is one list.
@@ -93,8 +95,10 @@ export async function mapMember(db: Database, telegramUserId: string | number | 
   return m?.id ?? null
 }
 
+// The item shape every response carries. `category` (issue #29) is one of the six keys
+// (lib/lists/categories.ts) or null = "Not sorted" — null too while auto-sorting has not run yet.
 const view = (rows: ListRow[]) =>
-  rows.map((r) => ({ id: r.id, item: r.item, addedBy: r.addedBy, createdAt: r.createdAt.toISOString() }))
+  rows.map((r) => ({ id: r.id, item: r.item, addedBy: r.addedBy, createdAt: r.createdAt.toISOString(), category: r.category }))
 
 export async function handleList(req: Request): Promise<Response> {
   return withKitchenHouse(req, async (db, scope) => json({ ok: true, items: view(await currentList(db, scope)) }))
@@ -111,6 +115,9 @@ export async function handleAdd(req: Request): Promise<Response> {
     const res = await addListItems(db, { groupId: scope, items: body.items, addedBy: by })
     // The list changed → stamp it and ask for the debounced live-list edit (best-effort; never fails the write).
     if (res.added.length > 0) await noteShoppingChange(db, scope, by)
+    // Sort the new items AFTER the add (issue #29): best-effort, never fails or delays the write — they
+    // come back as category null ("Not sorted") here and gain a category within seconds.
+    await requestCategorize(scope, res.addedIds)
     return json({ ok: true, added: res.added, already: res.already, attributedTo: by, items: view(await currentList(db, scope)) })
   })
 }
@@ -153,6 +160,45 @@ export async function handleRename(req: Request): Promise<Response> {
       outcome: res.outcome,
       from: res.from,
       to: res.to,
+      ...(res.outcome === 'ambiguous' ? { matches: res.matches ?? [] } : {}),
+      attributedTo: by,
+      items: view(await currentList(db, scope)),
+    })
+  })
+}
+
+// A kiosk category pick (issue #29): `{ id?: uuid, item?: string, category: key | null, telegramUserId? }`.
+// One of id / item is required; with both, `id` is used. `category` is one of the six keys or null
+// ("Not sorted"); anything else is a 400. The pick is source `picked` and teaches the house memory.
+const CategoryBody = z
+  .object({
+    id: z.string().uuid().optional(),
+    item: z.string().trim().min(1).max(200).optional(),
+    category: z.enum(CATEGORIES).nullable(),
+    telegramUserId: WriteBody.shape.telegramUserId,
+  })
+  .refine((b) => b.id != null || b.item != null)
+type CategoryBody = z.infer<typeof CategoryBody>
+
+// `outcome`: set | not_found (no item on the list matches) | ambiguous (the text fits more than one open
+// item — `matches` names them). Like a rename, a miss is a 200 that changed nothing.
+export async function handleCategory(req: Request): Promise<Response> {
+  return withKitchenHouse(req, async (db, scope) => {
+    const body = await parseBody<CategoryBody>(req, CategoryBody)
+    if (!body)
+      return json(
+        { ok: false, error: 'bad_request', message: `Expected { id?: uuid, item?: string, category: ${CATEGORIES.join(' | ')} | null, telegramUserId? } with id or item.` },
+        400,
+      )
+    const by = await mapMember(db, body.telegramUserId)
+    const res = await setItemCategory(db, { groupId: scope, id: body.id, item: body.id ? undefined : body.item, category: body.category, by })
+    if (res.outcome === 'set') await noteShoppingChange(db, scope, by)
+    return json({
+      ok: true,
+      outcome: res.outcome,
+      ...(res.id ? { id: res.id } : {}),
+      item: res.item,
+      category: res.category,
       ...(res.outcome === 'ambiguous' ? { matches: res.matches ?? [] } : {}),
       attributedTo: by,
       items: view(await currentList(db, scope)),
