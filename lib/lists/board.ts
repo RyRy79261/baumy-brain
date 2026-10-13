@@ -9,6 +9,7 @@ import { sendShoppingBoard, deleteMessage, editShoppingBoard } from '@/lib/teleg
 import { now as clockNow } from '@/lib/core/clock'
 import { writeAudit } from '@/lib/audit'
 import type { TurnStep } from '@/lib/turn/step'
+import { boardItem } from '@/lib/lists/live'
 
 // The shopping topic (docs/spec/shopping-list.md §Shopping topic, issue #21): after the list changes,
 // Baumy posts the whole open list as ONE message in the house's shopping topic and deletes the previous
@@ -24,40 +25,8 @@ export const MOVED_DOWN = '⬇️ The list moved down.'
 export const NO_LONGER_UPDATED = 'This list is no longer updated.'
 const TELEGRAM_MAX = 4096
 
-// C0/C1 controls, the soft hyphen, the Arabic letter mark, zero-width + bidi marks/overrides/isolates,
-// the word joiner + invisible operators (U+2060–U+2064) and the BOM. Built from code points so no
-// invisible character ever sits literally in this source file.
-const INVISIBLE_RANGES: [number, number][] = [
-  [0x0000, 0x001f],
-  [0x007f, 0x009f],
-  [0x00ad, 0x00ad],
-  [0x061c, 0x061c],
-  [0x200b, 0x200f],
-  [0x202a, 0x202e],
-  [0x2060, 0x2064],
-  [0x2066, 0x2069],
-  [0xfeff, 0xfeff],
-]
-const hex = (n: number) => `\\u${n.toString(16).padStart(4, '0')}`
-const INVISIBLE = new RegExp(`[${INVISIBLE_RANGES.map(([a, b]) => (a === b ? hex(a) : `${hex(a)}-${hex(b)}`)).join('')}]`, 'g')
-
-// An item is untrusted text (a housemate's words or the kiosk's request body). Printed as plain text it
-// still must not TRIGGER anything: Telegram auto-detects @mentions (a ping), #hashtags, $cashtags and
-// /commands (tappable — a tap sends it as the tapper). The sigil that starts such a word is swapped for
-// its look-alike, so nothing parses; control/bidi characters go, and a newline can't fake a line of its
-// own. Readable as before.
-export function boardItem(raw: string): string {
-  return (
-    raw
-      .replace(INVISIBLE, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .replace(/@(?=\w)/g, '＠')
-      .replace(/#(?=[\p{L}\p{N}_])/gu, '＃') // Telegram hashtags take any letter or digit, not only ASCII
-      .replace(/\$(?=[A-Za-z])/g, '＄')
-      .replace(/(?<!\w)\/(?=\w)/g, '∕')
-  )
-}
+// Item text is defanged by boardItem (lib/lists/live.ts, shared with the live list).
+export { boardItem }
 
 // The whole open list as one plain-text message: a header with the count, one item per line. Empty →
 // the short line. Cut to fit one Telegram message, with what was left out counted.
