@@ -255,6 +255,13 @@ keyboard) on every change. Full behaviour: `docs/spec/shopping-list.md` §Live l
   (`house_config.shopping_thread_id`, migration 0024 — the authenticated `message_thread_id`, never
   text; audited); `/shoppingoff` stops it (unpinned, deleted, or edited to "This list is no longer
   updated." with no buttons). One live message per house: `/list` never makes a second one.
+- **Menu (2026-10-13, issue #27).** `/list` is in the group's "/" menu (`all_group_chats` scope) as
+  "Show the live shopping list", and not in the DM menu: in a DM it is not a command (the house-lane
+  gate above). `/shoppinghere` and `/shoppingoff` stay unadvertised: any member may run them, but
+  they are one-time setup that moves or takes down the whole house's list, so showing them in every
+  topic's menu invites an accident. The menus live in `scripts/commands.mjs` and are registered on
+  every production deploy (`scripts/maybe-set-commands.mjs`, skipped on previews and without
+  `TELEGRAM_BOT_TOKEN`, never failing the build).
 - **Buttons.** `shop:chk:<itemId>`, `shop:clear`, `shop:refresh`, `shop:page:<n>` (each ≤ 64 bytes,
   parsed exactly). They arrive as `callback_query` like the confirm cards and reach `runCallback`
   after its roster check, so only an ACTIVE member's authenticated `from.id` counts; the `shop:` branch

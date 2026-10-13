@@ -273,6 +273,8 @@ Last updated by Ryan, Tue 13 Oct, 18:05
   when it lives in another place (General or another topic), replies with a link to it. `/shoppinghere` inside a topic is
   `/list` that **moves** the list there. `/shoppingoff` stops it: the message is unpinned and
   deleted (or, if Telegram refuses, edited to "This list is no longer updated.").
+  `/list` is in the group's "/" menu (2026-10-13, issue #27); `/shoppinghere` and `/shoppingoff`
+  are one-time setup, so they are typed, not shown in the menu.
 - **Tick an item** by tapping it: ☐ becomes ☑, with a short toast ("✓ Ginger – ticked by Ryan").
   Tap ☑ to put it back. A tap sets the state its button showed, so two people tapping the same ☐ at
   once tick it once (the second hears "already ticked"). Ticked items stay at the bottom until someone taps **🧹 Clear done**.
@@ -334,7 +336,12 @@ pnpm build          # next build
 pnpm db:generate    # drizzle-kit generate (migrations)
 pnpm db:migrate     # apply migrations (needs DATABASE_URL_UNPOOLED)
 node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram webhook
+node --experimental-strip-types scripts/set-commands.ts  # set the "/" command menus by hand
 ```
+
+The "/" command menus (`scripts/commands.mjs`) are also registered on every production deploy
+(`scripts/maybe-set-commands.mjs` in `vercel-build`; 2026-10-13, issue #27). Previews never touch
+them, and a Telegram error never fails the deploy.
 
 See **[SETUP.md](SETUP.md)** for a full local + deploy walkthrough, and
 **[AGENTS.md](AGENTS.md)** for the working guide + security invariants. Detailed design specs
