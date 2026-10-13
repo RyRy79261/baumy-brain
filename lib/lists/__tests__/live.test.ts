@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   renderLiveList,
   parseShopCallback,
@@ -10,6 +12,7 @@ import {
   tapWant,
   clearToast,
   mockLiveList,
+  sortToast,
   formatUpdatedAt,
   SHOP_PAGE_SIZE,
   CALLBACK_DATA_MAX_BYTES,
@@ -27,7 +30,9 @@ const TZ = 'Europe/Berlin'
 const AT = new Date('2026-10-13T16:05:00Z') // 18:05 in Berlin (CEST)
 const bytes = (s: string) => new TextEncoder().encode(s).length
 const allButtons = (k: InlineButton[][]) => k.flat()
+// The default order is Groups (issue #29): the footer leads with the order button, showing the current mode.
 const footer = [
+  { text: '🗂 Groups', callback_data: 'shop:sort:az' },
   { text: '🧹 Clear done', callback_data: 'shop:clear' },
   { text: '🔄 Refresh', callback_data: 'shop:refresh' },
 ]
@@ -42,9 +47,11 @@ describe('renderLiveList — the message and its keyboard', () => {
     })
     expect(view.text).toBe('🛒 Shopping list\n3 to buy · 1 done\nLast updated by Ryan, Tue 13 Oct, 18:05')
     expect(view.keyboard).toEqual([
+      [{ text: '── Not sorted ──', callback_data: 'shop:noop' }],
       [{ text: '☐ Ginger', callback_data: `shop:chk:${uuid(1)}` }],
       [{ text: '☐ bin bags', callback_data: `shop:chk:${uuid(3)}` }],
       [{ text: '☐ coffee', callback_data: `shop:chk:${uuid(4)}` }],
+      [{ text: '── Done ──', callback_data: 'shop:noop' }],
       [{ text: '☑ oat milk', callback_data: `shop:chk:${uuid(2)}` }],
       footer,
     ])
@@ -88,7 +95,7 @@ describe('renderLiveList — the message and its keyboard', () => {
     it('exactly 30 items: one page, no ◀ / ▶', () => {
       const view = renderLiveList({ rows: rows(SHOP_PAGE_SIZE), updatedBy: null, updatedAt: null, tz: TZ })
       expect(view.pages).toBe(1)
-      expect(view.keyboard).toHaveLength(31) // 30 items + footer
+      expect(view.keyboard).toHaveLength(32) // 30 items + their heading + footer (headings don't count as items)
       expect(allButtons(view.keyboard).some((b) => b.text === '◀' || b.text === '▶')).toBe(false)
       expect(view.text).not.toContain('Page')
     })
@@ -99,12 +106,14 @@ describe('renderLiveList — the message and its keyboard', () => {
       expect(p1.text.endsWith('Page 1 of 2')).toBe(true)
       expect(p1.keyboard.at(-2)).toEqual([{ text: '▶', callback_data: 'shop:page:2' }])
       expect(p1.keyboard.at(-1)).toEqual(footer)
-      expect(p1.keyboard).toHaveLength(30 + 2)
+      expect(p1.keyboard).toHaveLength(30 + 1 + 2)
 
       const p2 = renderLiveList({ rows: rows(31), page: 2, updatedBy: null, updatedAt: null, tz: TZ })
-      expect(p2.keyboard[0]).toEqual([{ text: '☐ item 31', callback_data: `shop:chk:${uuid(31)}` }])
+      // the group carries on from page 1, so its heading is repeated at the top
+      expect(p2.keyboard[0]).toEqual([{ text: '── Not sorted ──', callback_data: 'shop:noop' }])
+      expect(p2.keyboard[1]).toEqual([{ text: '☐ item 31', callback_data: `shop:chk:${uuid(31)}` }])
       expect(p2.keyboard.at(-2)).toEqual([{ text: '◀', callback_data: 'shop:page:1' }])
-      expect(p2.keyboard).toHaveLength(1 + 2)
+      expect(p2.keyboard).toHaveLength(1 + 1 + 2)
     })
 
     it('a middle page has both ◀ and ▶', () => {
@@ -126,7 +135,10 @@ describe('renderLiveList — the message and its keyboard', () => {
       // 40 items, the first 5 done: open items fill page 1, the done ones end page 2
       const r = Array.from({ length: 40 }, (_, i) => row(i + 1, `item ${i + 1}`, i < 5))
       const p2 = renderLiveList({ rows: r, page: 2, updatedBy: null, updatedAt: null, tz: TZ })
-      const labels = p2.keyboard.slice(0, -2).map((k) => k[0].text)
+      const labels = p2.keyboard
+        .slice(0, -2)
+        .map((k) => k[0].text)
+        .filter((t) => !t.startsWith('──'))
       expect(labels.slice(-5)).toEqual(['☑ item 1', '☑ item 2', '☑ item 3', '☑ item 4', '☑ item 5'])
       expect(labels.slice(0, 5).every((l) => l.startsWith('☐'))).toBe(true)
     })
@@ -252,5 +264,188 @@ describe('tapWant — what the tapped button showed, from the keyboard Telegram 
     expect(tapWant(markup, undefined)).toBeNull()
     // a button whose label starts with neither mark
     expect(tapWant({ inline_keyboard: [[{ text: 'Ginger', callback_data: `shop:chk:${uuid(1)}` }]] }, `shop:chk:${uuid(1)}`)).toBeNull()
+  })
+})
+
+// Issue #29: the order modes (Groups → A–Z → Added), heading buttons and pages that don't count them.
+describe('renderLiveList — order modes and headings (issue #29)', () => {
+  const NOW = new Date('2026-10-13T16:05:00Z') // Tue 13 Oct, 18:05 in Berlin
+  const c = (n: number, item: string, category: LiveRow['category'], createdAt: string, done = false): LiveRow => ({ id: uuid(n), item, done, category, createdAt: new Date(createdAt) })
+  // Added oldest first, as liveListRows returns them (open first, then done in tick order).
+  const HOUSE_LIST: LiveRow[] = [
+    c(1, 'bin bags', 'cleaning', '2026-10-11T09:00:00Z'),
+    c(2, 'oat milk', 'coffee', '2026-10-12T08:00:00Z'),
+    c(3, 'Pasta', 'pantry', '2026-10-12T10:00:00Z'),
+    c(4, 'light bulbs', 'maintenance', '2026-10-12T21:59:00Z'), // 23:59 Berlin on the 12th → Earlier
+    c(5, 'zorblax', null, '2026-10-12T22:30:00Z'), // 00:30 Berlin on the 13th → Today
+    c(6, 'apples', 'fresh', '2026-10-13T07:00:00Z'),
+    c(7, 'candles', 'household', '2026-10-13T15:00:00Z'),
+    c(8, 'coffee beans', 'coffee', '2026-10-13T15:30:00Z'),
+    c(9, 'sponges', 'cleaning', '2026-10-10T09:00:00Z', true),
+  ]
+  const render = (sort: 'groups' | 'az' | 'added', rows = HOUSE_LIST, page?: number) => renderLiveList({ rows, sort, now: NOW, page, updatedBy: 'Ryan', updatedAt: NOW, tz: TZ })
+  const texts = (k: InlineButton[][]) => k.map((r) => r.map((b) => b.text).join(' | '))
+
+  it('Groups (the default): a heading per category in the fixed order, Not sorted last, then Done; within a group oldest first', () => {
+    const view = render('groups')
+    expect(texts(view.keyboard)).toEqual([
+      '── Pantry ──',
+      '☐ Pasta',
+      '── Fresh ──',
+      '☐ apples',
+      '── Coffee ──',
+      '☐ oat milk',
+      '☐ coffee beans',
+      '── Cleaning ──',
+      '☐ bin bags',
+      '── Maintenance ──',
+      '☐ light bulbs',
+      '── Household ──',
+      '☐ candles',
+      '── Not sorted ──',
+      '☐ zorblax',
+      '── Done ──',
+      '☑ sponges',
+      '🗂 Groups | 🧹 Clear done | 🔄 Refresh',
+    ])
+    // every heading is a do-nothing button; the order button carries the NEXT mode
+    for (const row of view.keyboard) for (const b of row) if (b.text.startsWith('──')) expect(b.callback_data).toBe('shop:noop')
+    expect(view.keyboard.at(-1)![0]).toEqual({ text: '🗂 Groups', callback_data: 'shop:sort:az' })
+    expect(renderLiveList({ rows: HOUSE_LIST, updatedBy: null, updatedAt: null, tz: TZ }).keyboard).toEqual(renderLiveList({ rows: HOUSE_LIST, sort: 'groups', updatedBy: null, updatedAt: null, tz: TZ }).keyboard)
+    console.log(`\n[Groups]\n${mockLiveList(view)}\n`)
+  })
+
+  it('A–Z: open items alphabetically (case-insensitive), NO headings at all, done items still below', () => {
+    const view = render('az')
+    expect(texts(view.keyboard)).toEqual([
+      '☐ apples',
+      '☐ bin bags',
+      '☐ candles',
+      '☐ coffee beans',
+      '☐ light bulbs',
+      '☐ oat milk',
+      '☐ Pasta',
+      '☐ zorblax',
+      '☑ sponges',
+      '🔤 A–Z | 🧹 Clear done | 🔄 Refresh',
+    ])
+    expect(view.keyboard.at(-1)![0]).toEqual({ text: '🔤 A–Z', callback_data: 'shop:sort:added' })
+    console.log(`\n[A–Z]\n${mockLiveList(view)}\n`)
+  })
+
+  it('Added: newest first under "Today" and "Earlier" — the day is Europe/Berlin, not UTC — then Done', () => {
+    const view = render('added')
+    expect(texts(view.keyboard)).toEqual([
+      '── Today ──',
+      '☐ coffee beans',
+      '☐ candles',
+      '☐ apples',
+      '☐ zorblax', // 22:30 UTC on the 12th is 00:30 on the 13th in Berlin
+      '── Earlier ──',
+      '☐ light bulbs', // 21:59 UTC is 23:59 the day before in Berlin
+      '☐ Pasta',
+      '☐ oat milk',
+      '☐ bin bags',
+      '── Done ──',
+      '☑ sponges',
+      '🕒 Added | 🧹 Clear done | 🔄 Refresh',
+    ])
+    expect(view.keyboard.at(-1)![0]).toEqual({ text: '🕒 Added', callback_data: 'shop:sort:groups' })
+    // only "Earlier" when nothing was added today; no "Done" when nothing is ticked
+    const old = HOUSE_LIST.filter((r) => r.id === uuid(1) || r.id === uuid(2))
+    expect(texts(render('added', old).keyboard).slice(0, -1)).toEqual(['── Earlier ──', '☐ oat milk', '☐ bin bags'])
+    console.log(`\n[Added]\n${mockLiveList(view)}\n`)
+  })
+
+  it('the mockups in docs/spec/shopping-list.md and README.md are exactly what the renderer draws (they cannot drift)', () => {
+    const spec = readFileSync(join(process.cwd(), 'docs/spec/shopping-list.md'), 'utf8')
+    for (const m of ['groups', 'az', 'added'] as const) expect(spec).toContain(`\`\`\`\n${mockLiveList(render(m))}\n\`\`\``)
+    const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8')
+    const small = HOUSE_LIST.filter((r) => [1, 2, 3, 5, 9].some((n) => r.id === uuid(n)))
+    expect(readme).toContain(`\`\`\`\n${mockLiveList(render('groups', small))}\n\`\`\``)
+  })
+
+  it('the header is the same in every mode (counts, who, when)', () => {
+    for (const m of ['groups', 'az', 'added'] as const) expect(render(m).text).toBe('🛒 Shopping list\n8 to buy · 1 done\nLast updated by Ryan, Tue 13 Oct, 18:05')
+  })
+
+  describe('pages: 30 ITEMS a page — headings do not count — and a group that carries on gets its heading again', () => {
+    // 25 pantry, 10 fresh, 3 done: page 1 = 25 pantry + 5 fresh, page 2 = 5 fresh + 3 done.
+    const big = [
+      ...Array.from({ length: 25 }, (_, i) => c(100 + i, `pantry ${String(i + 1).padStart(2, '0')}`, 'pantry', '2026-10-01T10:00:00Z')),
+      ...Array.from({ length: 10 }, (_, i) => c(200 + i, `fresh ${String(i + 1).padStart(2, '0')}`, 'fresh', '2026-10-01T10:00:00Z')),
+      ...Array.from({ length: 3 }, (_, i) => c(300 + i, `done ${i + 1}`, 'coffee', '2026-10-01T10:00:00Z', true)),
+    ]
+    const items = (k: InlineButton[][]) => k.flat().filter((b) => b.callback_data.startsWith('shop:chk:'))
+
+    it('page 1 holds exactly 30 items plus its headings; page 2 repeats the carried-over heading at the top', () => {
+      const p1 = render('groups', big, 1)
+      expect(p1).toMatchObject({ page: 1, pages: 2 })
+      expect(items(p1.keyboard)).toHaveLength(SHOP_PAGE_SIZE)
+      const t1 = texts(p1.keyboard)
+      expect(t1[0]).toBe('── Pantry ──')
+      expect(t1[26]).toBe('── Fresh ──')
+      expect(t1.slice(-3)).toEqual(['☐ fresh 05', '▶', '🗂 Groups | 🧹 Clear done | 🔄 Refresh'])
+      expect(p1.text.endsWith('Page 1 of 2')).toBe(true)
+
+      const p2 = render('groups', big, 2)
+      expect(texts(p2.keyboard)).toEqual([
+        '── Fresh ──', // repeated: Fresh carried on from page 1
+        '☐ fresh 06',
+        '☐ fresh 07',
+        '☐ fresh 08',
+        '☐ fresh 09',
+        '☐ fresh 10',
+        '── Done ──',
+        '☑ done 1',
+        '☑ done 2',
+        '☑ done 3',
+        '◀',
+        '🗂 Groups | 🧹 Clear done | 🔄 Refresh',
+      ])
+      console.log(`\n[Groups, page 2 of 2]\n${mockLiveList(p2)}\n`)
+    })
+
+    it('a heading that ends exactly at a page break is not repeated on the next page', () => {
+      const exact = [...big.slice(0, 25), ...big.slice(25, 30)] // 25 pantry + 5 fresh = exactly one page
+      const extra = [...exact, c(400, 'zz unsorted', null, '2026-10-01T10:00:00Z')]
+      const p2 = render('groups', extra, 2)
+      expect(texts(p2.keyboard)[0]).toBe('── Not sorted ──')
+      expect(texts(p2.keyboard)).not.toContain('── Fresh ──')
+    })
+
+    it('A–Z pages are plain items, 30 a page', () => {
+      const p1 = render('az', big, 1)
+      expect(p1.keyboard).toHaveLength(SHOP_PAGE_SIZE + 2)
+      expect(texts(p1.keyboard).some((t) => t.startsWith('──'))).toBe(false)
+    })
+
+    it('focus finds the tapped item in the MODE\'s order', () => {
+      const lastFresh = uuid(209)
+      expect(render('groups', big).page).toBe(1)
+      expect(renderLiveList({ rows: big, sort: 'groups', focusItemId: lastFresh, updatedBy: null, updatedAt: null, tz: TZ }).page).toBe(2)
+      // in A–Z, "fresh 10" sorts before every "pantry …" item → page 1
+      expect(renderLiveList({ rows: big, sort: 'az', focusItemId: lastFresh, updatedBy: null, updatedAt: null, tz: TZ }).page).toBe(1)
+    })
+  })
+
+  it('every callback_data in every mode is ≤ 64 bytes and parses back (headings and the order button included)', () => {
+    const rows = Array.from({ length: 120 }, (_, i) => c(i + 1, `${'ü'.repeat(80)} ${i}`, [null, 'pantry', 'fresh', 'coffee'][i % 4] as LiveRow['category'], '2026-10-13T10:00:00Z', i % 5 === 0))
+    for (const m of ['groups', 'az', 'added'] as const)
+      for (let page = 1; page <= 5; page++)
+        for (const b of allButtons(render(m, rows, page).keyboard)) {
+          expect(bytes(b.callback_data)).toBeLessThanOrEqual(CALLBACK_DATA_MAX_BYTES)
+          expect(parseShopCallback(b.callback_data)).not.toBeNull()
+        }
+    expect(bytes(shopCallbackData({ kind: 'sort', mode: 'groups' }))).toBe(16)
+    expect(bytes(shopCallbackData({ kind: 'noop' }))).toBe(9)
+  })
+
+  it('parses shop:noop and shop:sort:<mode> exactly; refuses a crafted mode', () => {
+    expect(parseShopCallback('shop:noop')).toEqual({ kind: 'noop' })
+    for (const m of ['groups', 'az', 'added'] as const) expect(parseShopCallback(`shop:sort:${m}`)).toEqual({ kind: 'sort', mode: m })
+    for (const bad of ['shop:noop:1', 'shop:sort', 'shop:sort:', 'shop:sort:AZ', 'shop:sort:a-z', 'shop:sort:groups ', ' shop:sort:az', 'shop:sort:random', `shop:sort:${'a'.repeat(60)}`])
+      expect(parseShopCallback(bad)).toBeNull()
+    expect(sortToast('az')).toBe('Sorted: 🔤 A–Z')
   })
 })

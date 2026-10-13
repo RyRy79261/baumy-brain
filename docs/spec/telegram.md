@@ -262,8 +262,9 @@ keyboard) on every change. Full behaviour: `docs/spec/shopping-list.md` §Live l
   topic's menu invites an accident. The menus live in `scripts/commands.mjs` and are registered on
   every production deploy (`scripts/maybe-set-commands.mjs`, skipped on previews and without
   `TELEGRAM_BOT_TOKEN`, never failing the build).
-- **Buttons.** `shop:chk:<itemId>`, `shop:clear`, `shop:refresh`, `shop:page:<n>` (each ≤ 64 bytes,
-  parsed exactly). They arrive as `callback_query` like the confirm cards and reach `runCallback`
+- **Buttons.** `shop:chk:<itemId>`, `shop:clear`, `shop:refresh`, `shop:page:<n>`, and (2026-10-13,
+  issue #29) `shop:sort:<groups|az|added>` (the order button — it carries the target mode) and
+  `shop:noop` (a section heading, answered silently) (each ≤ 64 bytes, parsed exactly). They arrive as `callback_query` like the confirm cards and reach `runCallback`
   after its roster check, so only an ACTIVE member's authenticated `from.id` counts; the `shop:` branch
   is routed before the confirm-card parse. The tapped message must be the stored live list in the house
   chat (same chat id and message id), and the item id is matched only inside the house scope. An item

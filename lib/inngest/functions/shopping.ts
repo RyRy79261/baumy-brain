@@ -1,6 +1,7 @@
 import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { runShoppingRender, SHOPPING_CHANGED, SHOPPING_DEBOUNCE, SHOPPING_DEBOUNCE_TIMEOUT, SHOPPING_RENDER } from '@/lib/lists/board'
+import { runCategorize, SHOPPING_CATEGORIZE } from '@/lib/lists/categorize'
 import type { TurnStep } from '@/lib/turn/step'
 
 // The live shopping list (docs/spec/shopping-list.md §Live list, issue #25).
@@ -34,4 +35,18 @@ export const shoppingRender = inngest.createFunction(
   },
   { event: SHOPPING_RENDER },
   async ({ event, step }) => runShoppingRender(step as unknown as TurnStep, createHttpDb, event.data),
+)
+
+// shopping-categorize (issue #29, docs/spec/shopping-list.md §Categories): sort the rows an add just
+// inserted — remembered pick → nearest sorted item (Voyage, above the floor) → Sonnet's guess. After the
+// add, never inside it: the items are on the list ("Not sorted") whatever happens here. One run at a time
+// per house, so two adds of the same name never race to embed it.
+export const shoppingCategorize = inngest.createFunction(
+  {
+    id: 'shopping-categorize',
+    concurrency: { limit: 1, key: 'event.data.groupId' },
+    retries: 2,
+  },
+  { event: SHOPPING_CATEGORIZE },
+  async ({ event, step }) => runCategorize(step as unknown as TurnStep, createHttpDb, event.data),
 )

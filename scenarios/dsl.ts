@@ -7,9 +7,10 @@ import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { embedSync, setEmbedOverride } from '@/lib/ai/embed'
 import { setConsoleThread } from '@/lib/identity/house'
 import { SHOPPING_CHANGED, SHOPPING_RENDER, type RenderRequest } from '@/lib/lists/board'
+import { SHOPPING_CATEGORIZE } from '@/lib/lists/categorize'
 import { tapWant } from '@/lib/lists/live'
 import { inngest } from '@/lib/inngest/client'
-import { createSandbox, sendAs, tapAs, advanceBy, noteShoppingChanged, renderShoppingNow, type Sandbox, type SandboxPerson, type SendOptions, type TranscriptEntry } from '@/lib/sandbox/harness'
+import { createSandbox, sendAs, tapAs, advanceBy, noteShoppingChanged, renderShoppingNow, categorizeShoppingNow, type Sandbox, type SandboxPerson, type SendOptions, type TranscriptEntry } from '@/lib/sandbox/harness'
 import { setOlympicsTransport } from '@/lib/olympics/client'
 import { FAKE_OLYMPICS_TOKEN, FAKE_OLYMPICS_URL, type FakeOlympics } from './olympics-fake'
 import { installFakeModels, installRecordingModels, type CallRole, type Fixtures, type ModelCall, type ModelRecorder } from './fake-model'
@@ -174,14 +175,16 @@ async function runScenario(spec: ScenarioSpec, mode: 'offline' | 'live'): Promis
   const events: Run['events'] = []
   const realSend = inngest.send
   const client = inngest as unknown as { send: (p: unknown) => Promise<{ ids: string[] }> }
-  // The two events the harness DOES act on: a shopping-list change arms the debounced live-list render,
-  // and a render request (a tap, /list, /shoppinghere) renders at once, like shopping-render.
+  // The events the harness DOES act on: a shopping-list change arms the debounced live-list render, a
+  // render request (a tap, /list, /shoppinghere) renders at once, like shopping-render, and a categorize
+  // request (after an add, issue #29) sorts the new items at once, like shopping-categorize.
   let sbRef: Sandbox | null = null
   client.send = async (payload) => {
     for (const e of [payload].flat() as { name: string; data: unknown }[]) {
       events.push({ name: e.name, data: e.data })
       if (e.name === SHOPPING_CHANGED && sbRef) noteShoppingChanged(sbRef, (e.data as { groupId: string }).groupId)
       if (e.name === SHOPPING_RENDER && sbRef) await renderShoppingNow(sbRef, e.data as RenderRequest)
+      if (e.name === SHOPPING_CATEGORIZE && sbRef) await categorizeShoppingNow(sbRef, e.data as { groupId: string; itemIds: string[] })
     }
     return { ids: [] }
   }

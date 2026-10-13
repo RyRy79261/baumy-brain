@@ -36,8 +36,9 @@ const fixtures = {
           : { op: 'none' as const, items: [] },
 }
 
-const kioskAdd = (r: Run, items: string[]) =>
-  withSimulatedTime(r.sb.now, () => ADD(
+// `offsetMs`: requests a few ms apart (an item's place in the list is when it was added).
+const kioskAdd = (r: Run, items: string[], offsetMs = 0) =>
+  withSimulatedTime(new Date(r.sb.now.getTime() + offsetMs), () => ADD(
     new Request('http://local/api/kitchen/shopping/add', {
       method: 'POST',
       headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
@@ -66,15 +67,18 @@ describe('scenario: the live shopping list', () => {
         const post = lists(r)[0]
         e(post.threadId).toBe(TOPIC)
         e(post.text).toBe('🛒 Shopping list\nNothing to buy.')
-        e(labels(post)).toEqual(['🧹 Clear done', '🔄 Refresh'])
+        e(labels(post)).toEqual(['🗂 Groups', '🧹 Clear done', '🔄 Refresh'])
         e(last(r).find((x) => x.kind === 'pin')?.meta).toBe(String(post.messageId))
       }),
 
       // A burst of changes from the group AND a DM (which writes through to the house list).
+      // A second apart: an item's place in the list is when it was added (created_at, from the clock seam).
       say('Marco', "we're out of oat milk"),
       expectReaction('✍'),
+      advance({ seconds: 1 }),
       say('Ryan', 'add coffee to the list', { dm: true }),
       expectWords({ contains: /coffee/, judge: 'Confirms coffee was added to the shopping list.' }),
+      advance({ seconds: 1 }),
       say('Chloe', "we're out of bin bags"),
       expectReaction('✍'),
       check('nothing edited yet — the debounce waits 5 seconds after the LAST change', (r, e) => e(edits(r)).toHaveLength(0)),
@@ -85,7 +89,7 @@ describe('scenario: the live shopping list', () => {
         const ed = edits(r)[0]
         e(ed.meta).toBe(String(lists(r)[0].messageId))
         e(ed.text).toBe('🛒 Shopping list\n3 to buy\nLast updated by Chloe, Tue 13 Oct, 18:00')
-        e(labels(ed)).toEqual(['☐ oat milk', '☐ coffee', '☐ bin bags', '🧹 Clear done', '🔄 Refresh'])
+        e(labels(ed)).toEqual(['── Not sorted ──', '☐ oat milk', '☐ coffee', '☐ bin bags', '🗂 Groups', '🧹 Clear done', '🔄 Refresh'])
       }),
 
       tapList('Ryan', 'coffee'),
@@ -94,7 +98,7 @@ describe('scenario: the live shopping list', () => {
         const ed = last(r).filter((x) => x.kind === 'edit')
         e(ed).toHaveLength(1)
         e(ed[0].text).toBe('🛒 Shopping list\n2 to buy · 1 done\nLast updated by Ryan, Tue 13 Oct, 18:00')
-        e(labels(ed[0])).toEqual(['☐ oat milk', '☐ bin bags', '☑ coffee', '🧹 Clear done', '🔄 Refresh'])
+        e(labels(ed[0])).toEqual(['── Not sorted ──', '☐ oat milk', '☐ bin bags', '── Done ──', '☑ coffee', '🗂 Groups', '🧹 Clear done', '🔄 Refresh'])
         e(last(r).filter((x) => x.kind === 'message')).toHaveLength(0)
       }),
       // Marco's screen still showed ☐ coffee and he tapped it a moment after Ryan: it stays ticked.
@@ -106,7 +110,7 @@ describe('scenario: the live shopping list', () => {
       tapList('Marco', 'Clear done'),
       check('Clear done: the ticked item leaves the list', (r, e) => {
         e(toast(r)).toBe('🧹 Cleared 1 done item')
-        e(labels(last(r).find((x) => x.kind === 'edit'))).toEqual(['☐ oat milk', '☐ bin bags', '🧹 Clear done', '🔄 Refresh'])
+        e(labels(last(r).find((x) => x.kind === 'edit'))).toEqual(['── Not sorted ──', '☐ oat milk', '☐ bin bags', '🗂 Groups', '🧹 Clear done', '🔄 Refresh'])
       }),
       expectDb(async (db, r) => {
         // A status board, not conversation: the live list never enters the 48h window.
@@ -143,7 +147,7 @@ describe('scenario: the live shopping list', () => {
         e(lists(r)[0].threadId).toBeUndefined()
       }),
       check('the kiosk adds 13 items, one request each', async (r, e) => {
-        for (const item of THIRTEEN) e((await kioskAdd(r, [item])).status).toBe(200)
+        for (const [i, item] of THIRTEEN.entries()) e((await kioskAdd(r, [item], i)).status).toBe(200)
       }),
       check('13 change signals, no edit yet', (r, e) => {
         e(r.events.filter((x) => x.name === 'lists/shopping.changed')).toHaveLength(13)
@@ -153,7 +157,7 @@ describe('scenario: the live shopping list', () => {
       check('ONE edit, with all 13 items', (r, e) => {
         e(edits(r)).toHaveLength(1)
         e(edits(r)[0].text).toBe('🛒 Shopping list\n13 to buy\nLast updated, Tue 13 Oct, 18:00') // the kiosk named nobody
-        e(labels(edits(r)[0])).toEqual([...THIRTEEN.map((i) => `☐ ${i}`), '🧹 Clear done', '🔄 Refresh'])
+        e(labels(edits(r)[0])).toEqual(['── Not sorted ──', ...THIRTEEN.map((i) => `☐ ${i}`), '🗂 Groups', '🧹 Clear done', '🔄 Refresh'])
         e(lists(r)).toHaveLength(1)
       }),
       tapList('Chloe', 'ginger'),
@@ -161,7 +165,7 @@ describe('scenario: the live shopping list', () => {
         e(toast(r)).toBe('✓ ginger – ticked by Chloe')
         const ed = last(r).filter((x) => x.kind === 'edit')
         e(ed).toHaveLength(1)
-        e(labels(ed[0]).at(-3)).toBe('☑ ginger')
+        e(labels(ed[0]).slice(-5)).toEqual(['── Done ──', '☑ ginger', '🗂 Groups', '🧹 Clear done', '🔄 Refresh'])
         e(ed[0].text).toBe('🛒 Shopping list\n12 to buy · 1 done\nLast updated by Chloe, Tue 13 Oct, 18:00')
       }),
       tapList('Ryan', 'Clear done'),
@@ -169,7 +173,7 @@ describe('scenario: the live shopping list', () => {
         e(toast(r)).toBe('🧹 Cleared 1 done item')
         const ed = last(r).find((x) => x.kind === 'edit')
         e(labels(ed)).not.toContain('☑ ginger')
-        e(labels(ed)).toHaveLength(12 + 2)
+        e(labels(ed)).toHaveLength(1 + 12 + 3) // the Not sorted heading, 12 items, the footer
       }),
     ],
   })

@@ -22,6 +22,7 @@ import {
   GUEST_REPORT_SYSTEM,
   ISSUE_ENRICH_SYSTEM,
   ENTITY_DEDUPE_SYSTEM,
+  CATEGORY_GUESS_SYSTEM,
 } from '@/lib/ai/prompts'
 import { DELIBERATE_SYSTEM } from '@/lib/ai/deliberate'
 import {
@@ -69,6 +70,7 @@ export type CallRole =
   | 'issue'
   | 'deliberate'
   | 'dedupe'
+  | 'category'
   | 'unknown'
 
 export interface ModelCall {
@@ -113,6 +115,7 @@ export const ROLE_PROMPTS: [CallRole, string][] = (
     ['issue', ISSUE_ENRICH_SYSTEM],
     ['deliberate', DELIBERATE_SYSTEM],
     ['dedupe', ENTITY_DEDUPE_SYSTEM],
+    ['category', CATEGORY_GUESS_SYSTEM],
   ] as [CallRole, string][]
 ).sort((a, b) => b[1].length - a[1].length)
 
@@ -144,7 +147,7 @@ export function messageOf(prompt: string): string | null {
 
 // Roles whose fixtures are a function of the message text. If their prompt layout changes so the
 // message can no longer be found, a fixture must not silently regex over MEMORY / THIS TURN instead.
-const TEXT_ROLES = new Set<CallRole>(['triage', 'extract', 'reminder', 'list', 'forget', 'cancel-reminder', 'olympics', 'reply', 'reply-text', 'websearch', 'expand', 'rerank', 'issue'])
+const TEXT_ROLES = new Set<CallRole>(['triage', 'extract', 'reminder', 'list', 'category', 'forget', 'cancel-reminder', 'olympics', 'reply', 'reply-text', 'websearch', 'expand', 'rerank', 'issue'])
 
 export function textOf(role: CallRole, prompt: string, strict = true): string {
   const m = messageOf(prompt)
@@ -169,7 +172,10 @@ export interface Fixtures {
   triage?: (text: string, call: ModelCall) => Verdict
   extract?: (text: string, speaker: string | null, call: ModelCall) => FactSpec[]
   reminder?: (text: string, call: ModelCall) => ReminderSpec | ReminderSpec[] | null
-  list?: (text: string, call: ModelCall) => { op: 'add' | 'checkoff' | 'remove' | 'rename' | 'query' | 'none'; items: string[]; renames?: { from: string; to: string }[] }
+  list?: (
+    text: string,
+    call: ModelCall,
+  ) => { op: 'add' | 'checkoff' | 'remove' | 'rename' | 'categorize' | 'query' | 'none'; items: string[]; renames?: { from: string; to: string }[]; categories?: { item: string; category: string }[] }
   forget?: (
     text: string,
     speaker: string | null,
@@ -189,6 +195,8 @@ export interface Fixtures {
   dedupe?: (call: ModelCall) => number[]
   /** Deep-tier query expansion (paraphrases + a HyDE sentence). Default: none. */
   expand?: (text: string, call: ModelCall) => { variants: string[]; hypothetical: string }
+  /** The shopping category guess for ONE item (issue #29): a category key, or "unknown". Default: unknown. */
+  category?: (item: string, call: ModelCall) => string
 }
 
 /** The lines of the MEMORY block a reply prompt carries ("- …" entries only). */
@@ -278,6 +286,8 @@ function answerFor(call: ModelCall, fx: Fixtures): string {
       return 'ok'
     case 'dedupe':
       return json({ same: fx.dedupe ? fx.dedupe(call) : [] })
+    case 'category':
+      return json({ category: fx.category ? fx.category(call.text, call) : 'unknown' })
     case 'unknown':
       throw new FakeModelError(
         `[scenarios/fake-model] unrecognised system prompt — add its constant to ROLE_PROMPTS in scenarios/fake-model.ts:\n${call.system.slice(0, 200)}`,

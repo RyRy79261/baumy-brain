@@ -165,7 +165,7 @@ describe('a tap on an item (shop:chk:<id>)', () => {
     const { sent } = await tap(RYAN, `shop:chk:${ginger}`)
     const edit = sent.find((m) => m.kind === 'edit')
     expect(edit?.meta).toBe(String(LIVE_ID))
-    expect(edit?.keyboard?.flat().map((b) => b.text)).toEqual(['☐ milk', '☑ Ginger', '🧹 Clear done', '🔄 Refresh'])
+    expect(edit?.keyboard?.flat().map((b) => b.text)).toEqual(['── Not sorted ──', '☐ milk', '── Done ──', '☑ Ginger', '🗂 Groups', '🧹 Clear done', '🔄 Refresh'])
   })
 })
 
@@ -261,5 +261,68 @@ describe('Clear done, Refresh, pages', () => {
     ])
     const [cfg] = await db().select({ at: houseConfig.shoppingUpdatedAt }).from(houseConfig)
     expect(cfg.at).toBeNull()
+  })
+})
+
+// Issue #29: the order button and the heading buttons.
+describe('the order button (shop:sort:<mode>) and headings (shop:noop)', () => {
+  const sortNow = async () => (await db().select({ s: houseConfig.shoppingSort }).from(houseConfig))[0].s
+
+  it('sets the house order to the mode the button carries, toasts it, and re-renders page 1 at once', async () => {
+    expect(await sortNow()).toBe('groups')
+    const { result, sent } = await tap(CHLOE, 'shop:sort:az')
+    expect(result).toEqual({ sort: 'az', changed: true })
+    expect(toastOf(sent)).toBe('Sorted: 🔤 A–Z')
+    expect(await sortNow()).toBe('az')
+    expect(renders().map((e) => e.data)).toEqual([{ groupId: HOUSE, reason: 'tap', page: 1 }])
+    // a house setting, not a list change: no "last updated" stamp
+    expect((await db().select({ at: houseConfig.shoppingUpdatedAt }).from(houseConfig))[0].at).toBeNull()
+  })
+
+  it('is idempotent: a double tap (or two housemates on the same button) sets the SAME mode — never skips one', async () => {
+    await tap(RYAN, 'shop:sort:az')
+    const second = await tap(CHLOE, 'shop:sort:az')
+    expect(second.result).toEqual({ sort: 'az', changed: false })
+    expect(await sortNow()).toBe('az') // not 'added'
+    expect(renders()).toHaveLength(2) // both re-render, so a stale keyboard catches up
+    await tap(RYAN, 'shop:sort:added')
+    await tap(RYAN, 'shop:sort:groups')
+    expect(await sortNow()).toBe('groups')
+  })
+
+  it('member-only: a non-member or a member who left changes nothing', async () => {
+    const { result, sent } = await tap(STRANGER, 'shop:sort:az')
+    expect(result).toEqual({ ignored: 'not-member' })
+    expect(toastOf(sent)).toBe('Not authorized.')
+    await deactivateMember(db(), String(CHLOE))
+    expect((await tap(CHLOE, 'shop:sort:az')).result).toEqual({ ignored: 'not-member' })
+    expect(await sortNow()).toBe('groups')
+    expect(renders()).toEqual([])
+    // present: the same tap by an active member does change it
+    expect((await tap(RYAN, 'shop:sort:az')).result).toEqual({ sort: 'az', changed: true })
+  })
+
+  it('only on the live list, in the house: elsewhere it changes nothing', async () => {
+    expect((await tap(RYAN, 'shop:sort:az', { messageId: 1 })).result).toEqual({ ignored: 'stale-message' })
+    expect((await tap(RYAN, 'shop:sort:az', { chatId: OTHER })).result).toEqual({ ignored: 'other-chat' })
+    expect(await sortNow()).toBe('groups')
+  })
+
+  it('a crafted mode is refused like any bad data', async () => {
+    for (const data of ['shop:sort:AZ', 'shop:sort:random', 'shop:sort:', 'shop:sort:az:1']) {
+      const { result } = await tap(RYAN, data)
+      expect(result).toEqual({ ignored: 'bad-data' })
+    }
+    expect(await sortNow()).toBe('groups')
+  })
+
+  it('a heading answers silently: no toast text, no change, no render', async () => {
+    const { result, sent } = await tap(RYAN, 'shop:noop')
+    expect(result).toEqual({ noop: true })
+    const answers = sent.filter((m) => m.kind === 'callback-answer')
+    expect(answers).toHaveLength(1)
+    expect(answers[0].text ?? null).toBeNull()
+    expect(renders()).toEqual([])
+    expect(await sortNow()).toBe('groups')
   })
 })

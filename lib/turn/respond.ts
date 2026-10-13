@@ -2,7 +2,7 @@ import { createHttpDb } from '@/db/client'
 import { claimReply, releaseReply } from '@/lib/memory/write'
 import { answer } from '@/lib/ai/reply'
 import { webSearchAnswer } from '@/lib/ai/websearch'
-import { addAck, checkoffAck, removeAck, renameAck, renderList } from '@/lib/lists/format'
+import { addAck, categorizeAck, checkoffAck, removeAck, renameAck, renderList } from '@/lib/lists/format'
 import { sendToHouse, sendConfirmCard, reactToMessage } from '@/lib/telegram/client'
 import { gatherGrounding } from './grounding'
 import { forgetExplanation } from './actions'
@@ -66,7 +66,9 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
               ? removeAck(l.removed, l.notFound, l.open, l.ambiguous)
               : l.op === 'rename'
                 ? renameAck(l.renamed, l.notFound, l.open, l.ambiguous)
-                : checkoffAck(l.checkedOff, l.notFound, l.open),
+                : l.op === 'categorize'
+                  ? categorizeAck(l.categorized ?? [], l.notFound, l.ambiguous, l.badCategory ?? [])
+                  : checkoffAck(l.checkedOff, l.notFound, l.open),
       )
     })
     return

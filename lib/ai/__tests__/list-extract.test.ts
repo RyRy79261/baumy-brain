@@ -31,6 +31,16 @@ describe('extractListOp', () => {
     expect(listExtraction.safeParse({ op: 'rename', items: [], renames: [{ from: 'mlik' }] }).success).toBe(false)
   })
 
+  // Issue #29: "put coffee filters under coffee" — item TEXT + the section word; code checks the section.
+  it('parses a categorize op; its category is a plain string (a section outside the six never rejects the op)', async () => {
+    gen.mockResolvedValueOnce({ object: { op: 'categorize', items: [], categories: [{ item: 'coffee filters', category: 'coffee' }] } })
+    expect(await extractListOp('put coffee filters under coffee')).toEqual({ op: 'categorize', items: [], categories: [{ item: 'coffee filters', category: 'coffee' }] })
+    expect(listExtraction.safeParse({ op: 'categorize', items: [], categories: [{ item: 'tea', category: 'drinks' }] }).success).toBe(true)
+    expect(listExtraction.safeParse({ op: 'categorize', items: [], categories: [{ item: 'tea' }] }).success).toBe(false)
+    expect(EXTRACT_LIST_SYSTEM).toMatch(/"categorize"/)
+    expect(EXTRACT_LIST_SYSTEM).toContain('put coffee filters under coffee')
+  })
+
   it('the prompt teaches remove and rename, and keeps the injection wall', () => {
     expect(EXTRACT_LIST_SYSTEM).toMatch(/"remove"/)
     expect(EXTRACT_LIST_SYSTEM).toMatch(/"rename"/)

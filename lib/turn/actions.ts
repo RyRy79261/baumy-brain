@@ -27,8 +27,10 @@ import {
   type ListEventsData,
   type OlympicsPending,
 } from '@/lib/olympics/intents'
-import { addListItems, checkOffItems, currentList, removeItems, renameItem } from '@/lib/lists/store'
+import { addListItems, checkOffItems, currentList, findOpenItem, removeItems, renameItem, setItemCategory } from '@/lib/lists/store'
 import { noteShoppingChange } from '@/lib/lists/board'
+import { requestCategorize } from '@/lib/lists/categorize'
+import { isCategory, type Category } from '@/lib/lists/categories'
 import { clampToWakingHours } from '@/lib/reminders/parse'
 import { fireAtFromModel, reminderTimeFromPhrase, minutesApart } from '@/lib/core/when'
 import { normaliseRecurrence, recurrenceFromPhrase, nextOccurrence } from '@/lib/reminders/recurrence'
@@ -54,8 +56,18 @@ import type { TurnStep } from './step'
 const MAX_RENAMES = 10 // cap a runaway batch of renames from one message
 
 /** Did this list op change the list? (Only then is the shopping topic reposted.) */
-export function listChanged(l: Pick<ListOutcome, 'added' | 'checkedOff' | 'removed' | 'renamed'>): boolean {
-  return l.added.length > 0 || l.checkedOff.length > 0 || l.removed.length > 0 || l.renamed.length > 0
+export function listChanged(l: Pick<ListOutcome, 'added' | 'checkedOff' | 'removed' | 'renamed' | 'categorized'>): boolean {
+  return l.added.length > 0 || l.checkedOff.length > 0 || l.removed.length > 0 || l.renamed.length > 0 || (l.categorized?.length ?? 0) > 0
+}
+
+// The section a "put X under Y" message named (issue #29), checked against the FIXED enum — the model
+// only copies words. A key → that category; "unsorted" → null ("Not sorted"); anything else → undefined
+// (not a section: reported, nothing changed).
+export function pickedCategory(raw: string): Category | null | undefined {
+  const k = raw.trim().toLowerCase()
+  if (isCategory(k)) return k
+  if (k === 'unsorted' || k === 'not sorted' || k === 'none') return null
+  return undefined
 }
 
 export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOutcome | undefined> {
@@ -63,7 +75,7 @@ export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOut
   // off / not-found) is captured HERE — so a later fallible read can never recompute it against
   // already-mutated state and lie ("already there" / "couldn't find it"). The neon-http driver
   // autocommits per statement, so the write lands the instant it runs.
-  type Mutation = { op: 'none' } | Omit<ListOutcome, 'open'>
+  type Mutation = { op: 'none' } | (Omit<ListOutcome, 'open'> & { sortIds?: string[] })
   const raw = (await step.run('list', async (): Promise<Mutation> => {
     const db = createHttpDb()
     const ex = await extractListOp(ctx.text)
@@ -71,11 +83,13 @@ export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOut
     const renames = (ex.renames ?? []).filter((r) => r.from.trim() && r.to.trim()).slice(0, MAX_RENAMES)
     if ((ex.op === 'add' || ex.op === 'checkoff' || ex.op === 'remove') && ex.items.length === 0) return { op: 'none' }
     if (ex.op === 'rename' && renames.length === 0) return { op: 'none' }
+    const picks = (ex.categories ?? []).filter((c) => c.item.trim()).slice(0, MAX_RENAMES)
+    if (ex.op === 'categorize' && picks.length === 0) return { op: 'none' }
     const base = { added: [], already: [], checkedOff: [], removed: [], renamed: [], notFound: [], ambiguous: [] }
     if (ex.op === 'query') return { op: 'query', ...base }
     if (ex.op === 'add') {
       const res = await addListItems(db, { groupId: ctx.houseScope, items: ex.items, addedBy: ctx.authorId })
-      return { op: 'add', ...base, added: res.added, already: res.already }
+      return { op: 'add', ...base, added: res.added, already: res.already, sortIds: res.addedIds }
     }
     if (ex.op === 'remove') {
       // Off the list WITHOUT being bought (issue #23) — the same matching as a check-off.
@@ -87,25 +101,66 @@ export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOut
       const renamed: ListOutcome['renamed'] = []
       const notFound: string[] = []
       const ambiguous: ListOutcome['ambiguous'] = []
+      const sortIds: string[] = []
       for (const r of renames) {
         const res = await renameItem(db, { groupId: ctx.houseScope, from: r.from, to: r.to, renamedBy: ctx.authorId })
+        if (res.resortId) sortIds.push(res.resortId) // a new name drops an automatic category: sort it again (issue #29)
         if (res.outcome === 'renamed' || res.outcome === 'merged') renamed.push({ from: res.from, to: res.to, merged: res.outcome === 'merged' })
         else if (res.outcome === 'not_found') notFound.push(res.from)
         else if (res.outcome === 'ambiguous') ambiguous.push({ item: res.from, matches: res.matches ?? [] })
       }
-      return { op: 'rename', ...base, renamed, notFound, ambiguous }
+      return { op: 'rename', ...base, renamed, notFound, ambiguous, sortIds }
+    }
+    if (ex.op === 'categorize') {
+      // "put coffee filters under coffee" (issue #29): the model named item text + a section word; code
+      // checks the section against the fixed enum and matches the item like a check-off (one open row,
+      // or nothing). A pick teaches the house memory, exactly like the kiosk's.
+      const categorized: NonNullable<ListOutcome['categorized']> = []
+      const badCategory: NonNullable<ListOutcome['badCategory']> = []
+      const notFound: string[] = []
+      const ambiguous: ListOutcome['ambiguous'] = []
+      const sortIds: string[] = []
+      for (const p of picks) {
+        const category = pickedCategory(p.category)
+        if (category === undefined) {
+          // Not one of the six sections. The item is matched FIRST: when it is not on the list either, this
+          // was never about the list ("put the milk in the fridge", "put the bins out") — silence, no list
+          // op. Only a section word for an item that IS on the list is worth "that isn't a section".
+          // And even for an item that IS on the list, a stray section word is only answered when Baumy was
+          // asked (a DM, an @mention, a reply to Baumy — `directed`): "put the milk in the fridge" said to the
+          // group while milk is on the list is still about the fridge, not the list.
+          if (!ctx.directed.value) continue
+          if ((await findOpenItem(db, { groupId: ctx.houseScope, item: p.item })).outcome === 'not_found') continue
+          badCategory.push({ item: p.item.trim(), category: p.category.trim() })
+          continue
+        }
+        const res = await setItemCategory(db, { groupId: ctx.houseScope, item: p.item, category, by: ctx.authorId })
+        if (res.outcome === 'set') {
+          categorized.push({ item: res.item ?? p.item, category })
+          if (res.id) sortIds.push(res.id) // its name gets a vector, so the pick can be a "similar" anchor
+        } else if (res.outcome === 'ambiguous') ambiguous.push({ item: res.item ?? p.item, matches: res.matches ?? [] })
+        else notFound.push(res.item ?? p.item)
+      }
+      // Every pick was a non-section for a non-item: not a list op at all — the message falls through.
+      if (!categorized.length && !badCategory.length && !notFound.length && !ambiguous.length) return { op: 'none' }
+      return { op: 'categorize', ...base, categorized, badCategory, notFound, ambiguous, sortIds }
     }
     const res = await checkOffItems(db, { groupId: ctx.houseScope, items: ex.items, checkedBy: ctx.authorId })
     return { op: 'checkoff', ...base, checkedOff: res.checkedOff, notFound: res.notFound }
   })) as Mutation
   if (raw.op === 'none') return undefined
   // A step memoized by an earlier build may lack removed / renamed / ambiguous — default them.
-  const mut = { ...raw, removed: raw.removed ?? [], renamed: raw.renamed ?? [], ambiguous: raw.ambiguous ?? [] }
+  const { sortIds, ...rest } = raw
+  const mut = { ...rest, removed: raw.removed ?? [], renamed: raw.renamed ?? [], ambiguous: raw.ambiguous ?? [] }
   // The list CHANGED → stamp who did it and ask for the (debounced) live-list edit
   // (docs/spec/shopping-list.md §Live list). Its own step after the memoized mutation, best-effort: a
   // failed hand-off never re-runs the write. A no-op add ("already there"), or a check-off / remove /
   // rename that matched nothing, changed nothing.
   if (listChanged(mut)) await step.run('list-repost', () => noteShoppingChange(createHttpDb(), ctx.houseScope, ctx.authorId))
+  // New items (and a renamed item that lost its automatic category) are sorted AFTER the write, and a
+  // picked item's name is embedded (issue #29): a best-effort event, its own step — the write stands
+  // whatever happens to it (the items are "Not sorted" until it runs).
+  if (sortIds?.length) await step.run('list-categorize', () => requestCategorize(ctx.houseScope, sortIds))
   // The open list after the op — an IDEMPOTENT read in its own step, so if it throws only this
   // re-runs and the memoized mutation above is never recomputed.
   const open = (await step.run('list-open', async () => (await currentList(createHttpDb(), ctx.houseScope)).map((r) => r.item))) as string[]

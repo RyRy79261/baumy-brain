@@ -19,6 +19,7 @@ import {
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
+import { CATEGORIES, CATEGORY_SOURCES, SORT_MODES, sqlList } from '../lib/lists/categories'
 
 // Postgres full-text search vector (drizzle has no native tsvector type). Used as
 // a STORED generated column so Postgres maintains the lexical index from content
@@ -163,6 +164,9 @@ export const houseConfig = pgTable(
     // the id is the AUTHENTICATED actor (null when the kiosk named nobody), never text.
     shoppingUpdatedBy: text('shopping_updated_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
     shoppingUpdatedAt: timestamp('shopping_updated_at', { withTimezone: true }),
+    // The live list's order (issue #29): 'groups' (headings per category) → 'az' → 'added' ("Today" /
+    // "Earlier"). Cycled by the list's footer button (`shop:sort:<mode>`), one value for the whole house.
+    shoppingSort: text('shopping_sort').notNull().default('groups'),
     houseTimezone: text('house_timezone').notNull().default('Europe/Berlin'),
     responsePolicy: jsonb('response_policy')
       .notNull()
@@ -173,7 +177,10 @@ export const houseConfig = pgTable(
     secureKeyVersion: smallint('secure_key_version').notNull().default(1),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [check('baumy_house_config_singleton', sql`${t.id}`)],
+  (t) => [
+    check('baumy_house_config_singleton', sql`${t.id}`),
+    check('baumy_house_config_shopping_sort_ck', sql`${t.shoppingSort} IN (${sql.raw(sqlList(SORT_MODES))})`),
+  ],
 )
 
 export const auditLog = pgTable('baumy_audit_log', {
@@ -385,16 +392,71 @@ export const listItems = pgTable(
     // cleared_at is when it left the list for good. Null on an open row; rows bought before the live
     // list were backfilled to their checked_at (migration 0027).
     clearedAt: timestamp('cleared_at', { withTimezone: true }),
+    // Its shopping category (issue #29, lib/lists/categories.ts): one of the six fixed keys, or null =
+    // "Not sorted". `category_source` says where it came from (picked / remembered / similar / guessed);
+    // null on both = not sorted yet. Auto-sorting runs AFTER the add and only fills a row whose source
+    // is still null, so a housemate's pick is never overwritten. `categorized_by` = who picked it (an
+    // authenticated id, null for the auto tiers and for the kiosk with no member).
+    category: text('category'),
+    categorySource: text('category_source'),
+    categorizedBy: text('categorized_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
+    categorizedAt: timestamp('categorized_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('baumy_list_items_group_open_idx').on(t.groupId, t.isActive),
+    check('baumy_list_items_category_ck', sql`${t.category} IS NULL OR ${t.category} IN (${sql.raw(sqlList(CATEGORIES))})`),
+    check('baumy_list_items_category_source_ck', sql`${t.categorySource} IS NULL OR ${t.categorySource} IN (${sql.raw(sqlList(CATEGORY_SOURCES))})`),
     // ONE open copy of an item per house list — a re-add while it's already open is a no-op;
     // checking it off (checked_at set) drops it out of the predicate, so a later re-add is allowed.
     uniqueIndex('baumy_list_items_open_uq')
       .on(t.groupId, t.listName, t.itemNormalized)
       .where(sql`${t.isActive} AND ${t.checkedAt} IS NULL`),
   ],
+)
+
+// The house's remembered category picks (issue #29): item (exact-normalized, the add/dedupe key) →
+// category. Written ONLY by a housemate's pick (the kiosk's category call, or the Telegram "put X under
+// Y" op); read first by auto-sorting, so a later add of the same item gets the same category
+// ('remembered'). One row per house list + item; a pick of "Not sorted" (null) deletes it.
+export const listCategories = pgTable(
+  'baumy_list_categories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    groupId: text('group_id')
+      .notNull()
+      .references(() => telegramChats.chatId),
+    listName: text('list_name').notNull().default('shopping'),
+    itemNormalized: text('item_normalized').notNull(),
+    category: text('category').notNull(),
+    pickedBy: text('picked_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('baumy_list_categories_item_uq').on(t.groupId, t.listName, t.itemNormalized),
+    check('baumy_list_categories_category_ck', sql`${t.category} IN (${sql.raw(sqlList(CATEGORIES))})`),
+  ],
+)
+
+// One Voyage vector per house list item NAME (exact-normalized), tagged with its model like
+// baumy_memory_embeddings — the "nearest item the house has already sorted" tier of auto-sorting
+// compares only vectors of the CURRENT model (EMBED_MODEL), never across models. Keyed on the name, not
+// the row, so "milk" bought fifty times is one vector. A small per-house table: no HNSW index (a scan
+// of a few hundred rows is cheaper than maintaining one).
+export const listItemEmbeddings = pgTable(
+  'baumy_list_item_embeddings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    groupId: text('group_id')
+      .notNull()
+      .references(() => telegramChats.chatId),
+    listName: text('list_name').notNull().default('shopping'),
+    itemNormalized: text('item_normalized').notNull(),
+    model: text('model').notNull(),
+    embedding: vector('embedding', { dimensions: 512 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('baumy_list_item_embeddings_item_model_uq').on(t.groupId, t.listName, t.itemNormalized, t.model)],
 )
 
 // ── Operability ──────────────────────────────────────────────────

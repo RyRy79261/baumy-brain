@@ -259,13 +259,19 @@ never posts a new copy on an ordinary change.
 
 ```
 🛒 Shopping list
-3 to buy · 1 done
+4 to buy · 1 done
 Last updated by Ryan, Tue 13 Oct, 18:05
-[ ☐ Ginger ]
+[ ── Pantry ── ]
+[ ☐ Pasta ]
+[ ── Coffee ── ]
+[ ☐ oat milk ]
+[ ── Cleaning ── ]
 [ ☐ bin bags ]
-[ ☐ coffee ]
-[ ☑ oat milk ]
-[ 🧹 Clear done ] [ 🔄 Refresh ]
+[ ── Not sorted ── ]
+[ ☐ zorblax ]
+[ ── Done ── ]
+[ ☑ sponges ]
+[ 🗂 Groups ] [ 🧹 Clear done ] [ 🔄 Refresh ]
 ```
 
 - **Start it** with `/list` in the house group (General, or inside a topic). Any housemate can,
@@ -278,7 +284,17 @@ Last updated by Ryan, Tue 13 Oct, 18:05
 - **Tick an item** by tapping it: ☐ becomes ☑, with a short toast ("✓ Ginger – ticked by Ryan").
   Tap ☑ to put it back. A tap sets the state its button showed, so two people tapping the same ☐ at
   once tick it once (the second hears "already ticked"). Ticked items stay at the bottom until someone taps **🧹 Clear done**.
-  Only an active housemate's tap counts. Over 30 items, ◀ / ▶ page through the list.
+  Only an active housemate's tap counts. Over 30 items, ◀ / ▶ page through the list (headings
+  don't count toward the 30; a group that carries on to the next page gets its heading again).
+- **Sections** (2026-10-13, issue #29): every item is sorted into Pantry, Fresh, Coffee, Cleaning,
+  Maintenance or Household (or "Not sorted") a few seconds after it is added — the house's earlier pick
+  for that item, else the closest item the house has already sorted (Voyage embeddings), else Sonnet's
+  guess. A wrong one is fixed with "put coffee filters under coffee" (or the kitchen screen), and Baumy
+  remembers it for next time.
+- **Order** (2026-10-13, issue #29): the first footer button shows the order and cycles it for the
+  whole house: **🗂 Groups** (a heading per section, Not sorted last) → **🔤 A–Z** (no headings) →
+  **🕒 Added** (newest first, under "Today" and "Earlier", Berlin time). Ticked items always stay below
+  the open ones (under a "Done" heading where there are headings). Headings are buttons that do nothing.
 - **Every other change** (a chat message such as "we need milk" or "got the eggs", a DM, the
   kitchen kiosk's API) updates the message about 5 seconds after the last change, and at most 30
   seconds after the first, so a burst of adds is one edit.
@@ -293,6 +309,8 @@ Button `callback_data` (each at most 64 bytes; anything else is refused):
 | `shop:clear` | `🧹 Clear done` | Take every ticked item off the list. |
 | `shop:refresh` | `🔄 Refresh` | Re-render page 1. |
 | `shop:page:<n>` | `◀` / `▶` | Show page `n` (1-based; clamped to the pages there are). |
+| `shop:sort:<mode>` | `🗂 Groups` / `🔤 A–Z` / `🕒 Added` | Set the house's order to `mode` (`groups` / `az` / `added`) — the button shows the current mode and carries the next one, so a double tap never skips a mode. |
+| `shop:noop` | `── Pantry ──` (a heading) | Nothing: answered silently. |
 
 ---
 

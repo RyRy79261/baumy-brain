@@ -181,7 +181,7 @@ describe('house shopping list — remove and rename (issue #23)', () => {
     await upsertMember(db, A, '820', 'Marco', 'member')
     await addListItems(db, { groupId: A, items: ['mlik', 'eggs'], addedBy: '810' })
     const [before] = await row(db, A, 'mlik')
-    expect(await renameItem(db, { groupId: A, from: 'mlik', to: 'Milk', renamedBy: '820' })).toEqual({ outcome: 'renamed', from: 'mlik', to: 'Milk' })
+    expect(await renameItem(db, { groupId: A, from: 'mlik', to: 'Milk', renamedBy: '820' })).toEqual({ outcome: 'renamed', from: 'mlik', to: 'Milk', resortId: expect.any(String) })
     const [after] = await row(db, A, 'milk')
     expect(after.id).toBe(before.id)
     expect(after.item).toBe('Milk')
@@ -228,6 +228,7 @@ describe('house shopping list — remove and rename (issue #23)', () => {
       outcome: 'renamed',
       from: 'egg',
       to: 'free-range eggs',
+      resortId: expect.any(String), // a new name is sorted again (issue #29)
     })
   })
 

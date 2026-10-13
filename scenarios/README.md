@@ -19,7 +19,8 @@ SCENARIOS_SHOW_GAPS=1 pnpm test:scenarios   # run known gaps as ordinary tests t
   - It works out which call it is serving from the system prompt, by matching it against the
     constants in `lib/ai/prompts.ts`. The roles are triage, extract, reminder, list, forget, cancel-reminder, olympics, reply,
     reply-text, voice, reflect, headsup, expand, rerank, websearch, weekly, guests, issue,
-    deliberate and dedupe (the nightly hygiene sweep's entity-merge proposal; default: no merges).
+    deliberate, dedupe (the nightly hygiene sweep's entity-merge proposal; default: no merges) and
+    category (the shopping category guess, issue #29 — `fixtures.category(item)`; default: "unknown").
   - It answers from the scenario's `fixtures`, which are functions of the message text. Any role
     without a fixture gets a safe default.
   - It records every call as `{ role, tier, system, prompt, text, output }`.
@@ -67,6 +68,7 @@ flipped when its phase landed.
 | `lists.scenario.test.ts` | list acks from the store outcome, article/plural-tolerant check-off (K4), list op + question (A10), list ops not notes (A11) |
 | `list-edit.scenario.test.ts` | removing without buying and renaming (issue #23): a rename merging into an open copy, remove → empty list, ONE repost after the burst; a merge said in words in the group; a miss or an ambiguous name changes nothing and says which; a forwarded "remove" never edits the list (I3); calendar / chore / fact / reminder edits never route to the list (live mode) |
 | `shopping-topic.scenario.test.ts` | the shopping topic: `/shoppinghere` from a member, a burst of list changes (group + DM) → ONE repost in the topic 2 minutes after the last change with the old post deleted, posts kept out of the window, no topic → no post |
+| `categories.scenario.test.ts` | shopping categories (issue #29): oat milk guessed Fresh after the add, moved to Coffee from a DM ("put oat milk under coffee"), a section outside the six refused, added again days later → remembered Coffee with no model call; the order button cycling Groups → A–Z → Added → Groups and a heading that does nothing |
 | `kitchen-api.scenario.test.ts` | the kitchen kiosk API and a housemate's DM read and write ONE list, including under the `BAUMY_HOUSE_CHAT_ID` pin |
 | `cancel-reminders.scenario.test.ts` | cancelling from chat through the confirm-tap wall: a weekly series stops for good, a creator cancels their DM reminder, another member cannot see it, nothing-matched lists what is scheduled |
 | `olympics.scenario.test.ts` | Baumy Olympics against an in-memory Olympics (`olympics-fake.ts`, the scenario's `olympics` option): a calendar add and a chore log through the asker-only confirm tap, a retried tap reusing its Idempotency-Key, `/link`, "link first", reads, not-connected / down |

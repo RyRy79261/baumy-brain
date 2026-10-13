@@ -1,4 +1,5 @@
 import type { LiveRow } from '@/lib/lists/store'
+import { CATEGORIES, CATEGORY_LABELS, DEFAULT_SORT, NOT_SORTED_LABEL, SORT_LABELS, SORT_MODES, nextSortMode, type SortMode } from '@/lib/lists/categories'
 
 // The live shopping list (issue #25, docs/spec/shopping-list.md §Live list) — the PURE half: the message
 // text, its inline keyboard, its pages, and the callback data its buttons carry (built and parsed here,
@@ -66,7 +67,15 @@ export function clip(s: string, max: number): string {
 
 // ── Callback data ────────────────────────────────────────────────────────────────────────────────────
 
-export type ShopCallback = { kind: 'chk'; itemId: string } | { kind: 'clear' } | { kind: 'refresh' } | { kind: 'page'; page: number }
+export type ShopCallback =
+  | { kind: 'chk'; itemId: string }
+  | { kind: 'clear' }
+  | { kind: 'refresh' }
+  | { kind: 'page'; page: number }
+  /** A heading (issue #29): a button that does nothing — answered silently. */
+  | { kind: 'noop' }
+  /** The order button (issue #29): set the house's order to `mode` — the TARGET, so a double tap is idempotent. */
+  | { kind: 'sort'; mode: SortMode }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const MAX_PAGE = 9999
@@ -77,6 +86,8 @@ export function shopCallbackData(cb: ShopCallback): string {
       return `shop:chk:${cb.itemId}`
     case 'page':
       return `shop:page:${cb.page}`
+    case 'sort':
+      return `shop:sort:${cb.mode}`
     default:
       return `shop:${cb.kind}`
   }
@@ -85,12 +96,15 @@ export function shopCallbackData(cb: ShopCallback): string {
 const byteLength = (s: string) => new TextEncoder().encode(s).length
 
 // Parse a button's callback_data. It arrives from Telegram but is only as trustworthy as the client that
-// sent it, so anything that is not EXACTLY one of the four shapes is refused (null): too long, an id that
+// sent it, so anything that is not EXACTLY one of the six shapes is refused (null): too long, an id that
 // is not a uuid (it would reach a uuid column), a page that is not a small positive number.
 export function parseShopCallback(data: unknown): ShopCallback | null {
   if (typeof data !== 'string' || byteLength(data) > CALLBACK_DATA_MAX_BYTES) return null
   if (data === 'shop:clear') return { kind: 'clear' }
   if (data === 'shop:refresh') return { kind: 'refresh' }
+  if (data === 'shop:noop') return { kind: 'noop' }
+  const sort = /^shop:sort:([a-z]+)$/.exec(data)
+  if (sort) return (SORT_MODES as readonly string[]).includes(sort[1]) ? { kind: 'sort', mode: sort[1] as SortMode } : null
   const chk = /^shop:chk:(.+)$/.exec(data)
   if (chk) return UUID.test(chk[1]) ? { kind: 'chk', itemId: chk[1] } : null
   const page = /^shop:page:([1-9][0-9]{0,3})$/.exec(data)
@@ -143,6 +157,10 @@ export interface LiveListView {
 
 export interface LiveListInput {
   rows: LiveRow[]
+  /** The house's order (issue #29): groups (default) · az · added. */
+  sort?: SortMode
+  /** Now — the Added mode's "Today" is today in `tz`. Default: the rows' own dates are all "Earlier". */
+  now?: Date
   /** The page asked for (1-based); clamped to the pages there are. Default 1. */
   page?: number
   /** Show the page holding this item instead (the item a housemate just tapped), when it is listed. */
@@ -159,17 +177,70 @@ export function formatUpdatedAt(at: Date, tz: string): string {
   return new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(at)
 }
 
+// ── Order modes and headings (issue #29) ──────────────────────────────────────────────────────────────
+
+export const DONE_HEADING = 'Done'
+export const TODAY_HEADING = 'Today'
+export const EARLIER_HEADING = 'Earlier'
+/** A heading is a button that does nothing (`shop:noop`), framed so it never reads as an item. */
+export const headingButton = (label: string): InlineButton => ({ text: `── ${label} ──`, callback_data: shopCallbackData({ kind: 'noop' }) })
+/** The footer's order button: shows the CURRENT mode, carries the NEXT one. */
+export const sortButton = (mode: SortMode): InlineButton => ({ text: SORT_LABELS[mode], callback_data: shopCallbackData({ kind: 'sort', mode: nextSortMode(mode) }) })
+
+/** One item in display order, with the heading it sits under (null = no headings in this mode). */
+export interface OrderedRow {
+  row: LiveRow
+  heading: string | null
+}
+
+// "2026-10-13" in the house's timezone — the Added mode's day.
+const dayKey = (at: Date, tz: string) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(at)
+const byName = (a: LiveRow, b: LiveRow) => a.item.localeCompare(b.item, 'en', { sensitivity: 'base' }) || a.item.localeCompare(b.item) || a.id.localeCompare(b.id)
+const newestFirst = (a: LiveRow, b: LiveRow) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0) || a.id.localeCompare(b.id)
+
+// The rows in the order the mode shows them. Open items always come first; done (ticked, not cleared)
+// items always below them, in the order they were ticked — under their own "Done" heading in the modes
+// that have headings (so a ticked item never looks like part of the last group), with none in A–Z.
+//   groups — open items under one heading per category, in the fixed order, "Not sorted" last; within a
+//            group, oldest first (the order they were added).
+//   az     — open items alphabetically (case-insensitive); no headings at all.
+//   added  — open items newest first, under "Today" (added today, house time) and "Earlier".
+export function orderRows(rows: LiveRow[], sort: SortMode, tz: string, now?: Date): OrderedRow[] {
+  const open = rows.filter((r) => !r.done)
+  const done = rows.filter((r) => r.done)
+  let head: OrderedRow[]
+  if (sort === 'az') {
+    return [...[...open].sort(byName), ...done].map((row) => ({ row, heading: null }))
+  } else if (sort === 'added') {
+    const today = now ? dayKey(now, tz) : null
+    const isToday = (r: LiveRow) => today != null && r.createdAt != null && dayKey(r.createdAt, tz) === today
+    const sorted = [...open].sort(newestFirst)
+    head = [...sorted.filter(isToday).map((row) => ({ row, heading: TODAY_HEADING })), ...sorted.filter((r) => !isToday(r)).map((row) => ({ row, heading: EARLIER_HEADING }))]
+  } else {
+    head = []
+    for (const c of [...CATEGORIES, null]) {
+      for (const row of open) if ((row.category ?? null) === c) head.push({ row, heading: c ? CATEGORY_LABELS[c] : NOT_SORTED_LABEL })
+    }
+  }
+  return [...head, ...done.map((row) => ({ row, heading: DONE_HEADING }))]
+}
+
 export function itemButton(row: LiveRow): InlineButton {
   return { text: `${row.done ? DONE_MARK : OPEN_MARK} ${clip(boardItem(row.item), BUTTON_ITEM_MAX)}`, callback_data: shopCallbackData({ kind: 'chk', itemId: row.id }) }
 }
 
 // The live list as ONE message: a short header (title, counts, who changed it last and when, the page)
-// and one button per item per row — open items (☐) first, then done ones (☑), which stay until someone
-// taps "Clear done" — then ◀ / ▶ when there is more than one page, then the footer row.
+// and one button per item per row, in the house's order (orderRows) — open items (☐) first, then done
+// ones (☑), which stay until someone taps "Clear done" — with heading buttons where the mode has them;
+// then ◀ / ▶ when there is more than one page, then the footer row (order · Clear done · Refresh).
+// A page holds SHOP_PAGE_SIZE ITEMS — headings don't count — and a group that carries on from the page
+// before gets its heading again at the top.
 export function renderLiveList(input: LiveListInput): LiveListView {
+  const sort = input.sort ?? DEFAULT_SORT
   const open = input.rows.filter((r) => !r.done)
   const done = input.rows.filter((r) => r.done)
-  const ordered = [...open, ...done]
+  const entries = orderRows(input.rows, sort, input.tz, input.now)
+  const ordered = entries.map((e) => e.row)
   const pages = Math.max(1, Math.ceil(ordered.length / SHOP_PAGE_SIZE))
   const focus = input.focusItemId ? ordered.findIndex((r) => r.id === input.focusItemId) : -1
   const asked = focus >= 0 ? Math.floor(focus / SHOP_PAGE_SIZE) + 1 : (input.page ?? 1)
@@ -184,7 +255,14 @@ export function renderLiveList(input: LiveListInput): LiveListView {
   }
   if (pages > 1) lines.push(`Page ${page} of ${pages}`)
 
-  const keyboard: InlineButton[][] = ordered.slice((page - 1) * SHOP_PAGE_SIZE, page * SHOP_PAGE_SIZE).map((r) => [itemButton(r)])
+  const keyboard: InlineButton[][] = []
+  let heading: string | null = null
+  for (const e of entries.slice((page - 1) * SHOP_PAGE_SIZE, page * SHOP_PAGE_SIZE)) {
+    // A heading before the first item of each group on this page — so one carried over is repeated.
+    if (e.heading != null && e.heading !== heading) keyboard.push([headingButton(e.heading)])
+    heading = e.heading
+    keyboard.push([itemButton(e.row)])
+  }
   if (pages > 1) {
     const nav: InlineButton[] = []
     if (page > 1) nav.push({ text: PREV_LABEL, callback_data: shopCallbackData({ kind: 'page', page: page - 1 }) })
@@ -192,6 +270,7 @@ export function renderLiveList(input: LiveListInput): LiveListView {
     keyboard.push(nav)
   }
   keyboard.push([
+    sortButton(sort),
     { text: CLEAR_DONE_LABEL, callback_data: shopCallbackData({ kind: 'clear' }) },
     { text: REFRESH_LABEL, callback_data: shopCallbackData({ kind: 'refresh' }) },
   ])
@@ -210,6 +289,11 @@ export function toggleToast(outcome: ToggleOutcome, item: string | null, by: str
   if (outcome === 'already_ticked') return `${name} is already ticked`
   if (outcome === 'already_unticked' || outcome === 'readded') return `${name} is already on the list`
   return "That item isn't on the list any more."
+}
+
+/** The toast after the order button: the mode now shown. */
+export function sortToast(mode: SortMode): string {
+  return `Sorted: ${SORT_LABELS[mode]}`
 }
 
 export function clearToast(cleared: number): string {

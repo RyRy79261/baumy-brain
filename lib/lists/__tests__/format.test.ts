@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { joinAnd, addAck, checkoffAck, removeAck, renameAck, renderList } from '@/lib/lists/format'
+import { joinAnd, addAck, checkoffAck, removeAck, renameAck, renderList, categorizeAck } from '@/lib/lists/format'
 
 describe('list acks — deterministic, in Baumy voice', () => {
   it('joinAnd reads naturally at 0/1/2/3 items', () => {
@@ -83,6 +83,21 @@ describe('list acks — deterministic, in Baumy voice', () => {
     it('not found → says so and that nothing changed', () => {
       expect(renameAck([], ['mlik'], ['milk'])).toBe('Couldn\'t find "mlik" on the list — nothing changed. 😼')
       expect(renameAck([{ from: 'bred', to: 'bread', merged: false }], ['mlik'], ['bread'])).toContain('Couldn\'t find "mlik" on the list though.')
+    })
+  })
+
+  describe('categorizeAck (issue #29)', () => {
+    it('where each item went, and that it will be remembered', () => {
+      expect(categorizeAck([{ item: 'coffee filters', category: 'coffee' }], [])).toBe("Put coffee filters under Coffee. I'll remember that next time. 🐈‍⬛")
+      expect(categorizeAck([{ item: 'candles', category: null }], [])).toBe("candles is Not sorted now. I'll remember that next time. 🐈‍⬛")
+    })
+    it('a miss, an ambiguous name and a section that is not one of the six — nothing changed for those', () => {
+      expect(categorizeAck([], ['nutmeg'])).toBe('Couldn\'t find "nutmeg" on the list — nothing sorted. 😼')
+      expect(categorizeAck([], [], [{ item: 'a sponge', matches: ['sponge', 'sponges'] }])).toBe('"a sponge" matches more than one item (sponge and sponges) — nothing sorted; say which one. 😼')
+      expect(categorizeAck([], [], [], [{ item: 'tea', category: 'drinks' }])).toBe(
+        '"drinks" isn\'t a section — the sections are Pantry, Fresh, Coffee, Cleaning, Maintenance or Household. 😼',
+      )
+      expect(categorizeAck([], [])).toBe('Nothing to sort there. 😼')
     })
   })
 
