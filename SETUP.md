@@ -78,8 +78,8 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 >
 > **Bug/feature reporting (optional):** set `GITHUB_TOKEN` (issues:write) + `GITHUB_REPO`
 > to let housemates `/bug …` or `/feature …` in the group or a DM — Baumy enriches the
-> message into a clean issue, shows a preview, and files it on a confirm tap. Then run
-> `node --experimental-strip-types scripts/set-commands.ts` so the commands show in the menu.
+> message into a clean issue, shows a preview, and files it on a confirm tap. The next
+> production deploy puts the commands in the "/" menu (see "Command menus" below).
 
 > **Baumy Olympics (optional — `docs/spec/olympics.md`):** lets housemates add events to the
 > house Google Calendar, see what's on, log chores and ask for the standings from Telegram.
@@ -94,7 +94,7 @@ Put these in **Vercel → Project → Settings → Environment Variables** (mark
 >    its QR code) and taps **Start**: Telegram sends `/start link_<code>`, which links them. The
 >    fallback is DMing Baumy `/link <code>` (never in the group — Baumy refuses it there). An
 >    Olympics admin can also set a member's Telegram id on `/admin/members`.
-> 4. Re-run `node --experimental-strip-types scripts/set-commands.ts` so `/link` shows in the DM menu.
+> 4. `/link` shows in the DM menu after the next production deploy (see "Command menus" below).
 >
 > Rotate with `service-token rotate baumy-brain` (then update `BRAIN_SERVICE_TOKEN` and redeploy).
 > Writes (add an event, log a chore) always show a confirm card; only the person who asked can tap it.
@@ -123,6 +123,13 @@ TELEGRAM_WEBHOOK_SECRET='<secret>' \
 node --experimental-strip-types scripts/set-webhook.ts
 ```
 It sets the webhook + `allowed_updates`, drops pending updates, and **warns if privacy mode is still on**.
+
+### Command menus
+*(2026-10-13, issue #27)* Telegram's "/" command menus are registered on **every production
+deploy** by `scripts/maybe-set-commands.mjs` (in `vercel-build`, after the migrations), when
+`VERCEL_ENV=production` and `TELEGRAM_BOT_TOKEN` are set. Previews never touch the menu, and a
+Telegram error is logged without failing the deploy. The lists live in `scripts/commands.mjs`.
+To set them by hand: `TELEGRAM_BOT_TOKEN='<token>' node --experimental-strip-types scripts/set-commands.ts`.
 
 ## 9. Add the bot → you become the owner
 Now that the webhook is live, **add your bot to the house group.** That single act:

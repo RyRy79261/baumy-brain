@@ -45,6 +45,7 @@ pnpm db:migrate     # apply migrations (needs DATABASE_URL_UNPOOLED)
 pnpm dev            # next dev
 pnpm inngest:dev    # local Inngest dev server
 node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram webhook
+node --experimental-strip-types scripts/set-commands.ts  # set the "/" command menus by hand
 ```
 
 ## Working cadence (follow this)
@@ -413,6 +414,12 @@ crown jewels. The pipeline:
   pgvector **HNSW indexes**, and index-dependent column-type changes (drop index → alter →
   recreate). Always run the generator first, then edit the file it produced.
 - Migrations run automatically on deploy via `scripts/maybe-migrate.mjs` (skips when no DB).
+- **Command menus (2026-10-13, issue #27):** `scripts/commands.mjs` is the ONE list of Telegram's
+  "/" menus (DM, group, default scope) and their design (what stays unadvertised, and why).
+  `scripts/maybe-set-commands.mjs` registers them in `vercel-build` after the migrations, only when
+  `VERCEL_ENV=production` and `TELEGRAM_BOT_TOKEN` are set; it never exits non-zero and never logs
+  the token. `scripts/set-commands.ts` is the by-hand run. Change a menu in `commands.mjs` only; the
+  menu is UX, never authorization.
 
 ## Testing
 
