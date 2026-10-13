@@ -242,6 +242,18 @@ nothing privileged rides on the topic id (itself a Telegram-authenticated field)
 memory, never a backdoor. A real HTTP introspection API belongs in the authed dashboard, not a public
 endpoint.
 
+### D9d — Shopping topic (2026-10-13, issue #21)
+A forum topic where Baumy keeps the house shopping list posted (`house_config.shopping_thread_id`,
+migration 0024). Any active housemate sets it by sending `/shoppinghere` INSIDE the topic, and
+`/shoppingoff` clears it. Unlike `/notifyhere` and `/baumyhere`, this is not owner-only, because the
+list belongs to the house. The command must be the housemate's own words in the house lane, so a
+forwarded message, an anonymous-admin post or a bot post cannot set it. The value is the authenticated
+`message_thread_id`, never text, and the change is audited. After each list change, a 2-minute
+debounced Inngest job reposts the whole list there and deletes the previous post. If Telegram refuses
+the delete, the old post is edited to `⬇️ The list moved down.` The post is not pinned and not
+windowed. Full behaviour: `docs/spec/shopping-list.md` §Shopping topic. Like the other topics, it
+changes where Baumy posts and grants no trust: nothing privileged rides on the thread id.
+
 ### D10 — Register `setWebhook` from a one-shot protected admin action, not Vercel cron
 `setWebhook` is a run-once deploy-time operation; Vercel cron is banned for cost. Trigger it
 from an admin-CLI `tsx` one-shot **or** a `BAUMY_ADMIN_SECRET`-guarded route, then verify with
