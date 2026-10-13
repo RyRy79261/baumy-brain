@@ -90,7 +90,9 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   answers **bypass `/pause`** (lane-scoped: house + reminders still honor it).
 - **Shopping list (`docs/spec/shopping-list.md`, `lib/lists/*`, `baumy_list_items`):** rides the
   same scope seam — a member DMs "buy milk" / "got the milk" / "what's on the list?" and it writes
-  THROUGH to the house's group-scoped list. Classifier `list` flag proposes → `listOpProposed`
+  THROUGH to the house's group-scoped list ("remove milk" takes it off without buying it — a soft
+  `is_active=false`; "change mlik to milk" renames, merging into an open copy of the new name — issue #23).
+  Classifier `list` flag proposes → `listOpProposed`
   (quarantine-excluded, pause lane-scoped) + the store dispose. First-class stateful table (crosses
   the memory-core "graduation rule"), not a fact; auto-commits (capture tier), never confirm-gated.
   The kitchen kiosk reads/writes the SAME list over `app/api/kitchen/shopping/*` (Bearer
@@ -114,7 +116,7 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   (`REQUESTER_ONLY_ACTIONS`), and the tap sends `X-Baumy-Confirmed: 1` with the `Idempotency-Key`
   minted at propose time — a retried tap (or a card reopened after Olympics did not answer) resends
   the same key, so Olympics runs it once. Olympics reads (what's on, standings) and `/link` (DM only;
-  refused in the group) run without a tap. **Reminder CREATION and shopping-list add/check-off are exempt from both — they
+  refused in the group) run without a tap. **Reminder CREATION and shopping-list add/check-off/remove/rename are exempt from both — they
   auto-commit** (`lib/turn/actions.ts` `runReminder` + `runList`): a reminder only posts text to a
   fixed, code-resolved destination (the house group, or its creator's own DM — D2), and a list op only mutates the house's own group-scoped list (reversible,
   low-privilege). Both are the capture tier. Do not re-add a confirm step to either. (Cancelling a reminder is the
@@ -160,7 +162,7 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
 - **Shopping topic (`docs/spec/shopping-list.md` §Shopping topic, `telegram.md` D9d):**
   `house_config.shopping_thread_id`, set by ANY active member's `/shoppinghere` inside the topic (own
   words, house lane — never a forward / anonymous admin / bot; `/shoppingoff` clears; audited). Every
-  list write that changed something (`runList`, the kitchen add/check-off) calls
+  list write that changed something (`runList`, the kitchen add/check-off/remove/rename) calls
   `requestShoppingRepost` → `lists/shopping.changed` → `shopping-repost` (Inngest debounce 2m keyed by
   the house, concurrency 1): post the whole open list in the topic (plain text, item sigils defanged),
   atomically swap its id in for the previous one (`swapStoredBoard`, one locked statement — overlapping

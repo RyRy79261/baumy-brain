@@ -1,6 +1,6 @@
 # Shopping list — a first-class, stateful house list
 
-**Status:** v1 implemented (single `shopping` list). Multi-list is a deferred, additive seam
+**Status:** v1 implemented (single `shopping` list); remove and rename added 2026-10-13 (issue #23). Multi-list is a deferred, additive seam
 (`list_name`), no migration required.
 
 ## What this adds (v1)
@@ -11,6 +11,10 @@ pollute the house group:
 - **Add** — "buy milk", "we need bin bags", "add oat milk and coffee" → items go on the house list.
 - **Check off** — "got the milk", "bought bin bags", "picked up coffee" → the item leaves the open
   list (recorded as bought, with who + when).
+- **Remove** (2026-10-13, issue #23) — "remove milk", "take bin bags off the list" → the item leaves
+  the open list WITHOUT being bought (a soft remove; never recorded as bought).
+- **Rename** (2026-10-13, issue #23) — "change mlik to milk" → the item now reads "milk". If "milk" is
+  already on the list, the old "mlik" is removed instead, so the list never holds two copies (a merge).
 - **Query** — "what's on the shopping list?", "what do we need?" → Baumy replies with the current
   open list.
 
@@ -33,8 +37,8 @@ separately, because capture runs orthogonally, before the list op).
 
 **The LLM proposes; deterministic code disposes** — the same wall as every other write:
 
-1. **Propose (routing, Haiku):** the classifier returns a `list` flag ∈ `add | checkoff | query |
-   none` (`lib/ai/classify.ts`). Routing only — no items yet. This is orthogonal to the single
+1. **Propose (routing, Haiku):** the classifier returns a `list` flag ∈ `add | checkoff | remove |
+   rename | query | none` (`lib/ai/classify.ts`; `remove` / `rename` added 2026-10-13, issue #23). Routing only — no items yet. This is orthogonal to the single
    `decide()` Decision, so a list op never competes with reminder/forget/reply.
 2. **Gate (deterministic):** `listOpProposed(origin, flag, policyEnabled, decision)`
    (`lib/core/decide.ts`) — requires `mutate_list` allowed for the lane, excludes quarantined
@@ -44,16 +48,18 @@ separately, because capture runs orthogonally, before the list op).
    NOT skipped, so "what's on the list?" still renders it). The caller also requires a non-empty
    house **scope**.
 3. **Name the items (Sonnet, best-effort):** `extractListOp` (`lib/ai/list-extract.ts`) returns
-   `{op, items}`. A malformed object degrades to `{op:'none'}` → the message falls through to normal
+   `{op, items, renames?}` — `renames` is `[{from, to}]`, item TEXT only, for a `rename`. A malformed object degrades to `{op:'none'}` → the message falls through to normal
    handling (never crash-loops, never blackholes — MEMORY.md best-effort rule).
-4. **Dispose (code):** `addListItems` / `checkOffItems` / `currentList` (`lib/lists/store.ts`) run
-   against the group-scoped table. Deterministic acks (`lib/lists/format.ts`) — DM → words, group →
+4. **Dispose (code):** `addListItems` / `checkOffItems` / `removeItems` / `renameItem` / `currentList`
+   (`lib/lists/store.ts`) run against the group-scoped table. Deterministic acks (`lib/lists/format.ts`) — DM → words, group →
    a quiet reaction chosen from the **store outcome** (K4, chat-understanding-v2 §3): add → ✍ when
    something new went on, 👀 when it was all already listed; check-off → 👍 only when everything named
-   was ticked, otherwise the `checkoffAck` words (what wasn't on the list, what's left).
+   was ticked, otherwise the `checkoffAck` words (what wasn't on the list, what's left); remove and
+   rename the same way → 👍 only when everything named was changed, otherwise the `removeAck` /
+   `renameAck` words, which say what wasn't found and that nothing changed for it.
 
-A fully-compromised model can at most return an op enum + item strings; it can never name the scope,
-the attribution, or a row id.
+A fully-compromised model can at most return an op enum + item strings (and `from → to` pairs); it can
+never name the scope, the attribution, or a row id.
 
 ## Security invariants (must hold)
 
@@ -61,20 +67,21 @@ the attribution, or a row id.
   `houseScopeForOrigin(origin, houseChatId)` — so a DM "buy milk" writes THROUGH to the shared house
   list, and a member of house A cannot name house B's list. Empty scope (ignore lane / bot not yet in
   a group) is a no-op.
-- **I2 — Attribution is authenticated.** `added_by` / `checked_by` = `String(origin.fromId)`, nulled
+- **I2 — Attribution is authenticated.** `added_by` / `checked_by` / `removed_by` / `renamed_by` =
+  `String(origin.fromId)`, nulled
   for a missing sender. Never a name lifted from the message body.
 - **I3 — Quarantine cannot mutate.** Forwarded/bot content (`memoryTrust === 'quarantined'`) is
   rejected by `listOpProposed` — a housemate cannot launder attacker content onto the list by
   forwarding it into their DM.
 - **I4 — Group-scoped every query.** Every `SELECT`/`UPDATE` filters `WHERE group_id = scope`
   (+ `list_name`). No cross-house row is ever readable or mutable.
-- **I5 — Low-privilege, auto-commit — NOT confirm-gated.** Adding/checking is the capture/reminder
-  tier (reversible, house-scoped) — it auto-commits with **no** confirm tap. The confirm-tap wall
+- **I5 — Low-privilege, auto-commit — NOT confirm-gated.** Adding / checking / removing / renaming is
+  the capture/reminder tier (a remove is soft and a re-add brings the item back) (reversible, house-scoped) — it auto-commits with **no** confirm tap. The confirm-tap wall
   stays reserved for deletion/`forget` + GitHub issues; do **not** add a `list.*` pendingAction.
 - **I6 — Fixed destination + exactly-once.** An ack sends only to `origin.chatId` via the same
   two-target allow-list as a reply (the house group, or the authenticated DM sender's own chat). The
   **mutation** is one memoized `step.run` whose RETURNING-derived result (added / already /
-  checked-off) is captured there; the **words ack** is rendered + sent in a *following* step from
+  checked-off / removed / renamed) is captured there; the **words ack** is rendered + sent in a *following* step from
   the current list (an idempotent read) through the same `claimReply`/release belt. So a transient
   read/send failure re-runs only the ack step — never the mutation — which keeps the ack truthful
   (no "already there" / "couldn't find it" lie) and the send exactly-once (no double-send / no
@@ -88,7 +95,9 @@ the attribution, or a row id.
 
 - `group_id` (house scope, FK) · `list_name` (default `'shopping'` — the multi-list seam) · `item`
   (display) · `item_normalized` (`lower(trim)` dedupe key) · `added_by` / `checked_by` (member FKs,
-  `set null`) · `checked_at` (null = open) · `is_active` (soft-remove) · `created_at`.
+  `set null`) · `checked_at` (null = open) · `is_active` (soft-remove) · `removed_by` / `removed_at`
+  (who took it off WITHOUT buying it, and when) · `renamed_by` / `renamed_at` (the last rename) ·
+  `created_at`. The four removed/renamed columns are migration `0025` (2026-10-13, issue #23).
 - **Partial-unique index** `baumy_list_items_open_uq` on `(group_id, list_name, item_normalized)
   WHERE is_active AND checked_at IS NULL` → **one OPEN copy of an item per house list**. Checking an
   item off drops it out of the predicate, so a later "buy milk again" legitimately creates a fresh
@@ -98,6 +107,32 @@ the attribution, or a row id.
   (`looseItemKey` — a leading article/quantifier and a plain plural dropped: "got the eggs" ticks
   "egg"), counted only when exactly ONE open item has that key. "milk" never ticks "almond milk" and an
   ambiguous pair is reported as a miss (audit K4, 2026-09-26). The add/dedupe key is unchanged.
+
+### Remove and rename (2026-10-13, issue #23)
+
+The owner asked for both, on the kitchen screen and in Telegram ("remove milk", "change mlik to milk").
+
+- **Remove** (`removeItems`): the same matching as a check-off (exact normalized, then the ONE open
+  item with that loose key). A matched row gets `is_active = false`, `removed_at`, `removed_by`. It is
+  **not** a bought record: `checked_at` / `checked_by` stay NULL, so nothing that reads purchases
+  counts it. A re-add later creates a fresh open row (the row left the partial-unique predicate).
+- **Rename** (`renameItem`, one item at a time): `from` is matched like a check-off; `to` is the new
+  display text (trimmed, clamped to 80 characters). Outcomes:
+  - `renamed` — the same row now reads `to` (`item` and `item_normalized` change; its id and
+    `added_by` stay; `renamed_by` / `renamed_at` are set). A case-only fix ("Milk" → "milk") renames in
+    place.
+  - `merged` — `to` (exact normalized, the add/dedupe key) is ALREADY open as another row, so the old
+    row is removed (as a remove above, attributed to the renamer) instead of making a second copy. If a
+    concurrent add of `to` wins the partial-unique index between the check and the write, the unique
+    violation is caught and the rename becomes this merge.
+  - `unchanged` — `to` is exactly the current text: nothing to do.
+  - `not_found` — no open item matches `from`, or more than one does: nothing changes.
+- **A miss changes nothing.** A missing or ambiguous match is reported (`notFound` / `not_found`), and
+  the ack says what wasn't found — never a guess.
+- **Same walls as add / check-off.** Group-scoped (I1, I4), attributed from the authenticated sender
+  or the kiosk's mapped member (I2, K-I3), quarantined and forwarded content can never trigger either
+  (I3, `listOpProposed`), no confirm tap (I5), the mutation is one memoized step (I6), and every
+  remove or rename that changed the list asks for the shopping-topic repost.
 
 ## Kitchen API (the kiosk's front door)
 
@@ -110,6 +145,13 @@ ONE list whether a housemate DMs Baumy or taps the kiosk. `lib/lists/kitchen-api
 | `GET /api/kitchen/shopping` | — | `{ ok, items: [{ id, item, addedBy, createdAt }] }` (open items, oldest first) |
 | `POST /api/kitchen/shopping/add` | `{ items: string[1..30], telegramUserId? }` | `{ ok, added, already, attributedTo, items }` |
 | `POST /api/kitchen/shopping/checkoff` | `{ items: string[1..30], telegramUserId? }` | `{ ok, checkedOff, notFound, attributedTo, items }` |
+| `POST /api/kitchen/shopping/remove` (2026-10-13) | `{ items: string[1..30], telegramUserId? }` | `{ ok, removed, notFound, attributedTo, items }` |
+| `POST /api/kitchen/shopping/rename` (2026-10-13) | `{ from: string, to: string, telegramUserId? }` (each trimmed, 1..200) | `{ ok, outcome: 'renamed' \| 'merged' \| 'unchanged' \| 'not_found', from, to, attributedTo, items }` |
+
+`items` in every write response is the open list after the write, in the `GET` shape. For a rename,
+`from` is the open item it matched (or what was sent, when nothing matched) and `to` is the item as it
+now reads (for `merged`, the copy that was already open). `not_found` is a `200`, not an error: it
+changed nothing.
 
 Errors: `401 unauthorized` (missing/wrong token, or `KITCHEN_API_TOKEN` unset), `503 not_configured`
 (no house yet), `400 bad_request` (malformed body).
@@ -125,13 +167,15 @@ Invariants:
   body is ignored. `''` (the bot has not been added to a group) → `503 not_configured` before any read
   or write. A write registers the scope chat (`ensureRegistered`, idempotent) for the FK, as the
   Telegram lane does.
-- **K-I3 — Attribution only for a real member.** `added_by`/`checked_by` is `null`, or the supplied
+- **K-I3 — Attribution only for a real member.** `added_by` / `checked_by` / `removed_by` /
+  `renamed_by` is `null`, or the supplied
   `telegramUserId` when it is an ACTIVE roster member (`mapMember`); an unknown or deactivated id is
   attributed to nobody (`attributedTo: null` in the response). The kiosk is one shared device, so this
   is a convenience label, not authentication.
-- **K-I4 — Same dispose layer.** `addListItems` / `checkOffItems` / `currentList` unchanged: re-adding
-  an open item is a no-op (`already`, partial-unique index backstop); check-off is exact-normalized
-  then the unambiguous loose key. Like the Telegram lane it auto-commits (capture tier, I5).
+- **K-I4 — Same dispose layer.** `addListItems` / `checkOffItems` / `removeItems` / `renameItem` /
+  `currentList`, the same functions the Telegram lane calls: re-adding an open item is a no-op
+  (`already`, partial-unique index backstop); check-off, remove and a rename's `from` are
+  exact-normalized then the unambiguous loose key. Like the Telegram lane it auto-commits (capture tier, I5).
 
 ## Shopping topic (2026-10-13, issue #21)
 
@@ -155,9 +199,10 @@ handles it with no model involved (`lib/turn/commands.ts`):
   sent. `/shoppinghere` also asks for a repost, so the list shows up in the new topic without waiting
   for the next change.
 
-**Reposting.** Every change to the list asks for a repost: an add or check-off from Telegram
-(`runList`, and only when something was added or ticked) and a kitchen API add or check-off
-(`handleAdd` / `handleCheckOff`, on the same condition). These are all the writers of
+**Reposting.** Every change to the list asks for a repost: an add, check-off, remove or rename from
+Telegram (`runList`, and only when something was added, ticked, removed or renamed) and a kitchen API
+add, check-off, remove or rename (`handleAdd` / `handleCheckOff` / `handleRemove` / `handleRename`, on
+the same condition: a rename only when its outcome is `renamed` or `merged`). These are all the writers of
 `baumy_list_items` today; a new one must call `requestShoppingRepost` too. The request is a
 `lists/shopping.changed` event sent to Inngest. The `shopping-repost` function is **debounced for 2
 minutes, keyed by the house** (`event.data.groupId`). It runs about 2 minutes after the LAST change,
@@ -226,8 +271,6 @@ itself, so the models never need the board.
 
 - **Multi-list** (`todo`, `guests`, …): `list_name` exists; wiring a second list is additive, no
   migration.
-- **Remove-without-buying** (distinct from "bought"): `is_active` soft-remove exists in the schema;
-  no op surfaces it in v1 (check-off covers "it's handled").
 - **Fuzzy check-off matching** beyond articles/plurals (typos, synonyms — "semi-skimmed" for "milk"):
   still a miss ("couldn't find X") rather than a guess — precision-first.
 - **Quantities / provenance link**: folded into the item string for now; a structured `quantity`
