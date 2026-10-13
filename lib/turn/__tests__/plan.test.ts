@@ -195,6 +195,14 @@ describe('planResponse — list (K4 store outcome, A10 continue to the question)
     expect(plan({ outcome: { list: list({ op: 'remove', checkedOff: ['milk'] }) } })).toEqual({ kind: 'list-words', row: 'list' })
     expect(plan({ lane: 'member_dm', outcome: { list: list({ op: 'remove', removed: ['milk'] }) } })).toMatchObject({ kind: 'list-words' })
   })
+  it('group categorize (issue #29): all set → 👍; a miss, an ambiguous name or a section outside the six → words', () => {
+    const categorized = [{ item: 'coffee filters', category: 'coffee' as const }]
+    expect(plan({ outcome: { list: list({ op: 'categorize', categorized }) } })).toEqual({ kind: 'react', emoji: '👍', row: 'list' })
+    expect(plan({ outcome: { list: list({ op: 'categorize', categorized, notFound: ['nutmeg'] }) } })).toEqual({ kind: 'list-words', row: 'list' })
+    expect(plan({ outcome: { list: list({ op: 'categorize', categorized, badCategory: [{ item: 'tea', category: 'drinks' }] }) } })).toEqual({ kind: 'list-words', row: 'list' })
+    expect(plan({ outcome: { list: list({ op: 'categorize', categorized: [] }) } })).toEqual({ kind: 'list-words', row: 'list' })
+    expect(plan({ lane: 'member_dm', outcome: { list: list({ op: 'categorize', categorized }) } })).toMatchObject({ kind: 'list-words' })
+  })
   it('a query (either lane) and every DM op → words', () => {
     expect(plan({ verdict: V({ intent: 'question', list: 'query' }), outcome: { list: list({ op: 'query' }) } })).toMatchObject({ kind: 'list-words' })
     expect(plan({ lane: 'member_dm', outcome: { list: list({ added: ['milk'] }) } })).toMatchObject({ kind: 'list-words' })

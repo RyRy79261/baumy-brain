@@ -1,3 +1,5 @@
+import { CATEGORIES, CATEGORY_LABELS, type Category } from '@/lib/lists/categories'
+
 // Deterministic acks for list ops — CODE composes these, not the model. A disposed action
 // (item added / checked off / list rendered) is data, so the ack is a fixed string, never an
 // LLM paraphrase that could drift or hallucinate an item. Kept in Baumy's voice all the same:
@@ -83,6 +85,28 @@ export function renameAck(
   if (notFound.length) parts.push(renamed.length ? `Couldn't find ${quoted(notFound)} on the list though.` : `Couldn't find ${quoted(notFound)} on the list — nothing changed.`)
   if (ambiguous.length) parts.push(ambiguousLine(ambiguous, renamed.length || notFound.length ? null : 'changed'))
   return renamed.length ? `${parts.join(' ')}${leftTail(remaining)}` : `${parts.join(' ')} 😼`
+}
+
+// Ack for a category pick ("put coffee filters under coffee", issue #29): where each item went, what
+// wasn't on the list, a name that fits more than one item, and a section that isn't one of the six.
+export function categorizeAck(
+  categorized: { item: string; category: Category | null }[],
+  notFound: string[],
+  ambiguous: { item: string; matches: string[] }[] = [],
+  badCategory: { item: string; category: string }[] = [],
+): string {
+  if (!categorized.length && !notFound.length && !ambiguous.length && !badCategory.length) return `Nothing to sort there. 😼`
+  const parts = categorized.map((c) => (c.category ? `Put ${c.item} under ${CATEGORY_LABELS[c.category]}.` : `${c.item} is Not sorted now.`))
+  if (categorized.length) parts.push(`I'll remember that next time.`)
+  if (notFound.length) parts.push(categorized.length ? `Couldn't find ${quoted(notFound)} on the list though.` : `Couldn't find ${quoted(notFound)} on the list — nothing sorted.`)
+  if (ambiguous.length) parts.push(ambiguousLine(ambiguous, categorized.length || notFound.length ? null : 'sorted'))
+  if (badCategory.length) {
+    const labels = CATEGORIES.map((c) => CATEGORY_LABELS[c])
+    const sections = `${labels.slice(0, -1).join(', ')} or ${labels[labels.length - 1]}`
+    const named = joinAnd(badCategory.map((b) => `"${b.category}"`))
+    parts.push(`${named} ${badCategory.length === 1 ? "isn't a section" : "aren't sections"} — the sections are ${sections}.`)
+  }
+  return categorized.length ? `${parts.join(' ')} 🐈‍⬛` : `${parts.join(' ')} 😼`
 }
 
 // Render the current open list (a query reply). Plain text, one bullet per item.

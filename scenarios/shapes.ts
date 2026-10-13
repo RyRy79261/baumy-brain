@@ -23,7 +23,7 @@ export interface Verdict {
   vibe: Vibe | null
   tier: 'quick' | 'deep'
   webSearch: boolean
-  list: 'add' | 'checkoff' | 'remove' | 'rename' | 'query' | 'none'
+  list: 'add' | 'checkoff' | 'remove' | 'rename' | 'categorize' | 'query' | 'none'
   /** Baumy Olympics routing (docs/spec/olympics.md). */
   olympics: 'calendar_add' | 'calendar_list' | 'chore_log' | 'standings' | 'none'
 }

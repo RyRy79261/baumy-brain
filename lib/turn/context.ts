@@ -1,3 +1,4 @@
+import type { Category } from '@/lib/lists/categories'
 import { DateTime } from 'luxon'
 import type { Trust } from '@/lib/core/origin'
 import type { DirectedWhy } from '@/lib/pipeline/directed'
@@ -54,7 +55,7 @@ export interface FactConflict {
 }
 
 export interface ListOutcome {
-  op: 'add' | 'checkoff' | 'remove' | 'rename' | 'query'
+  op: 'add' | 'checkoff' | 'remove' | 'rename' | 'categorize' | 'query'
   added: string[]
   already: string[]
   checkedOff: string[]
@@ -67,6 +68,10 @@ export interface ListOutcome {
   notFound: string[]
   /** Remove / rename only: a name that fits MORE than one open item (`matches`) — nothing changed for it. */
   ambiguous: { item: string; matches: string[] }[]
+  /** Categorize only (issue #29): items whose section was set (null = "Not sorted"). */
+  categorized?: { item: string; category: Category | null }[]
+  /** Categorize only: a section that is not one of the six — nothing changed for these items. */
+  badCategory?: { item: string; category: string }[]
   /** The open list after the op (a query renders it; a compound question may quote it). */
   open: string[]
 }

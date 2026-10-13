@@ -10,7 +10,7 @@ import { degradeOnMalformed } from './errors'
 // an op enum + item strings (and from → to pairs for a rename), which deterministic code then disposes
 // against the group-scoped table.
 export const listExtraction = z.object({
-  op: z.enum(['add', 'checkoff', 'remove', 'rename', 'query', 'none']),
+  op: z.enum(['add', 'checkoff', 'remove', 'rename', 'categorize', 'query', 'none']),
   // Loose ON PURPOSE: a single odd element (blank, over-long) must NOT reject the WHOLE op and
   // silently drop a valid add (best-effort). The store's dedupeInput is the precision gate — it
   // trims, drops blanks, clamps length, and caps count.
@@ -19,6 +19,10 @@ export const listExtraction = z.object({
   // ever item TEXT — the store matches `from` to a row with the check-off rule (code disposes).
   // Optional: an add / check-off / remove / query has none.
   renames: z.array(z.object({ from: z.string(), to: z.string() })).optional(),
+  // A category pick ("put coffee filters under coffee", issue #29): item TEXT + the section named. The
+  // category is a plain string ON PURPOSE (a section outside the six must not reject the whole op): code
+  // checks it against the fixed enum (lib/lists/categories.ts) and reports anything else.
+  categories: z.array(z.object({ item: z.string(), category: z.string() })).optional(),
 })
 export type ListExtraction = z.infer<typeof listExtraction>
 

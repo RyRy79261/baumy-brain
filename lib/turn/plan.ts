@@ -90,7 +90,10 @@ const words = (mode: ReplyMode, row: PlanRow, extra: { alsoReact?: PlannerEmoji;
 function listAck(l: ListOutcome, dm: boolean): { react: PlannerEmoji } | 'words' {
   if (l.op === 'query' || dm) return 'words'
   if (l.op === 'add') return { react: l.added.length > 0 ? NOTED : '👀' }
-  const done = l.op === 'checkoff' ? l.checkedOff.length : l.op === 'remove' ? l.removed.length : l.renamed.length
+  const done =
+    l.op === 'checkoff' ? l.checkedOff.length : l.op === 'remove' ? l.removed.length : l.op === 'categorize' ? (l.categorized?.length ?? 0) : l.renamed.length
+  // A category pick naming a section that is not one of the six → words (which sections there are).
+  if (l.op === 'categorize' && (l.badCategory?.length ?? 0) > 0) return 'words'
   if (l.op === 'rename' && l.renamed.some((r) => r.merged)) return 'words'
   return l.notFound.length === 0 && (l.ambiguous?.length ?? 0) === 0 && done > 0 ? { react: '👍' } : 'words'
 }

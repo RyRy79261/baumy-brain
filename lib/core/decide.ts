@@ -9,8 +9,8 @@ import { isAllowed } from './policy'
 export type Decision = 'drop' | 'capture' | 'reply' | 'reminder' | 'cancel_reminder' | 'forget'
 
 // The classifier's shopping-list routing flag (lib/ai/classify.ts — routing only; the extractor names
-// the items and code disposes). remove / rename: issue #23.
-export type ListFlag = 'add' | 'checkoff' | 'remove' | 'rename' | 'query' | 'none'
+// the items and code disposes). remove / rename: issue #23; categorize ("put X under coffee"): issue #29.
+export type ListFlag = 'add' | 'checkoff' | 'remove' | 'rename' | 'categorize' | 'query' | 'none'
 
 export type Intent = 'statement' | 'question' | 'request' | 'reminder' | 'cancel_reminder' | 'forget' | 'banter' | 'chatter'
 
