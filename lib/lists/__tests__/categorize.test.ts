@@ -162,6 +162,18 @@ describe('auto-sorting — the three tiers, in order', () => {
     expect(guess).not.toHaveBeenCalled()
   })
 
+  it('a pick that lands WHILE the model is guessing still wins: the write is compare-and-set on the source', async () => {
+    const db = await setup()
+    const id = await add(db, 'oat milk')
+    const guess = vi.fn(async () => {
+      await setItemCategory(db, { groupId: G, id, category: 'coffee', by: null }) // a housemate, mid-guess
+      return 'fresh' as const
+    })
+    expect(await autoCategorizeItem(db, { groupId: G, itemId: id }, { embed: table({}), guess })).toEqual({ outcome: 'skipped', id })
+    expect(guess).toHaveBeenCalled()
+    expect(await rowOf(db, id)).toEqual({ c: 'coffee', s: 'picked' })
+  })
+
   it('a "Not sorted" pick forgets the memory, and a name whose latest sort was that pick lends nothing', async () => {
     const db = await setup()
     const first = await add(db, 'candles')

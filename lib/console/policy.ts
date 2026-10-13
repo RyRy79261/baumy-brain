@@ -111,6 +111,7 @@ export const POLICY: Record<string, TablePolicy> = {
     shoppingMessageId: prov('message id of the live shopping list — from Telegram\'s sendMessage result; every change edits it'),
     shoppingUpdatedBy: prov('who last changed the shopping list (the live list\'s "Last updated by") — an authenticated id, never text'),
     shoppingUpdatedAt: prov('when the shopping list last changed'),
+    shoppingSort: open('the live list\'s order (groups / az / added — a CHECK holds it); housemates cycle it with the list\'s order button'),
     houseTimezone: open('house timezone — affects every cron slot and every date resolution'),
     responsePolicy: open('edit via the typed setters on the settings page (pause, confidence floor, muted topics, reminder frequency)'),
     dailySpendCapUsd: open('spend cap'),
@@ -243,6 +244,30 @@ export const POLICY: Record<string, TablePolicy> = {
     renamedBy: prov('who last renamed it'),
     renamedAt: open('null = never renamed'),
     clearedAt: open('null = still shown on the live list; set = "Clear done" took it off'),
+    category: open('one of the six category keys or null = Not sorted (a CHECK holds it) — a hand fix should also set category_source = picked, or auto-sorting treats the row as unsorted'),
+    categorySource: prov('where the category came from (picked / remembered / similar / guessed) — auto-sorting only fills a row whose source is null, so a pick is never overwritten'),
+    categorizedBy: prov('who picked the category — an authenticated id, never text'),
+    categorizedAt: prov('when it was sorted'),
+    ...stamped,
+  },
+
+  listCategories: {
+    id: prov('surrogate key'),
+    ...scoped,
+    listName: prov('resilience seam — one list today'),
+    itemNormalized: derived('the add/dedupe key of the item this pick is for — a remembered pick is looked up by it exactly'),
+    category: open('the house\'s remembered pick for this item (a CHECK holds it to the six keys); a later add of the item gets it'),
+    pickedBy: prov('who picked it'),
+    updatedAt: prov('last pick'),
+  },
+
+  listItemEmbeddings: {
+    id: prov('surrogate key'),
+    ...scoped,
+    listName: prov('resilience seam — one list today'),
+    itemNormalized: derived('the item name this vector is for'),
+    model: prov('the similar-item tier filters on model = EMBED_MODEL so two embedding spaces are never cosine-compared'),
+    embedding: derived('512-dim Voyage vector of the item name. Application-maintained — a hand-typed vector silently mis-sorts later items; drop the row and the next add of the name re-embeds it'),
     ...stamped,
   },
 

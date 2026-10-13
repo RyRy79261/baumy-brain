@@ -17,11 +17,11 @@ import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/for
 import { appendInbound, recentTurns, scrubWindow, purgeWindow, linkProduced, withholdProducing, EXPIRED_WINDOW_TEXT } from '@/lib/turn/window'
 import { createReminder, claimReminder, markSent, releaseReminder, scheduleNextOccurrence, loadSeriesRow, repairRecurringSeries, orphanedEventReminders, reminderDestination } from '@/lib/reminders/store'
 import { lookupEdit, withdrawForEdit, settleEditedFacts } from '@/lib/turn/edit'
-import { addListItems, checkOffItems, currentList, removeItems, renameItem, isUniqueViolation, toggleListItem, clearDoneItems, liveListRows } from '@/lib/lists/store'
+import { addListItems, checkOffItems, currentList, removeItems, renameItem, isUniqueViolation, toggleListItem, clearDoneItems, liveListRows, setItemCategory, setShoppingSort, loadShoppingSort } from '@/lib/lists/store'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { loadResponsePolicy, setGlobalEnabled, addMutedTopic, removeMutedTopic } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
-import { embedSync } from '@/lib/ai/embed'
+import { embedSync, EMBED_MODEL } from '@/lib/ai/embed'
 import { withSimulatedTime } from '@/lib/core/clock'
 import { __setDbOverride } from '@/db/client'
 import { resolveHouseIds, setShoppingThread } from '@/lib/identity/house'
@@ -46,6 +46,7 @@ vi.mock('@/lib/inngest/client', async (importOriginal) => {
 })
 const { runEventSurfacingScan } = await import('@/lib/inngest/functions/surfacing')
 const { runShoppingRender, swapStoredBoard, retireShoppingBoard } = await import('@/lib/lists/board')
+const { autoCategorizeItem, nearestSorted } = await import('@/lib/lists/categorize')
 const embed = async (t: string) => embedSync(t)
 const GROUP = '-100e2e'
 
@@ -450,6 +451,56 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
       ['eggs', null],
       ['milk', (rows.rows[1] as { checked_at: Date }).checked_at.getTime()],
     ])
+  })
+
+  it('categories (issue #29): migration 0028 — CHECKs, the remembered → similar → guess SQL, the pick upsert and the compare-and-set on real Postgres', async () => {
+    const CAT = '-100e2eCats'
+    await ensureRegistered(h.db, CAT, null)
+    await h.db.insert(houseConfig).values({ id: true, houseGroupChatId: CAT }).onConflictDoNothing()
+    // the CHECK constraints hold only the enum
+    await expect(h.pool.query("INSERT INTO baumy_list_items (group_id, item, item_normalized, category) VALUES ($1, 'x', 'x1', 'dairy')", [CAT])).rejects.toThrow(/category_ck/)
+    await expect(h.pool.query("INSERT INTO baumy_list_items (group_id, item, item_normalized, category_source) VALUES ($1, 'x', 'x2', 'vibes')", [CAT])).rejects.toThrow(/category_source_ck/)
+    await expect(h.pool.query("INSERT INTO baumy_list_categories (group_id, item_normalized, category) VALUES ($1, 'x', 'Coffee')", [CAT])).rejects.toThrow(/category_ck/)
+    await expect(h.pool.query("UPDATE baumy_house_config SET shopping_sort = 'random'")).rejects.toThrow(/shopping_sort_ck/)
+    const dflt = await h.pool.query("SELECT column_default FROM information_schema.columns WHERE table_name = 'baumy_house_config' AND column_name = 'shopping_sort'")
+    expect(dflt.rows[0].column_default).toMatch(/'groups'/)
+
+    // A guessed item becomes the anchor for a near-identical name (real pgvector cosine, current model only).
+    const embed = async (t: string) => embedSync(t)
+    const [milk] = (await addListItems(h.db, { groupId: CAT, items: ['oat milk'], addedBy: null })).addedIds
+    expect(await autoCategorizeItem(h.db, { groupId: CAT, itemId: milk }, { embed, guess: async () => 'fresh' })).toMatchObject({ source: 'guessed', category: 'fresh' })
+    await checkOffItems(h.db, { groupId: CAT, items: ['oat milk'], checkedBy: null })
+    const [again] = (await addListItems(h.db, { groupId: CAT, items: ['Oat milk'], addedBy: null })).addedIds
+    const guess = vi.fn(async () => 'pantry' as const)
+    expect(await autoCategorizeItem(h.db, { groupId: CAT, itemId: again }, { embed, guess })).toMatchObject({ source: 'similar', category: 'fresh', similarTo: 'oat milk' })
+    expect(guess).not.toHaveBeenCalled()
+    // the same vector under another model is never compared
+    await h.pool.query("UPDATE baumy_list_item_embeddings SET model = 'retired-model' WHERE group_id = $1", [CAT])
+    expect(await nearestSorted(h.db, { groupId: CAT, vector: embedSync('oat milk') })).toBeNull()
+    await h.pool.query('UPDATE baumy_list_item_embeddings SET model = $2 WHERE group_id = $1', [CAT, EMBED_MODEL])
+    expect(await nearestSorted(h.db, { groupId: CAT, vector: embedSync('oat milk') })).toMatchObject({ item: 'oat milk', category: 'fresh' })
+
+    // A pick (ON CONFLICT upsert) and an auto-sort racing for the same row: the pick always stands.
+    const [beans] = (await addListItems(h.db, { groupId: CAT, items: ['coffee beans'], addedBy: null })).addedIds
+    await Promise.all([
+      setItemCategory(h.db, { groupId: CAT, id: beans, category: 'coffee', by: null }),
+      autoCategorizeItem(h.db, { groupId: CAT, itemId: beans }, { embed, guess: async () => 'pantry' }),
+      setItemCategory(h.db, { groupId: CAT, item: 'coffee beans', category: 'coffee', by: null }),
+    ])
+    const [row] = await h.db.select({ c: listItems.category, s: listItems.categorySource }).from(listItems).where(eq(listItems.id, beans))
+    expect(row).toEqual({ c: 'coffee', s: 'picked' })
+    const mem = await h.pool.query('SELECT item_normalized, category FROM baumy_list_categories WHERE group_id = $1', [CAT])
+    expect(mem.rows).toEqual([{ item_normalized: 'coffee beans', category: 'coffee' }])
+    // …and a later add of it is remembered, ahead of every other tier
+    await checkOffItems(h.db, { groupId: CAT, items: ['coffee beans'], checkedBy: null })
+    const [beans2] = (await addListItems(h.db, { groupId: CAT, items: ['coffee beans'], addedBy: null })).addedIds
+    expect(await autoCategorizeItem(h.db, { groupId: CAT, itemId: beans2 }, { embed, guess })).toMatchObject({ source: 'remembered', category: 'coffee' })
+
+    // the order mode: idempotent set on the singleton row
+    expect(await setShoppingSort(h.db, 'az')).toBe(true)
+    expect(await setShoppingSort(h.db, 'az')).toBe(false)
+    expect(await loadShoppingSort(h.db)).toBe('az')
+    await setShoppingSort(h.db, 'groups')
   })
 
   it('event surfacing: a dated fact schedules event-anchored heads-ups on real Postgres', async () => {
