@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { and, eq } from 'drizzle-orm'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
-import { listCategories, listItemEmbeddings, listItems } from '@/db/schema'
+import { houseConfig, listCategories, listItemEmbeddings, listItems } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { EMBED_DIM, EMBED_MODEL, embedSync } from '@/lib/ai/embed'
-import { addListItems, currentList, rememberedCategory, setItemCategory } from '@/lib/lists/store'
+import { addListItems, currentList, rememberedCategory, renameItem, setItemCategory } from '@/lib/lists/store'
 import type { Category } from '@/lib/lists/categories'
 import type { Database } from '@/db/client'
 
@@ -31,7 +31,8 @@ vi.mock('@/lib/lists/board', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/lists/board')>()
   return { ...actual, requestShoppingRefresh: (g: string) => refresh(g) }
 })
-const { autoCategorizeItem, runCategorize, requestCategorize, nearestSorted, SIMILAR_FLOOR, SHOPPING_CATEGORIZE } = await import('@/lib/lists/categorize')
+const { autoCategorizeItem, runCategorize, requestCategorize, nearestSorted, backfillCandidates, SIMILAR_FLOOR, SHOPPING_CATEGORIZE } = await import('@/lib/lists/categorize')
+const { runShoppingRender } = await import('@/lib/lists/board')
 
 const G = '-100sortHouse'
 const OTHER = '-100otherHouse'
@@ -101,8 +102,12 @@ describe('auto-sorting — the three tiers, in order', () => {
     const db = await setup()
     await anchor(db, 'bin bags', 'cleaning', vec(1))
     const at = await add(db, 'bin liners')
-    const r1 = await autoCategorizeItem(db, { groupId: G, itemId: at }, { embed: table({ 'bin liners': vec(SIMILAR_FLOOR + 1e-6) }), guess: async () => 'household' })
-    expect(r1).toMatchObject({ source: 'similar', category: 'cleaning' })
+    // [4, 3] against [1, 0] is a cosine of exactly 4/5 = SIMILAR_FLOOR, exact in float4 and double — so
+    // this pins `>=` (a strict `>` sends it to the guess).
+    expect(SIMILAR_FLOOR).toBe(0.8)
+    const fourThree = Object.assign(new Array<number>(EMBED_DIM).fill(0), { 0: 4, 1: 3 })
+    const r1 = await autoCategorizeItem(db, { groupId: G, itemId: at }, { embed: table({ 'bin liners': fourThree }), guess: async () => 'household' })
+    expect(r1).toMatchObject({ source: 'similar', category: 'cleaning', similarity: SIMILAR_FLOOR })
     const below = await add(db, 'bin brush')
     const guess = vi.fn(async () => 'household' as const)
     const r2 = await autoCategorizeItem(db, { groupId: G, itemId: below }, { embed: table({ 'bin brush': vec(SIMILAR_FLOOR - 0.01, 0, 2) }), guess })
@@ -174,14 +179,19 @@ describe('auto-sorting — the three tiers, in order', () => {
     expect(await rowOf(db, id)).toEqual({ c: 'coffee', s: 'picked' })
   })
 
-  it('a "Not sorted" pick forgets the memory, and a name whose latest sort was that pick lends nothing', async () => {
+  it('a "Not sorted" pick forgets the memory, and a name whose LATEST sort was that pick lends nothing — even with an older sorted row of it', async () => {
     const db = await setup()
-    const first = await add(db, 'candles')
-    await setItemCategory(db, { groupId: G, id: first, category: 'household', by: null })
+    // an older row of the name, guessed Household and bought…
+    const older = await anchor(db, 'candles', 'household', vec(1))
+    await db.update(listItems).set({ checkedAt: new Date('2026-10-01T10:00:00Z'), categorizedAt: new Date('2026-10-01T09:00:00Z') }).where(eq(listItems.id, older))
+    // …and a newer one, picked Household: the name IS an anchor now
+    const newer = await add(db, 'candles')
+    await setItemCategory(db, { groupId: G, id: newer, category: 'household', by: null })
     expect(await rememberedCategory(db, G, 'candles')).toBe('household')
-    await setItemCategory(db, { groupId: G, id: first, category: null, by: null })
+    expect(await nearestSorted(db, { groupId: G, vector: vec(1) })).toMatchObject({ item: 'candles', category: 'household' })
+    // the newer row is picked "Not sorted": the memory goes, and the older row's Household is not used either
+    await setItemCategory(db, { groupId: G, id: newer, category: null, by: null })
     expect(await rememberedCategory(db, G, 'candles')).toBeNull()
-    await db.insert(listItemEmbeddings).values({ groupId: G, itemNormalized: 'candles', model: EMBED_MODEL, embedding: vec(1) })
     expect(await nearestSorted(db, { groupId: G, vector: vec(1) })).toBeNull()
   })
 
@@ -241,7 +251,7 @@ describe('runCategorize — the Inngest body', () => {
     const step = { run: async <T>(id: string, fn: () => Promise<T>) => (steps.push(id), fn()) }
     const out = await runCategorize(step, () => db, { groupId: G, itemIds: [a, b] }, { embed: table({}), guess: async (i) => (i === 'oat milk' ? 'fresh' : null) })
     expect(out.map((r) => r.outcome)).toEqual(['categorized', 'unsorted'])
-    expect(steps).toEqual([`categorize-${a}`, `categorize-${b}`, 'categorize-render'])
+    expect(steps).toEqual(['categorize-embed', `categorize-${a}`, `categorize-${b}`, 'categorize-render'])
     expect(refresh).toHaveBeenCalledWith(G)
   })
 
@@ -291,5 +301,113 @@ describe('setItemCategory — a housemate\'s pick', () => {
     expect([...(r.matches ?? [])].sort()).toEqual(['sponge', 'sponges'])
     expect((await currentList(db, G)).map((x) => x.category)).toEqual([null, null])
     expect(await rememberedCategory(db, G, 'sponge')).toBeNull()
+  })
+})
+
+describe('review fixes (PR #30)', () => {
+  it('one item failing for good never kills the batch: it stays Not sorted (marked tried), the others are sorted, the render is still sent', async () => {
+    const db = await setup()
+    const a = await add(db, 'oat milk')
+    const b = await add(db, 'cursed item')
+    const c = await add(db, 'pasta')
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const guess = async (i: string) => {
+      if (i === 'cursed item') throw new Error('529 overloaded') // still failing after the step's retries
+      return i === 'oat milk' ? ('fresh' as const) : ('pantry' as const)
+    }
+    const out = await runCategorize(inline, () => db, { groupId: G, itemIds: [a, b, c] }, { embed: table({}), guess })
+    expect(out.map((r) => r.outcome)).toEqual(['categorized', 'failed', 'categorized'])
+    expect(refresh).toHaveBeenCalledWith(G)
+    expect(await rowOf(db, b)).toEqual({ c: null, s: null })
+    const [tried] = await db.select({ at: listItems.categorizedAt }).from(listItems).where(eq(listItems.id, b))
+    expect(tried.at).not.toBeNull() // never re-tried by a backfill
+    expect(await rowOf(db, c)).toEqual({ c: 'pantry', s: 'guessed' })
+    err.mockRestore()
+  })
+
+  it('embeds the whole batch in ONE embedder call (only names without a current-model vector)', async () => {
+    const db = await setup()
+    await anchor(db, 'pasta', 'pantry', embedSync('pasta'))
+    const ids = [await add(db, 'oat milk'), await add(db, 'rice'), await add(db, 'pasta 2')]
+    const embedMany = vi.fn(async (ts: string[]) => ts.map(embedSync))
+    const embed = vi.fn(async (t: string) => embedSync(t))
+    await runCategorize(inline, () => db, { groupId: G, itemIds: ids }, { embed, embedMany, guess: async () => null })
+    expect(embedMany).toHaveBeenCalledTimes(1)
+    expect([...embedMany.mock.calls[0][0]].sort()).toEqual(['oat milk', 'pasta 2', 'rice'])
+    expect(embed).not.toHaveBeenCalled() // every item found its vector already stored
+  })
+
+  it('backfill: open rows auto-sorting never saw are sorted once — old, open, untried only — and never again', async () => {
+    const db = await setup()
+    // three rows from before auto-sorting existed (an hour ago), one bought, one just added
+    const old1 = await add(db, 'oat milk')
+    const old2 = await add(db, 'zorblax')
+    const bought = await add(db, 'bread')
+    await db.update(listItems).set({ createdAt: new Date(Date.now() - 3_600_000) }).where(eq(listItems.groupId, G))
+    await db.update(listItems).set({ checkedAt: new Date() }).where(eq(listItems.id, bought))
+    const fresh = await add(db, 'rice')
+    expect([...(await backfillCandidates(db, G))].sort()).toEqual([old1, old2].sort())
+    await runCategorize(inline, () => db, { groupId: G, itemIds: await backfillCandidates(db, G) }, { embed: table({}), guess: async (i) => (i === 'oat milk' ? 'fresh' : null) })
+    expect(await rowOf(db, old1)).toEqual({ c: 'fresh', s: 'guessed' })
+    expect(await rowOf(db, old2)).toEqual({ c: null, s: null }) // the model had nothing: Not sorted…
+    expect(await backfillCandidates(db, G)).toEqual([]) // …and never picked up again (idempotent)
+    // a repeated event for it (a retried send, a second backfill) never asks the model again
+    const again = vi.fn(async () => 'fresh' as const)
+    expect(await runCategorize(inline, () => db, { groupId: G, itemIds: [old2] }, { embed: table({}), guess: again })).toEqual([{ outcome: 'skipped', id: old2 }])
+    expect(again).not.toHaveBeenCalled()
+    expect(fresh).toBeTruthy()
+  })
+
+  it('the backfill is sent by a live-list render, after it, and only when there is something to sort', async () => {
+    const db = await setup()
+    await db.insert(houseConfig).values({ id: true, houseGroupChatId: G })
+    const old = await add(db, 'oat milk')
+    await db.update(listItems).set({ createdAt: new Date(Date.now() - 3_600_000) }).where(eq(listItems.id, old))
+    const steps: string[] = []
+    const step = { run: async <T>(id: string, fn: () => Promise<T>) => (steps.push(id), fn()) }
+    await runShoppingRender(step, () => db, { groupId: G, reason: 'change' })
+    expect(steps.at(-1)).toBe('live-backfill')
+    expect(sent.filter((e) => e.name === SHOPPING_CATEGORIZE)).toEqual([{ name: SHOPPING_CATEGORIZE, data: { groupId: G, itemIds: [old] } }])
+    // once tried, a render sends nothing more
+    await runCategorize(inline, () => db, { groupId: G, itemIds: [old] }, { embed: table({}), guess: async () => null })
+    sent.length = 0
+    await runShoppingRender(step, () => db, { groupId: G, reason: 'change' })
+    expect(sent.filter((e) => e.name === SHOPPING_CATEGORIZE)).toEqual([])
+  })
+
+  it('a housemate\'s pick gets a vector (via the categorize run), so it lends its category to a similar later item', async () => {
+    const db = await setup()
+    const filters = await add(db, 'coffee filters')
+    await setItemCategory(db, { groupId: G, id: filters, category: 'coffee', by: null })
+    const vectors = { 'coffee filters': vec(1), 'coffee filter papers': vec(0.95) }
+    // before: no vector for the picked name → no anchor
+    expect(await nearestSorted(db, { groupId: G, vector: vec(0.95) })).toBeNull()
+    const out = await runCategorize(inline, () => db, { groupId: G, itemIds: [filters] }, { embed: table(vectors), guess: async () => 'pantry' })
+    expect(out).toEqual([{ outcome: 'skipped', id: filters }]) // the pick itself is left alone
+    expect(await rowOf(db, filters)).toEqual({ c: 'coffee', s: 'picked' })
+    const papers = await add(db, 'coffee filter papers')
+    expect(await autoCategorizeItem(db, { groupId: G, itemId: papers }, { embed: table(vectors), guess: async () => 'pantry' })).toMatchObject({ source: 'similar', category: 'coffee', similarTo: 'coffee filters' })
+  })
+
+  it('rename: an AUTOMATIC category is dropped and the row sorted again; a housemate\'s pick is kept; a case-only fix keeps it', async () => {
+    const db = await setup()
+    const milk = await add(db, 'mlik')
+    await db.update(listItems).set({ category: 'pantry', categorySource: 'guessed', categorizedAt: new Date() }).where(eq(listItems.id, milk))
+    const renamed = await renameItem(db, { groupId: G, from: 'mlik', to: 'oat milk', renamedBy: null })
+    expect(renamed).toMatchObject({ outcome: 'renamed', resortId: milk })
+    expect(await rowOf(db, milk)).toEqual({ c: null, s: null })
+    await runCategorize(inline, () => db, { groupId: G, itemIds: [renamed.resortId!] }, { embed: table({}), guess: async (i) => (i === 'oat milk' ? 'fresh' : 'pantry') })
+    expect(await rowOf(db, milk)).toEqual({ c: 'fresh', s: 'guessed' })
+
+    const beans = await add(db, 'beans')
+    await setItemCategory(db, { groupId: G, id: beans, category: 'coffee', by: null })
+    const kept = await renameItem(db, { groupId: G, from: 'beans', to: 'coffee beans', renamedBy: null })
+    expect(kept.outcome).toBe('renamed')
+    expect(kept.resortId).toBeUndefined()
+    expect(await rowOf(db, beans)).toEqual({ c: 'coffee', s: 'picked' })
+
+    const caseOnly = await renameItem(db, { groupId: G, from: 'oat milk', to: 'Oat Milk', renamedBy: null })
+    expect(caseOnly.resortId).toBeUndefined()
+    expect(await rowOf(db, milk)).toEqual({ c: 'fresh', s: 'guessed' })
   })
 })

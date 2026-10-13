@@ -1,6 +1,6 @@
-import { sql } from 'drizzle-orm'
+import { and, asc, eq, isNull, lt, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
-import { houseConfig } from '@/db/schema'
+import { houseConfig, listItems } from '@/db/schema'
 import { inngest } from '@/lib/inngest/client'
 import { resolveHouseIds } from '@/lib/identity/house'
 import { memberDisplayNames } from '@/lib/identity/roster'
@@ -73,6 +73,51 @@ export async function requestShoppingRefreshForHouse(d: Database): Promise<void>
   } catch (err) {
     console.warn('[baumy/lists] shopping change signal failed:', err instanceof Error ? err.message : err)
   }
+}
+
+// ── Auto-sorting's event (issue #29) — here, not in lib/lists/categorize.ts, because the render below
+// sends it too (the backfill) and categorize.ts already imports this module. ─────────────────────────────
+
+export const SHOPPING_CATEGORIZE = 'lists/shopping.categorize' as const
+/** At most this many rows per event — one add is at most 30 items (the store's cap). */
+export const CATEGORIZE_MAX_IDS = 30
+/** A row younger than this still has its own categorize event in flight: the backfill leaves it alone. */
+export const BACKFILL_AFTER_MS = 60_000
+
+// Ask for auto-sorting of these rows. Best-effort: false (logged) when Inngest could not be reached — the
+// items stay "Not sorted" (the next render's backfill picks them up) and the write stands. It awaits one
+// Inngest send (a few ms); it never fails the write.
+export async function requestCategorize(groupId: string, itemIds: string[]): Promise<boolean> {
+  if (!groupId || itemIds.length === 0) return false
+  try {
+    await inngest.send({ name: SHOPPING_CATEGORIZE, data: { groupId, itemIds: itemIds.slice(0, CATEGORIZE_MAX_IDS) } })
+    return true
+  } catch (err) {
+    console.warn('[baumy/lists] categorize request failed:', err instanceof Error ? err.message : err)
+    return false
+  }
+}
+
+// Open rows of this house never tried by auto-sorting (category_source and categorized_at both NULL) and
+// older than BACKFILL_AFTER_MS: the list as it was before auto-sorting existed, or a row whose own event
+// was lost. Oldest first, at most CATEGORIZE_MAX_IDS.
+export async function backfillCandidates(d: Database, groupId: string): Promise<string[]> {
+  const rows = await d
+    .select({ id: listItems.id })
+    .from(listItems)
+    .where(
+      and(
+        eq(listItems.groupId, groupId),
+        eq(listItems.isActive, true),
+        isNull(listItems.checkedAt),
+        isNull(listItems.categorySource),
+        isNull(listItems.categorizedAt),
+        lt(listItems.createdAt, new Date(clockNow().getTime() - BACKFILL_AFTER_MS)),
+      ),
+    )
+    .orderBy(asc(listItems.createdAt))
+    .limit(CATEGORIZE_MAX_IDS)
+  return rows.map((r) => r.id)
 }
 
 type BoardRef = { chatId: string; messageId: number }
@@ -238,6 +283,25 @@ const sameRef = (a: LiveRef | null, b: { chatId: string; messageId: number } | n
 // ONE step that also reads the list and builds the text (buildView), so a retry never posts twice and
 // never sends stale text. The sandbox drives it inline.
 export async function runShoppingRender(step: TurnStep, db: () => Database, req: RenderRequest): Promise<RenderResult> {
+  const result = await renderOnce(step, db, req)
+  // After the render (it never delays the edit): the one-off sort of rows auto-sorting never saw (issue
+  // #29) — after a deploy, the first render of the old list sorts it, 30 rows a time; each sorted batch's
+  // own re-render brings the next. Idempotent (a tried row never matches again) and best-effort.
+  if (result.status !== 'other-house') {
+    await step.run('live-backfill', async () => {
+      try {
+        const ids = await backfillCandidates(db(), req.groupId)
+        return ids.length ? await requestCategorize(req.groupId, ids) : false
+      } catch (err) {
+        console.warn('[baumy/lists] categorize backfill failed:', err instanceof Error ? err.message : err)
+        return false
+      }
+    })
+  }
+  return result
+}
+
+async function renderOnce(step: TurnStep, db: () => Database, req: RenderRequest): Promise<RenderResult> {
   type First =
     | { status: 'other-house' | 'paused' | 'no-message' | 'superseded' }
     | { status: 'edited' | 'unchanged'; stored: LiveRef }
