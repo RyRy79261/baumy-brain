@@ -28,7 +28,9 @@ SCENARIOS_SHOW_GAPS=1 pnpm test:scenarios   # run known gaps as ordinary tests t
 - **Embeddings.** Embeddings go through `setEmbedOverride` (`lib/ai/embed.ts`) to the deterministic
   `embedSync`, so Voyage is never called.
 - **Database.** The scenario's PGlite database is injected with `__setDbOverride` (`db/client.ts`).
-- **Inngest.** `inngest.send` is captured into `run.events` and never sent.
+- **Inngest.** `inngest.send` is captured into `run.events` and never sent. One event is acted on: a
+  `lists/shopping.changed` arms the shopping-topic repost 2 minutes later (the debounce, played on the
+  sandbox clock by `noteShoppingChanged`), and `advance()` runs it at that instant.
 - **Network.** `fetch` is trapped, so any code path that still reaches for the network fails the
   scenario loudly.
 
@@ -63,6 +65,7 @@ flipped when its phase landed.
 | `facts.scenario.test.ts` | the fact model: multi-valued predicates (F2), synonyms (F3), possessives (F1), object-side lookup (F7), the trust gate + conflicts (F5) |
 | `reminders.scenario.test.ts` | confirm / clarify modes and the clarify follow-through (A2, A3), undirected reminders (A9), edits (I1), pause |
 | `lists.scenario.test.ts` | list acks from the store outcome, article/plural-tolerant check-off (K4), list op + question (A10), list ops not notes (A11) |
+| `shopping-topic.scenario.test.ts` | the shopping topic: `/shoppinghere` from a member, a burst of list changes (group + DM) → ONE repost in the topic 2 minutes after the last change with the old post deleted, posts kept out of the window, no topic → no post |
 | `kitchen-api.scenario.test.ts` | the kitchen kiosk API and a housemate's DM read and write ONE list, including under the `BAUMY_HOUSE_CHAT_ID` pin |
 | `cancel-reminders.scenario.test.ts` | cancelling from chat through the confirm-tap wall: a weekly series stops for good, a creator cancels their DM reminder, another member cannot see it, nothing-matched lists what is scheduled |
 | `olympics.scenario.test.ts` | Baumy Olympics against an in-memory Olympics (`olympics-fake.ts`, the scenario's `olympics` option): a calendar add and a chore log through the asker-only confirm tap, a retried tap reusing its Idempotency-Key, `/link`, "link first", reads, not-connected / down |

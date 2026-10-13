@@ -29,6 +29,8 @@ export interface HouseIds {
   reminderThreadId: number | null
   /** Forum topic where Baumy is fully conversational (the "ask-Baumy" channel); null = none. */
   consoleThreadId: number | null
+  /** Forum topic the shopping list is posted into (/shoppinghere); null = none, nothing is posted. */
+  shoppingThreadId: number | null
 }
 
 export async function resolveHouseIds(db: Database): Promise<HouseIds> {
@@ -39,6 +41,7 @@ export async function resolveHouseIds(db: Database): Promise<HouseIds> {
       live: houseConfig.liveChatId,
       thread: houseConfig.reminderThreadId,
       console: houseConfig.consoleThreadId,
+      shopping: houseConfig.shoppingThreadId,
     })
     .from(houseConfig)
     .limit(1)
@@ -48,7 +51,7 @@ export async function resolveHouseIds(db: Database): Promise<HouseIds> {
   const liveId = cfg?.live ?? ''
   const sendId = liveId !== '' ? liveId : scopeId
   const acceptIds = [...new Set([scopeId, sendId].filter((x) => x !== ''))]
-  return { scopeId, sendId, acceptIds, reminderThreadId: cfg?.thread ?? null, consoleThreadId: cfg?.console ?? null }
+  return { scopeId, sendId, acceptIds, reminderThreadId: cfg?.thread ?? null, consoleThreadId: cfg?.console ?? null, shoppingThreadId: cfg?.shopping ?? null }
 }
 
 // Where a proactive house send (reminder/digest/heads-up) lands: the live transport id, resolving
@@ -76,6 +79,15 @@ export function parseConsoleCommand(text: string | null | undefined): 'here' | '
   return m ? (m[1].toLowerCase() as 'here' | 'off') : null
 }
 
+// Detect the shopping-topic command: /shoppinghere (post the shopping list in THIS topic) or
+// /shoppingoff (stop posting it). Same shape/guarantees as parseNotifyCommand; the caller enforces who
+// (an active member, own words, house lane) and takes the thread id from the authenticated message.
+export function parseShoppingCommand(text: string | null | undefined): 'here' | 'off' | null {
+  if (!text) return null
+  const m = text.trim().match(/^\/shopping(here|off)(?:@\w+)?\b/i)
+  return m ? (m[1].toLowerCase() as 'here' | 'off') : null
+}
+
 // Set (or clear, with null) the forum topic that proactive reminders post into. The thread id comes
 // from an authenticated inbound message_thread_id (the owner running /notifyhere inside the topic),
 // never from message text. Upserts the singleton. Owner-gated + audited at the call site.
@@ -94,6 +106,16 @@ export async function setConsoleThread(db: Database, threadId: number | null): P
     .insert(houseConfig)
     .values({ id: true, consoleThreadId: threadId })
     .onConflictDoUpdate({ target: houseConfig.id, set: { consoleThreadId: threadId, updatedAt: clockNow() } })
+}
+
+// Set (or clear, with null) the shopping topic (docs/spec/shopping-list.md §Shopping topic). Thread id
+// comes from an authenticated inbound message_thread_id (a member running /shoppinghere inside the
+// topic), never text. Member-gated + audited at the call site.
+export async function setShoppingThread(db: Database, threadId: number | null): Promise<void> {
+  await db
+    .insert(houseConfig)
+    .values({ id: true, shoppingThreadId: threadId })
+    .onConflictDoUpdate({ target: houseConfig.id, set: { shoppingThreadId: threadId, updatedAt: clockNow() } })
 }
 
 // The house whose SHARED memory a message reads and writes — distinct from where a reply is

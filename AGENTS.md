@@ -157,6 +157,15 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   it is for Baumy — `asksBaumy`, C6). `/reminders` + `/recent` are deterministic, **secret-safe** read-only introspection
   (exclude `is_secure`). The topic changes **verbosity, not trust** — still untrusted house text, no
   privileged path rides on the topic id. A real introspection API belongs in the authed dashboard.
+- **Shopping topic (`docs/spec/shopping-list.md` §Shopping topic, `telegram.md` D9d):**
+  `house_config.shopping_thread_id`, set by ANY active member's `/shoppinghere` inside the topic (own
+  words, house lane — never a forward / anonymous admin / bot; `/shoppingoff` clears; audited). Every
+  list write that changed something (`runList`, the kitchen add/check-off) calls
+  `requestShoppingRepost` → `lists/shopping.changed` → `shopping-repost` (Inngest debounce 2m keyed by
+  the house, concurrency 1): post the whole open list in the topic (plain text, item sigils defanged),
+  store its id, delete the previous post, or edit it to "⬇️ The list moved down." when the delete is
+  refused. No topic → nothing; paused → nothing; not pinned; **not windowed** (a status board). A new
+  writer of `baumy_list_items` must call `requestShoppingRepost` too.
 - **Secrets at rest:** wifi/door/bank values are AES-256-GCM encrypted (`lib/core/crypto.ts`);
   only a non-secret descriptor is stored/embedded; decrypt only to answer a direct request
   (`lib/turn/grounding.ts` `disclose`: MODE answer + `asksForSecret` on that value — never for an

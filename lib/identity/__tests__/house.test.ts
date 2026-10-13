@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { resolveOriginParts, type Roster } from '@/lib/core/origin'
-import { houseScopeForOrigin, resolveHouseIds, parseNotifyCommand } from '@/lib/identity/house'
+import { houseScopeForOrigin, resolveHouseIds, parseNotifyCommand, parseShoppingCommand, setShoppingThread } from '@/lib/identity/house'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { houseConfig } from '@/db/schema'
 
@@ -77,5 +77,28 @@ describe('parseNotifyCommand', () => {
     expect(parseNotifyCommand('notify here')).toBeNull()
     expect(parseNotifyCommand('/notifyherenow')).toBeNull() // whole-word only
     expect(parseNotifyCommand(null)).toBeNull()
+  })
+})
+
+describe('parseShoppingCommand (docs/spec/shopping-list.md §Shopping topic)', () => {
+  it('matches /shoppinghere and /shoppingoff (incl. a @botname suffix), rejects near-misses', () => {
+    expect(parseShoppingCommand('/shoppinghere')).toBe('here')
+    expect(parseShoppingCommand('  /shoppinghere  ')).toBe('here')
+    expect(parseShoppingCommand('/ShoppingHere@BaumyBot')).toBe('here')
+    expect(parseShoppingCommand('/shoppingoff')).toBe('off')
+    expect(parseShoppingCommand('/shopping')).toBeNull()
+    expect(parseShoppingCommand('shopping here')).toBeNull()
+    expect(parseShoppingCommand('please /shoppinghere')).toBeNull() // must lead the message
+    expect(parseShoppingCommand('/shoppingherenow')).toBeNull() // whole-word only
+    expect(parseShoppingCommand(null)).toBeNull()
+  })
+
+  it('setShoppingThread stores / clears the topic, read back through resolveHouseIds', async () => {
+    const db = await makeTestDb()
+    expect((await resolveHouseIds(db)).shoppingThreadId).toBeNull()
+    await setShoppingThread(db, 42)
+    expect((await resolveHouseIds(db)).shoppingThreadId).toBe(42)
+    await setShoppingThread(db, null)
+    expect((await resolveHouseIds(db)).shoppingThreadId).toBeNull()
   })
 })

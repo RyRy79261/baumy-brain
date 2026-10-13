@@ -28,6 +28,7 @@ import {
   type OlympicsPending,
 } from '@/lib/olympics/intents'
 import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
+import { requestShoppingRepost } from '@/lib/lists/board'
 import { clampToWakingHours } from '@/lib/reminders/parse'
 import { fireAtFromModel, reminderTimeFromPhrase, minutesApart } from '@/lib/core/when'
 import { normaliseRecurrence, recurrenceFromPhrase, nextOccurrence } from '@/lib/reminders/recurrence'
@@ -71,6 +72,10 @@ export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOut
     return { op: 'checkoff', ...base, checkedOff: res.checkedOff, notFound: res.notFound }
   })) as Mutation
   if (mut.op === 'none') return undefined
+  // The list CHANGED → ask for the (debounced) shopping-topic repost (docs/spec/shopping-list.md
+  // §Shopping topic). Its own step after the memoized mutation, best-effort: a failed hand-off never
+  // re-runs the write. A no-op add ("already there") or a check-off that ticked nothing changed nothing.
+  if (mut.added.length > 0 || mut.checkedOff.length > 0) await step.run('list-repost', () => requestShoppingRepost(ctx.houseScope))
   // The open list after the op — an IDEMPOTENT read in its own step, so if it throws only this
   // re-runs and the memoized mutation above is never recomputed.
   const open = (await step.run('list-open', async () => (await currentList(createHttpDb(), ctx.houseScope)).map((r) => r.item))) as string[]

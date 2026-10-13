@@ -6,6 +6,7 @@ import { runCallback } from '@/lib/inngest/functions/callback'
 import { deliverDueReminders, deliverReminderNow } from '@/lib/inngest/functions/reminders'
 import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
+import { runShoppingRepost, SHOPPING_DEBOUNCE_MS } from '@/lib/lists/board'
 import { purgeWindow } from '@/lib/turn/window'
 import { runHygieneSweep } from '@/lib/memory/hygiene'
 import { proposeEntityMerges } from '@/lib/ai/dedupe'
@@ -54,6 +55,9 @@ export interface Sandbox {
   transcript: TranscriptEntry[]
   /** Monotonic counter so each synthetic update gets a fresh id (the ingest dedupe key). */
   seq: number
+  /** When the debounced shopping-topic repost is due (2 minutes after the LAST list change), or null.
+   *  Production's Inngest debounce, played on the sandbox clock (noteShoppingChanged). */
+  shoppingRepostAt?: Date | null
 }
 
 export interface TranscriptEntry extends OutboundMessage {
@@ -86,7 +90,13 @@ export async function createSandbox(input: CreateSandboxInput): Promise<Sandbox>
     if (p.unseen) continue
     await upsertMember(input.db, houseChatId, String(p.id), p.name, p.role ?? 'member')
   }
-  return { db: input.db, houseChatId, now: new Date(input.startAt), tz, people: input.people, transcript: [], seq: 1 }
+  return { db: input.db, houseChatId, now: new Date(input.startAt), tz, people: input.people, transcript: [], seq: 1, shoppingRepostAt: null }
+}
+
+// A `lists/shopping.changed` event was sent (the caller captures inngest.send): like Inngest's debounce,
+// each change pushes the one pending repost to SHOPPING_DEBOUNCE after it. advanceTo runs it then.
+export function noteShoppingChanged(sb: Sandbox): void {
+  sb.shoppingRepostAt = new Date(sb.now.getTime() + SHOPPING_DEBOUNCE_MS)
 }
 
 // A no-op Inngest step: runs each step body inline, in order. The real handler is written against
@@ -376,8 +386,20 @@ export async function advanceTo(sb: Sandbox, to: Date): Promise<AdvanceResult> {
       sb.now = at
     }
   }
+  // The debounced shopping-topic repost (docs/spec/shopping-list.md §Shopping topic), at its own instant.
+  const repostUntil = async (limit: Date) => {
+    const at = sb.shoppingRepostAt
+    if (!at || at.getTime() > limit.getTime()) return
+    sb.shoppingRepostAt = null
+    const { sent } = await captureOutbound(async () => withSimulatedTime(at, () => runShoppingRepost(inlineStep, () => sb.db, sb.houseChatId)))
+    const said = sent.map((m) => ({ ...m, cause: 'debounce:shopping-repost' }))
+    sb.transcript.push(...said)
+    fired.push({ job: 'shopping-repost', at, said })
+    sb.now = at
+  }
   for (const { at, job } of firingsBetween(from, to, sb.tz)) {
     await deliverExplicitUntil(at)
+    await repostUntil(at)
     const { sent } = await captureOutbound(async () => withSimulatedTime(at, () => job.run(sb, at)))
     const said = sent.map((m) => ({ ...m, cause: `cron:${job.id}` }))
     sb.transcript.push(...said)
@@ -385,6 +407,7 @@ export async function advanceTo(sb: Sandbox, to: Date): Promise<AdvanceResult> {
     sb.now = at
   }
   await deliverExplicitUntil(to)
+  await repostUntil(to)
   sb.now = to
   return { from, to, fired }
 }

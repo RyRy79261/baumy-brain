@@ -1,5 +1,5 @@
 import { createHttpDb } from '@/db/client'
-import type { Origin } from '@/lib/core/origin'
+import { isRelayed, type Origin } from '@/lib/core/origin'
 import type { FullRoster } from '@/lib/identity/roster'
 import { memberDisplayNames } from '@/lib/identity/roster'
 import { enrichIssue, formatIssueBody } from '@/lib/ai/issue-enrich'
@@ -7,7 +7,8 @@ import { issuesConfigured, labelsFor } from '@/lib/github/issues'
 import { parseReportCommand } from '@/lib/pipeline/report'
 import { parseHouseReport, weeklyReport, guestReport, upcomingRemindersReport, recentLearningsReport } from '@/lib/reports/reports'
 import { createPendingAction } from '@/lib/confirm/store'
-import { parseNotifyCommand, setReminderThread, parseConsoleCommand, setConsoleThread } from '@/lib/identity/house'
+import { parseNotifyCommand, setReminderThread, parseConsoleCommand, setConsoleThread, parseShoppingCommand, setShoppingThread } from '@/lib/identity/house'
+import { requestShoppingRepost } from '@/lib/lists/board'
 import { handleCommand } from '@/lib/identity/commands'
 import { writeAudit } from '@/lib/audit'
 import { houseTz } from '@/lib/env'
@@ -32,7 +33,7 @@ export interface CommandEnv {
   houseThreadId: number | undefined
 }
 
-export type CommandDecision = 'report' | 'report-view' | 'notify-config' | 'console-config' | 'command' | 'unknown-command'
+export type CommandDecision = 'report' | 'report-view' | 'notify-config' | 'console-config' | 'shopping-config' | 'command' | 'unknown-command'
 
 export async function runCommands(step: TurnStep, env: CommandEnv): Promise<CommandDecision | null> {
   const { rawText, origin, roster, fromId, chatId, messageId, messageThreadId, houseScope, sayHouse, houseThreadId } = env
@@ -149,6 +150,35 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
       )
     })
     return 'console-config'
+  }
+
+  // Shopping topic (/shoppinghere in the target topic, /shoppingoff to stop) — docs/spec/shopping-list.md
+  // §Shopping topic. ANY active member (the list is the whole house's, so not owner-only), HOUSE lane,
+  // in their OWN words: a forwarded message, an anonymous-admin post or a bot post never sets it. The
+  // value is the authenticated message_thread_id, NEVER text. It only picks where the list is posted
+  // within the fixed house group — no trust, no privilege. Audited. Anything refused falls through to
+  // the unknown-command drop below (I7).
+  const shopping = parseShoppingCommand(rawText)
+  if (shopping && origin.lane === 'house' && fromId != null && roster.isMember(fromId) && !isRelayed(origin.memoryTrust) && !origin.anonymous) {
+    await step.run('shopping-config', async () => {
+      const db = createHttpDb()
+      if (shopping === 'off') {
+        await setShoppingThread(db, null)
+        await writeAudit(db, 'shopping.topic.set', String(fromId), null, { threadId: null })
+        await sendToHouse(chatId, "Okay — I'll stop posting the shopping list. 🐈", { threadId: messageThreadId ?? undefined })
+        return
+      }
+      if (messageThreadId == null) {
+        await sendToHouse(chatId, 'Run /shoppinghere INSIDE the topic you want the shopping list in — this looks like the General topic. 😼')
+        return
+      }
+      await setShoppingThread(db, messageThreadId)
+      await writeAudit(db, 'shopping.topic.set', String(fromId), null, { threadId: messageThreadId })
+      await sendToHouse(chatId, "🛒 Got it — I'll keep the shopping list posted in this topic, fresh after every change.", { threadId: messageThreadId })
+      // Post the list here now-ish (the same debounced repost), rather than waiting for the next change.
+      await requestShoppingRepost(houseScope)
+    })
+    return 'shopping-config'
   }
 
   // Member-DM commands (house-management). Deterministic; no classify/LLM.

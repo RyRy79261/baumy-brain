@@ -114,6 +114,47 @@ export async function sendLoginApprovalCard(chatId: string, text: string, action
   })
 }
 
+// The shopping-list post in the shopping topic (docs/spec/shopping-list.md §Shopping topic). The
+// destination is code-resolved by the caller (the house's live send id + the stored shopping thread),
+// never text. PLAIN TEXT (no parse_mode), so item text can never become markup. NOT windowed: it is a
+// status board, not conversation — a copy per change would crowd real turns out of the topic's window,
+// and it is out of date at the next change ("what's on the list?" reads the table). Returns Telegram's
+// message id, which the next repost deletes.
+export async function sendShoppingBoard(chatId: string, text: string, threadId: number): Promise<number> {
+  if (!chatId) throw new Error('[baumy/telegram] no house chat id for the shopping list')
+  const captured = record({ kind: 'message', chatId, text, meta: 'board', threadId }, now())
+  if (captured) return captured.messageId!
+  const sent = await api().sendMessage(chatId, text, { ...NO_PREVIEW, message_thread_id: threadId })
+  return sent.message_id
+}
+
+// Delete one of Baumy's own messages. Telegram refuses some deletes (a message older than 48h, a
+// missing permission, already gone) — that is reported as false and LOGGED, never thrown, so the
+// caller can fall back to an edit.
+export async function deleteMessage(chatId: string, messageId: number): Promise<boolean> {
+  if (record({ kind: 'delete', chatId, text: null, meta: String(messageId) }, now())) return true
+  try {
+    await api().deleteMessage(chatId, messageId)
+    return true
+  } catch (err) {
+    console.warn(`[baumy/telegram] delete of ${chatId}/${messageId} refused:`, err instanceof Error ? err.message : err)
+    return false
+  }
+}
+
+// Rewrite an old shopping-list post (the fallback when it cannot be deleted). Not windowed, like the
+// post itself. False (logged) when Telegram refuses the edit too.
+export async function editShoppingBoard(chatId: string, messageId: number, text: string): Promise<boolean> {
+  if (record({ kind: 'edit', chatId, text, meta: String(messageId) }, now())) return true
+  try {
+    await api().editMessageText(chatId, messageId, text, NO_PREVIEW)
+    return true
+  } catch (err) {
+    console.warn(`[baumy/telegram] edit of ${chatId}/${messageId} refused:`, err instanceof Error ? err.message : err)
+    return false
+  }
+}
+
 // DM reply — permitted ONLY for the auth/login response path to the originating
 // member (architecture D9). Never for house content.
 export async function sendDmLoginResponse(chatId: number | string, text: string): Promise<void> {
