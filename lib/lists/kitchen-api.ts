@@ -6,7 +6,7 @@ import { getHouseChatId } from '@/lib/identity/house'
 import { ensureRegistered } from '@/lib/memory/write'
 import { tokenMatches } from '@/lib/telegram/verify'
 import { addListItems, checkOffItems, currentList, removeItems, renameItem, type ListRow } from '@/lib/lists/store'
-import { requestShoppingRepost } from '@/lib/lists/board'
+import { noteShoppingChange } from '@/lib/lists/board'
 
 // The kitchen shopping API (docs/spec/shopping-list.md §Kitchen API): the house kiosk (Baumy
 // Olympics) reads and writes the SAME group-scoped list Telegram does, so there is one list.
@@ -109,8 +109,8 @@ export async function handleAdd(req: Request): Promise<Response> {
     // lane makes — and matters when the scope is the BAUMY_HOUSE_CHAT_ID pin.
     await ensureRegistered(db, scope, null)
     const res = await addListItems(db, { groupId: scope, items: body.items, addedBy: by })
-    // The list changed → the debounced shopping-topic repost (best-effort; never fails the write).
-    if (res.added.length > 0) await requestShoppingRepost(scope)
+    // The list changed → stamp it and ask for the debounced live-list edit (best-effort; never fails the write).
+    if (res.added.length > 0) await noteShoppingChange(db, scope, by)
     return json({ ok: true, added: res.added, already: res.already, attributedTo: by, items: view(await currentList(db, scope)) })
   })
 }
@@ -121,7 +121,7 @@ export async function handleCheckOff(req: Request): Promise<Response> {
     if (!body) return json(BAD_WRITE, 400)
     const by = await mapMember(db, body.telegramUserId)
     const res = await checkOffItems(db, { groupId: scope, items: body.items, checkedBy: by })
-    if (res.checkedOff.length > 0) await requestShoppingRepost(scope)
+    if (res.checkedOff.length > 0) await noteShoppingChange(db, scope, by)
     return json({ ok: true, checkedOff: res.checkedOff, notFound: res.notFound, attributedTo: by, items: view(await currentList(db, scope)) })
   })
 }
@@ -133,7 +133,7 @@ export async function handleRemove(req: Request): Promise<Response> {
     if (!body) return json(BAD_WRITE, 400)
     const by = await mapMember(db, body.telegramUserId)
     const res = await removeItems(db, { groupId: scope, items: body.items, removedBy: by })
-    if (res.removed.length > 0) await requestShoppingRepost(scope)
+    if (res.removed.length > 0) await noteShoppingChange(db, scope, by)
     return json({ ok: true, removed: res.removed, notFound: res.notFound, ambiguous: res.ambiguous, attributedTo: by, items: view(await currentList(db, scope)) })
   })
 }
@@ -147,7 +147,7 @@ export async function handleRename(req: Request): Promise<Response> {
     if (!body) return json({ ok: false, error: 'bad_request', message: 'Expected { from: string, to: string, telegramUserId? }.' }, 400)
     const by = await mapMember(db, body.telegramUserId)
     const res = await renameItem(db, { groupId: scope, from: body.from, to: body.to, renamedBy: by })
-    if (res.outcome === 'renamed' || res.outcome === 'merged') await requestShoppingRepost(scope)
+    if (res.outcome === 'renamed' || res.outcome === 'merged') await noteShoppingChange(db, scope, by)
     return json({
       ok: true,
       outcome: res.outcome,

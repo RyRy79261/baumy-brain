@@ -195,9 +195,9 @@ describe('/list and /shoppinghere (a place)', () => {
     expect(sendLiveList).not.toHaveBeenCalled()
     expect(sendToHouse).toHaveBeenCalledWith(HOUSE, LIVE_ELSEWHERE(messageLink(HOUSE, 6000)), { threadId: undefined })
     // a supergroup message gets a link; a basic group (or this test's made-up id) has none
-    expect(LIVE_ELSEWHERE(messageLink('-1001234567890', 6000))).toBe('🛒 The live shopping list is pinned in another topic: https://t.me/c/1234567890/6000')
+    expect(LIVE_ELSEWHERE(messageLink('-1001234567890', 6000))).toBe('🛒 The live shopping list is pinned here: https://t.me/c/1234567890/6000')
     expect(messageLink('-123456', 6000)).toBeNull()
-    expect(LIVE_ELSEWHERE(messageLink(HOUSE, 6000))).toBe('🛒 The live shopping list is pinned in another topic.')
+    expect(LIVE_ELSEWHERE(messageLink(HOUSE, 6000))).toBe('🛒 The live shopping list is pinned in the group.')
   })
 
   it('/list when the stored message was deleted: a new one here replaces it', async () => {

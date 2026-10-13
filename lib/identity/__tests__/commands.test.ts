@@ -14,7 +14,7 @@ vi.mock('@/lib/telegram/client', () => ({
   sendConfirmCard: vi.fn(async () => {}),
 }))
 
-// Inngest is never reached: the shopping-topic repost request is captured here.
+// Inngest is never reached: the live-list change signal is captured here.
 const inngestSend = vi.fn(async (..._a: unknown[]) => ({ ids: [] as string[] }))
 vi.mock('@/lib/inngest/client', () => ({ inngest: { send: (...a: unknown[]) => inngestSend(...a) } }))
 
@@ -153,8 +153,8 @@ describe('handleCommand — /link <code> (Baumy Olympics member linking)', async
   })
 })
 
-describe('handleCommand — /resume brings the shopping topic up to date (issue #21)', () => {
-  it('/resume asks for a shopping-list repost for the house; /pause does not', async () => {
+describe('handleCommand — /resume brings the live shopping list up to date (issues #21, #25)', () => {
+  it('/resume signals a live-list update for the house; /pause does not', async () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     await db.insert(houseConfig).values({ id: true, houseGroupChatId: GROUP })

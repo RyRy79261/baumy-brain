@@ -28,7 +28,7 @@ import {
   type OlympicsPending,
 } from '@/lib/olympics/intents'
 import { addListItems, checkOffItems, currentList, removeItems, renameItem } from '@/lib/lists/store'
-import { requestShoppingRepost } from '@/lib/lists/board'
+import { noteShoppingChange } from '@/lib/lists/board'
 import { clampToWakingHours } from '@/lib/reminders/parse'
 import { fireAtFromModel, reminderTimeFromPhrase, minutesApart } from '@/lib/core/when'
 import { normaliseRecurrence, recurrenceFromPhrase, nextOccurrence } from '@/lib/reminders/recurrence'
@@ -101,11 +101,11 @@ export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOut
   if (raw.op === 'none') return undefined
   // A step memoized by an earlier build may lack removed / renamed / ambiguous — default them.
   const mut = { ...raw, removed: raw.removed ?? [], renamed: raw.renamed ?? [], ambiguous: raw.ambiguous ?? [] }
-  // The list CHANGED → ask for the (debounced) shopping-topic repost (docs/spec/shopping-list.md
-  // §Shopping topic). Its own step after the memoized mutation, best-effort: a failed hand-off never
-  // re-runs the write. A no-op add ("already there"), or a check-off / remove / rename that matched
-  // nothing, changed nothing.
-  if (listChanged(mut)) await step.run('list-repost', () => requestShoppingRepost(ctx.houseScope))
+  // The list CHANGED → stamp who did it and ask for the (debounced) live-list edit
+  // (docs/spec/shopping-list.md §Live list). Its own step after the memoized mutation, best-effort: a
+  // failed hand-off never re-runs the write. A no-op add ("already there"), or a check-off / remove /
+  // rename that matched nothing, changed nothing.
+  if (listChanged(mut)) await step.run('list-repost', () => noteShoppingChange(createHttpDb(), ctx.houseScope, ctx.authorId))
   // The open list after the op — an IDEMPOTENT read in its own step, so if it throws only this
   // re-runs and the memoized mutation above is never recomputed.
   const open = (await step.run('list-open', async () => (await currentList(createHttpDb(), ctx.houseScope)).map((r) => r.item))) as string[]

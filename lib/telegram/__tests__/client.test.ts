@@ -86,33 +86,13 @@ describe('the send seam feeds the conversation window (chat-understanding-v2 §5
   })
 })
 
-// The shopping-list post (docs/spec/shopping-list.md §Shopping topic): plain text into the topic, its
-// message id returned for the next repost's delete, and NOT windowed (a status board, not conversation).
-describe('the shopping-list post, delete and edit', () => {
+// Taking an old live shopping list down (docs/spec/shopping-list.md §Live list): delete it, or edit it to
+// "no longer updated" with its buttons gone — never thrown.
+describe('the old live list\'s delete and edit fallback', () => {
   beforeEach(() => {
     sendMessage.mockClear()
     deleteMessageApi.mockReset()
     editMessageTextApi.mockReset()
-  })
-
-  it('posts plain text (no parse_mode) into the topic and returns Telegram\'s message id — never touching the window', async () => {
-    const { __setDbOverride } = await import('@/db/client')
-    const touched = vi.fn()
-    __setDbOverride(new Proxy({}, { get: () => touched }) as never) // any window read/write would call this
-    try {
-      sendMessage.mockResolvedValueOnce({ message_id: 777 })
-      const { sendShoppingBoard } = await import('@/lib/telegram/client')
-      expect(await sendShoppingBoard('-100h', '🛒 Shopping list (1)\n• milk', 55)).toBe(777)
-      expect(sendMessage).toHaveBeenCalledTimes(1)
-      const [chat, text, opts] = sendMessage.mock.calls[0] as [string, string, Record<string, unknown>]
-      expect(chat).toBe('-100h')
-      expect(text).toBe('🛒 Shopping list (1)\n• milk')
-      expect(opts.message_thread_id).toBe(55)
-      expect(opts).not.toHaveProperty('parse_mode')
-      expect(touched).not.toHaveBeenCalled()
-    } finally {
-      __setDbOverride(null)
-    }
   })
 
   it('a refused delete is false + logged, never thrown (the caller falls back to an edit)', async () => {
@@ -130,11 +110,12 @@ describe('the shopping-list post, delete and edit', () => {
   it('the edit fallback rewrites the old post; a refused edit is false + logged', async () => {
     const { editShoppingBoard } = await import('@/lib/telegram/client')
     editMessageTextApi.mockResolvedValue(true)
-    expect(await editShoppingBoard('-100h', 5, '⬇️ The list moved down.')).toBe(true)
-    expect(editMessageTextApi.mock.calls[0].slice(0, 3)).toEqual(['-100h', 5, '⬇️ The list moved down.'])
+    expect(await editShoppingBoard('-100h', 5, 'This list is no longer updated.')).toBe(true)
+    expect(editMessageTextApi.mock.calls[0].slice(0, 3)).toEqual(['-100h', 5, 'This list is no longer updated.'])
+    expect(editMessageTextApi.mock.calls[0][3]).not.toHaveProperty('reply_markup') // the buttons go
     editMessageTextApi.mockRejectedValue(new Error('Bad Request: message to edit not found'))
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    expect(await editShoppingBoard('-100h', 5, '⬇️ The list moved down.')).toBe(false)
+    expect(await editShoppingBoard('-100h', 5, 'This list is no longer updated.')).toBe(false)
     expect(warn).toHaveBeenCalledTimes(1)
     warn.mockRestore()
   })

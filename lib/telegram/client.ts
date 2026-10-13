@@ -114,20 +114,6 @@ export async function sendLoginApprovalCard(chatId: string, text: string, action
   })
 }
 
-// The shopping-list post in the shopping topic (docs/spec/shopping-list.md §Shopping topic). The
-// destination is code-resolved by the caller (the house's live send id + the stored shopping thread),
-// never text. PLAIN TEXT (no parse_mode), so item text can never become markup. NOT windowed: it is a
-// status board, not conversation — a copy per change would crowd real turns out of the topic's window,
-// and it is out of date at the next change ("what's on the list?" reads the table). Returns Telegram's
-// message id, which the next repost deletes.
-export async function sendShoppingBoard(chatId: string, text: string, threadId: number): Promise<number> {
-  if (!chatId) throw new Error('[baumy/telegram] no house chat id for the shopping list')
-  const captured = record({ kind: 'message', chatId, text, meta: 'board', threadId }, now())
-  if (captured) return captured.messageId!
-  const sent = await api().sendMessage(chatId, text, { ...NO_PREVIEW, message_thread_id: threadId })
-  return sent.message_id
-}
-
 // ── The live shopping list (issue #25, docs/spec/shopping-list.md §Live list) ─────────────────────────
 // ONE message per house, posted once (by /list or /shoppinghere, or again when it was deleted), pinned
 // silently, and EDITED in place on every change. The destination is code-resolved by the caller (the
@@ -212,8 +198,9 @@ export async function deleteMessage(chatId: string, messageId: number): Promise<
   }
 }
 
-// Rewrite an old shopping-list post (the fallback when it cannot be deleted). Not windowed, like the
-// post itself. False (logged) when Telegram refuses the edit too.
+// Rewrite an old live shopping list (the fallback when it cannot be deleted): plain text and NO keyboard
+// (an edit without reply_markup drops the buttons). Not windowed, like the list itself. False (logged)
+// when Telegram refuses the edit too.
 export async function editShoppingBoard(chatId: string, messageId: number, text: string): Promise<boolean> {
   if (record({ kind: 'edit', chatId, text, meta: String(messageId) }, now())) return true
   try {

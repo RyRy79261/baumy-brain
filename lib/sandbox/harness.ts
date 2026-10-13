@@ -6,7 +6,7 @@ import { runCallback } from '@/lib/inngest/functions/callback'
 import { deliverDueReminders, deliverReminderNow } from '@/lib/inngest/functions/reminders'
 import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
-import { runShoppingRepost, SHOPPING_DEBOUNCE_MS } from '@/lib/lists/board'
+import { runShoppingRender, SHOPPING_DEBOUNCE_MS, SHOPPING_DEBOUNCE_TIMEOUT_MS, type RenderRequest } from '@/lib/lists/board'
 import { purgeWindow } from '@/lib/turn/window'
 import { runHygieneSweep } from '@/lib/memory/hygiene'
 import { proposeEntityMerges } from '@/lib/ai/dedupe'
@@ -15,7 +15,7 @@ import { upsertMember } from '@/lib/identity/roster'
 import { and, asc, eq, gt, lte, ne, notInArray } from 'drizzle-orm'
 import { houseConfig, reminders } from '@/db/schema'
 import { withSimulatedTime } from '@/lib/core/clock'
-import { captureOutbound, type OutboundMessage } from '@/lib/telegram/outbox'
+import { captureOutbound, isCapturing, type OutboundMessage } from '@/lib/telegram/outbox'
 import { SANDBOX_BOT_ID, SANDBOX_BOT_USERNAME } from '@/lib/telegram/client'
 import { messageContent, type MediaKind } from '@/lib/telegram/content'
 
@@ -55,9 +55,13 @@ export interface Sandbox {
   transcript: TranscriptEntry[]
   /** Monotonic counter so each synthetic update gets a fresh id (the ingest dedupe key). */
   seq: number
-  /** When the debounced shopping-topic repost is due (2 minutes after the LAST list change), or null.
-   *  Production's Inngest debounce, played on the sandbox clock (noteShoppingChanged). */
+  /** When the debounced live-list render is due (5 seconds after the LAST list change, at most 30
+   *  seconds after the first), or null. Production's Inngest debounce, played on the sandbox clock
+   *  (noteShoppingChanged). */
   shoppingRepostAt?: Date | null
+  /** The first change of the pending burst (the debounce's max-wait anchor), and the house it named. */
+  shoppingBurstAt?: Date | null
+  shoppingGroupId?: string | null
 }
 
 export interface TranscriptEntry extends OutboundMessage {
@@ -90,13 +94,29 @@ export async function createSandbox(input: CreateSandboxInput): Promise<Sandbox>
     if (p.unseen) continue
     await upsertMember(input.db, houseChatId, String(p.id), p.name, p.role ?? 'member')
   }
-  return { db: input.db, houseChatId, now: new Date(input.startAt), tz, people: input.people, transcript: [], seq: 1, shoppingRepostAt: null }
+  return { db: input.db, houseChatId, now: new Date(input.startAt), tz, people: input.people, transcript: [], seq: 1, shoppingRepostAt: null, shoppingBurstAt: null }
 }
 
 // A `lists/shopping.changed` event was sent (the caller captures inngest.send): like Inngest's debounce,
-// each change pushes the one pending repost to SHOPPING_DEBOUNCE after it. advanceTo runs it then.
-export function noteShoppingChanged(sb: Sandbox): void {
-  sb.shoppingRepostAt = new Date(sb.now.getTime() + SHOPPING_DEBOUNCE_MS)
+// each change pushes the one pending render to SHOPPING_DEBOUNCE after it — but never past
+// SHOPPING_DEBOUNCE_TIMEOUT after the first change of the burst. advanceTo runs it then.
+export function noteShoppingChanged(sb: Sandbox, groupId: string = sb.houseChatId): void {
+  sb.shoppingGroupId = groupId
+  sb.shoppingBurstAt ??= new Date(sb.now)
+  const quiet = sb.now.getTime() + SHOPPING_DEBOUNCE_MS
+  const cap = sb.shoppingBurstAt.getTime() + SHOPPING_DEBOUNCE_TIMEOUT_MS
+  sb.shoppingRepostAt = new Date(Math.min(quiet, cap))
+}
+
+// A `lists/shopping.render` event (a tap, /list, /shoppinghere): production's shopping-render runs it at
+// once (no debounce), so the sandbox does too — inside the capture of whatever sent it, when there is one.
+export async function renderShoppingNow(sb: Sandbox, req: RenderRequest): Promise<void> {
+  if (isCapturing()) {
+    await runShoppingRender(inlineStep, () => sb.db, req)
+    return
+  }
+  const { sent } = await captureOutbound(async () => withSimulatedTime(sb.now, () => runShoppingRender(inlineStep, () => sb.db, req)))
+  sb.transcript.push(...sent.map((m) => ({ ...m, cause: 'shopping-render' })))
 }
 
 // A no-op Inngest step: runs each step body inline, in order. The real handler is written against
@@ -189,7 +209,7 @@ export async function tapAs(
   sb: Sandbox,
   who: string | number,
   actionId: string,
-  opts: { verb?: 'confirm' | 'cancel'; chatId?: string; messageId?: number } = {},
+  opts: { verb?: 'confirm' | 'cancel'; chatId?: string; messageId?: number; /** Raw callback_data (a live-list button), instead of a confirm card's. */ data?: string } = {},
 ): Promise<TranscriptEntry[]> {
   const person = findPerson(sb, who)
   const updateId = sb.seq++
@@ -198,10 +218,10 @@ export async function tapAs(
     fromId: person.id,
     chatId: opts.chatId ?? sb.houseChatId,
     messageId: opts.messageId ?? updateId,
-    data: `${opts.verb === 'cancel' ? 'x' : 'c'}:${actionId}`,
+    data: opts.data ?? `${opts.verb === 'cancel' ? 'x' : 'c'}:${actionId}`,
   }
   const { sent } = await captureOutbound(async () => withSimulatedTime(sb.now, () => runCallback({ data }, inlineStep)))
-  const entries = sent.map((m) => ({ ...m, cause: `${person.name}: tap ${opts.verb ?? 'confirm'}` }))
+  const entries = sent.map((m) => ({ ...m, cause: `${person.name}: tap ${opts.data ?? opts.verb ?? 'confirm'}` }))
   sb.transcript.push(...entries)
   return entries
 }
@@ -386,20 +406,23 @@ export async function advanceTo(sb: Sandbox, to: Date): Promise<AdvanceResult> {
       sb.now = at
     }
   }
-  // The debounced shopping-topic repost (docs/spec/shopping-list.md §Shopping topic), at its own instant.
-  const repostUntil = async (limit: Date) => {
+  // The debounced live-list render (docs/spec/shopping-list.md §Live list), at its own instant.
+  const renderUntil = async (limit: Date) => {
     const at = sb.shoppingRepostAt
     if (!at || at.getTime() > limit.getTime()) return
     sb.shoppingRepostAt = null
-    const { sent } = await captureOutbound(async () => withSimulatedTime(at, () => runShoppingRepost(inlineStep, () => sb.db, sb.houseChatId)))
-    const said = sent.map((m) => ({ ...m, cause: 'debounce:shopping-repost' }))
+    sb.shoppingBurstAt = null
+    const { sent } = await captureOutbound(async () =>
+      withSimulatedTime(at, () => runShoppingRender(inlineStep, () => sb.db, { groupId: sb.shoppingGroupId ?? sb.houseChatId, reason: 'change' })),
+    )
+    const said = sent.map((m) => ({ ...m, cause: 'debounce:shopping-changed' }))
     sb.transcript.push(...said)
-    fired.push({ job: 'shopping-repost', at, said })
+    fired.push({ job: 'shopping-changed', at, said })
     sb.now = at
   }
   for (const { at, job } of firingsBetween(from, to, sb.tz)) {
     await deliverExplicitUntil(at)
-    await repostUntil(at)
+    await renderUntil(at)
     const { sent } = await captureOutbound(async () => withSimulatedTime(at, () => job.run(sb, at)))
     const said = sent.map((m) => ({ ...m, cause: `cron:${job.id}` }))
     sb.transcript.push(...said)
@@ -407,13 +430,13 @@ export async function advanceTo(sb: Sandbox, to: Date): Promise<AdvanceResult> {
     sb.now = at
   }
   await deliverExplicitUntil(to)
-  await repostUntil(to)
+  await renderUntil(to)
   sb.now = to
   return { from, to, fired }
 }
 
 /** Convenience: advance by a duration instead of to an absolute instant. */
-export const advanceBy = (sb: Sandbox, opts: { days?: number; hours?: number; minutes?: number }): Promise<AdvanceResult> =>
+export const advanceBy = (sb: Sandbox, opts: { days?: number; hours?: number; minutes?: number; seconds?: number }): Promise<AdvanceResult> =>
   advanceTo(sb, DateTime.fromJSDate(sb.now).plus(opts).toJSDate())
 
 /** Just the lines Baumy actually posted to the group, for a readable assertion or a UI transcript. */

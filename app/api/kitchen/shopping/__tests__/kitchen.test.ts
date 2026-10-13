@@ -15,10 +15,10 @@ import { POST as REMOVE } from '@/app/api/kitchen/shopping/remove/route'
 import { POST as RENAME } from '@/app/api/kitchen/shopping/rename/route'
 
 // The shopping-topic repost trigger (docs/spec/shopping-list.md §Shopping topic) — spied, never sent.
-const requestShoppingRepost = vi.fn(async (..._a: unknown[]) => {})
+const noteShoppingChange = vi.fn(async (..._a: unknown[]) => {})
 vi.mock('@/lib/lists/board', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/lists/board')>()
-  return { ...actual, requestShoppingRepost: (...a: unknown[]) => requestShoppingRepost(...a) }
+  return { ...actual, noteShoppingChange: (...a: unknown[]) => noteShoppingChange(...a) }
 })
 
 // The kitchen shopping API (lib/lists/kitchen-api.ts): Bearer-token wall, house scope from
@@ -54,7 +54,7 @@ beforeEach(async () => {
   vi.stubEnv('KITCHEN_API_TOKEN', TOKEN)
   vi.stubEnv('BAUMY_HOUSE_CHAT_ID', '')
   vi.spyOn(console, 'warn').mockImplementation(() => {})
-  requestShoppingRepost.mockClear()
+  noteShoppingChange.mockClear()
 })
 afterEach(() => {
   __setDbOverride(null)
@@ -195,8 +195,11 @@ describe('kitchen shopping API — add and check off', () => {
 
     const a = (await (await ADD(req('/add', { body: { items: ['milk'], telegramUserId: 702 } }))).json()) as Record<string, unknown>
     expect(a.attributedTo).toBe('702')
+    // the live list's "Last updated by" is the same mapped member (never the raw id the kiosk sent)
+    expect(noteShoppingChange.mock.calls.at(-1)!.slice(1)).toEqual([HOUSE, '702'])
     const b = (await (await ADD(req('/add', { body: { items: ['eggs'], telegramUserId: '999999' } }))).json()) as Record<string, unknown>
     expect(b.attributedTo).toBeNull()
+    expect(noteShoppingChange.mock.calls.at(-1)!.slice(1)).toEqual([HOUSE, null])
     const c = (await (await ADD(req('/add', { body: { items: ['tea'], telegramUserId: '704' } }))).json()) as Record<string, unknown>
     expect(c.attributedTo).toBeNull()
     const byItem = new Map((await currentList(db, HOUSE)).map((r) => [r.item, r.addedBy]))
@@ -220,20 +223,20 @@ describe('kitchen shopping API — add and check off', () => {
   })
 })
 
-describe('kitchen shopping API — the shopping-topic repost (issue #21)', () => {
+describe('kitchen shopping API — the live-list change signal (issues #21, #25)', () => {
   it('an add that put something on the list asks for the debounced repost, for the house scope', async () => {
     await house(db)
     expect((await ADD(req('/add', { body: { items: ['milk'] } }))).status).toBe(200)
-    expect(requestShoppingRepost).toHaveBeenCalledTimes(1)
-    expect(requestShoppingRepost).toHaveBeenCalledWith(HOUSE)
+    expect(noteShoppingChange).toHaveBeenCalledTimes(1)
+    expect(noteShoppingChange.mock.calls.at(-1)!.slice(1)).toEqual([HOUSE, null])
   })
 
   it('a check-off that ticked something asks for the repost', async () => {
     await house(db)
     await addListItems(db, { groupId: HOUSE, items: ['milk'], addedBy: null })
     expect((await CHECKOFF(req('/checkoff', { body: { items: ['milk'] } }))).status).toBe(200)
-    expect(requestShoppingRepost).toHaveBeenCalledTimes(1)
-    expect(requestShoppingRepost).toHaveBeenCalledWith(HOUSE)
+    expect(noteShoppingChange).toHaveBeenCalledTimes(1)
+    expect(noteShoppingChange.mock.calls.at(-1)!.slice(1)).toEqual([HOUSE, null])
   })
 
   it('a write that changed nothing, a read, a refused or a malformed request asks for none', async () => {
@@ -244,7 +247,7 @@ describe('kitchen shopping API — the shopping-topic repost (issue #21)', () =>
     expect((await GET(req(''))).status).toBe(200)
     expect((await ADD(req('/add', { auth: 'Bearer nope', body: { items: ['eggs'] } }))).status).toBe(401)
     expect((await ADD(req('/add', { body: { items: [] } }))).status).toBe(400)
-    expect(requestShoppingRepost).not.toHaveBeenCalled()
+    expect(noteShoppingChange).not.toHaveBeenCalled()
   })
 })
 
@@ -274,7 +277,7 @@ describe('kitchen shopping API — remove and rename (issue #23)', () => {
     }
     expect(await openItems(db, HOUSE)).toEqual(['milk'])
     expect(await openItems(db, OTHER)).toEqual(['milk'])
-    expect(requestShoppingRepost).not.toHaveBeenCalled()
+    expect(noteShoppingChange).not.toHaveBeenCalled()
   })
 
   it('400s a malformed body and changes nothing', async () => {
@@ -291,7 +294,7 @@ describe('kitchen shopping API — remove and rename (issue #23)', () => {
       expect(await res.json()).toMatchObject({ ok: false, error: 'bad_request' })
     }
     expect(await openItems(db, HOUSE)).toEqual(['milk'])
-    expect(requestShoppingRepost).not.toHaveBeenCalled()
+    expect(noteShoppingChange).not.toHaveBeenCalled()
   })
 
   it('remove: soft, attributed to an active member only, reports misses, and only the house scope', async () => {
@@ -350,7 +353,7 @@ describe('kitchen shopping API — remove and rename (issue #23)', () => {
     // a plain not_found carries no matches
     expect(await (await RENAME(req('/rename', { body: { from: 'nutmeg', to: 'mace' } }))).json()).not.toHaveProperty('matches')
     expect(await openItems(db, HOUSE)).toEqual(['sponge', 'sponges'])
-    expect(requestShoppingRepost).not.toHaveBeenCalled()
+    expect(noteShoppingChange).not.toHaveBeenCalled()
   })
 
   it('asks for the repost ONLY when the list changed', async () => {
@@ -360,14 +363,14 @@ describe('kitchen shopping API — remove and rename (issue #23)', () => {
     expect((await REMOVE(req('/remove', { body: { items: ['caviar'] } }))).status).toBe(200)
     expect((await RENAME(req('/rename', { body: { from: 'caviar', to: 'roe' } }))).status).toBe(200)
     expect((await RENAME(req('/rename', { body: { from: 'tea', to: 'tea' } }))).status).toBe(200)
-    expect(requestShoppingRepost).not.toHaveBeenCalled()
+    expect(noteShoppingChange).not.toHaveBeenCalled()
     // each change → one repost request for the house scope
     await REMOVE(req('/remove', { body: { items: ['tea'] } }))
-    expect(requestShoppingRepost).toHaveBeenCalledTimes(1)
+    expect(noteShoppingChange).toHaveBeenCalledTimes(1)
     await RENAME(req('/rename', { body: { from: 'milk', to: 'oat milk' } }))
-    expect(requestShoppingRepost).toHaveBeenCalledTimes(2)
+    expect(noteShoppingChange).toHaveBeenCalledTimes(2)
     await RENAME(req('/rename', { body: { from: 'mlik', to: 'oat milk' } })) // merged
-    expect(requestShoppingRepost).toHaveBeenCalledTimes(3)
-    for (const c of requestShoppingRepost.mock.calls) expect(c).toEqual([HOUSE])
+    expect(noteShoppingChange).toHaveBeenCalledTimes(3)
+    for (const c of noteShoppingChange.mock.calls) expect(c.slice(1)).toEqual([HOUSE, null])
   })
 })
