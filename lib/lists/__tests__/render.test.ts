@@ -44,8 +44,8 @@ const stored = async () =>
   (await db.select({ chat: houseConfig.shoppingMessageChatId, id: houseConfig.shoppingMessageId, thread: houseConfig.shoppingThreadId }).from(houseConfig))[0]
 const setStored = (id: number | null, thread: number | null = TOPIC) =>
   db.update(houseConfig).set({ shoppingMessageChatId: id == null ? null : HOUSE, shoppingMessageId: id, shoppingThreadId: thread })
-const render = (req: Partial<Parameters<typeof runShoppingRender>[2]> = {}) =>
-  withSimulatedTime(new Date('2026-10-13T16:05:00Z'), () => runShoppingRender(step, () => db, { groupId: HOUSE, reason: 'change', ...req }))
+const render = (req: Partial<Parameters<typeof runShoppingRender>[2]> = {}, s: typeof step = step) =>
+  withSimulatedTime(new Date('2026-10-13T16:05:00Z'), () => runShoppingRender(s, () => db, { groupId: HOUSE, reason: 'change', ...req }))
 
 beforeEach(async () => {
   delete process.env.BAUMY_HOUSE_CHAT_ID
@@ -163,6 +163,70 @@ describe('an ordinary change: edit in place, never a new post', () => {
     expect(await render()).toEqual({ status: 'superseded' })
     expect(deleteMessage).toHaveBeenCalledWith(HOUSE, 7001)
     expect((await stored()).id).toBe(6500)
+  })
+})
+
+describe('renders never send stale text (Inngest limits concurrent STEPS, not runs)', () => {
+  const lastEditText = () => (editLiveList.mock.calls.at(-1) as [string, number, string])[2]
+
+  it('A starts first, B runs and edits with a newer list, A edits LAST — A still carries the newest list', async () => {
+    await setStored(6000)
+    await addListItems(db, { groupId: HOUSE, items: ['milk'], addedBy: null })
+    // A is scheduled first but its step only executes after B's: the order "load A, load B, edit B,
+    // edit A" of the old two-step render. Each step now reads the list AND edits in one go.
+    let releaseA!: () => void
+    const gate = new Promise<void>((r) => (releaseA = r))
+    // (A step that only READS — the old design's 'live-load' — runs at once; any step that sends waits.)
+    const stepA = { run: async <T>(id: string, fn: () => Promise<T>) => (id === 'live-load' ? fn() : (await gate, fn())) }
+    const a = render({}, stepA)
+    await addListItems(db, { groupId: HOUSE, items: ['eggs'], addedBy: null }) // the list changes…
+    await render() // …B renders it…
+    expect(lastEditText()).toContain('2 to buy')
+    await addListItems(db, { groupId: HOUSE, items: ['tea'], addedBy: null }) // …and changes again
+    releaseA()
+    expect(await a).toMatchObject({ status: 'edited' })
+    expect(editLiveList).toHaveBeenCalledTimes(2)
+    expect(lastEditText()).toContain('3 to buy') // the LAST edit is the newest list, never A's old view
+    const labels = (editLiveList.mock.calls.at(-1) as [string, number, string, { text: string }[][]])[3].flat().map((b) => b.text)
+    expect(labels).toEqual(['☐ milk', '☐ eggs', '☐ tea', '🧹 Clear done', '🔄 Refresh'])
+  })
+
+  it('a 429 retry rebuilds the text: the retried edit carries the list as it is THEN', async () => {
+    await setStored(6000)
+    await addListItems(db, { groupId: HOUSE, items: ['milk'], addedBy: null })
+    // Inngest's replay: a COMPLETED step's result is memoized; the failed one runs again.
+    const memo = new Map<string, unknown>()
+    const memoStep = { run: async <T>(id: string, fn: () => Promise<T>): Promise<T> => (memo.has(id) ? (memo.get(id) as T) : (memo.set(id, await fn()), memo.get(id) as T)) }
+    editLiveList.mockRejectedValueOnce(Object.assign(new Error('Too Many Requests'), { error_code: 429, parameters: { retry_after: 1 } }))
+    await expect(render({}, memoStep)).rejects.toBeInstanceOf(RetryAfterError)
+    await addListItems(db, { groupId: HOUSE, items: ['eggs'], addedBy: null }) // changed while waiting
+    await render({}, memoStep) // the retry: the edit's step reads the list again (no memoized stale view)
+    expect(lastEditText()).toContain('2 to buy')
+  })
+})
+
+describe('compare-and-set on the live message id (never overwrite /shoppingoff)', () => {
+  it('a render whose message was cleared before the edit does not edit it', async () => {
+    await setStored(6000)
+    const view = vi.spyOn(await import('@/lib/lists/store'), 'liveListRows')
+    view.mockImplementationOnce(async () => {
+      await setStored(null, null) // /shoppingoff lands while the view is being built
+      return []
+    })
+    expect(await render()).toEqual({ status: 'superseded' })
+    expect(editLiveList).not.toHaveBeenCalled()
+    view.mockRestore()
+  })
+
+  it('/shoppingoff landing DURING the edit: its "no longer updated" marker is put back over the live list', async () => {
+    await setStored(6000)
+    editLiveList.mockImplementationOnce(async () => {
+      await setStored(null, null) // the id is cleared and the message marked while the edit was in flight
+      return 'edited'
+    })
+    expect(await render()).toEqual({ status: 'superseded' })
+    expect(editShoppingBoard).toHaveBeenCalledWith(HOUSE, 6000, NO_LONGER_UPDATED)
+    expect(editShoppingBoard.mock.invocationCallOrder[0]).toBeGreaterThan(editLiveList.mock.invocationCallOrder[0])
   })
 })
 

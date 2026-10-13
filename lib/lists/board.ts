@@ -210,84 +210,118 @@ export function messageLink(chatId: string, messageId: number): string | null {
 export const LIVE_ELSEWHERE = (link: string | null) =>
   link ? `🛒 The live shopping list is pinned here: ${link}` : '🛒 The live shopping list is pinned in the group.'
 
+// Read the list and build the message NOW — called INSIDE the step that sends it, never in an earlier
+// one. Inngest's concurrency limit bounds executing STEPS, not runs, so two renders' steps can interleave:
+// a view built in one step and sent in a later one could be stale by then (and a retried send would
+// replay the old text). Built and sent in one step, every edit carries the list as it is when it goes out.
+async function buildView(d: Database, scopeId: string, req: RenderRequest): Promise<{ text: string; keyboard: LiveKeyboard }> {
+  const [cfg] = await d.select({ by: houseConfig.shoppingUpdatedBy, at: houseConfig.shoppingUpdatedAt }).from(houseConfig).limit(1)
+  const name = cfg?.by ? ((await memberDisplayNames(d)).get(cfg.by) ?? null) : null
+  const view = renderLiveList({
+    rows: await liveListRows(d, scopeId),
+    page: req.page,
+    focusItemId: req.focusItemId ?? null,
+    updatedBy: name,
+    updatedAt: cfg?.at ?? null,
+    tz: houseTz(),
+  })
+  return { text: view.text, keyboard: view.keyboard }
+}
+
+const sameRef = (a: LiveRef | null, b: { chatId: string; messageId: number } | null) =>
+  a != null && b != null && a.chatId === b.chatId && a.messageId === b.messageId
+
 // One render: edit the live list in place; post it (and pin it, silently) only for /list or /shoppinghere
-// with none yet, for /shoppinghere moving it, or when the stored message was deleted. One step per stage,
-// so an Inngest retry never posts twice. The sandbox drives it inline.
+// with none yet, for /shoppinghere moving it, or when the stored message was deleted. Each Telegram send is
+// ONE step that also reads the list and builds the text (buildView), so a retry never posts twice and
+// never sends stale text. The sandbox drives it inline.
 export async function runShoppingRender(step: TurnStep, db: () => Database, req: RenderRequest): Promise<RenderResult> {
-  type Plan =
-    | { go: false; status: 'other-house' | 'paused' | 'no-message' }
-    | { go: true; sendId: string; text: string; keyboard: LiveKeyboard; stored: LiveRef | null; edit: boolean; postThread: number | null }
-  const plan = (await step.run('live-load', async (): Promise<Plan> => {
+  type First =
+    | { status: 'other-house' | 'paused' | 'no-message' | 'superseded' }
+    | { status: 'edited' | 'unchanged'; stored: LiveRef }
+    | { status: 'post'; sendId: string; scopeId: string; expected: LiveRef | null; postThread: number | null; moving: boolean }
+  const first = (await step.run('live-render', async (): Promise<First> => {
     const d = db()
     const ids = await resolveHouseIds(d)
     // The event names the house; it must BE the house (one house today) — never render another scope's list.
-    if (req.groupId !== ids.scopeId) return { go: false, status: 'other-house' }
+    if (req.groupId !== ids.scopeId) return { status: 'other-house' }
     // A place must be the house itself (the command's own chat — the caller checked the lane too).
-    if (req.place && !ids.acceptIds.includes(req.place.chatId)) return { go: false, status: 'other-house' }
-    if (req.reason === 'change' && !(await loadResponsePolicy(d)).global_enabled) return { go: false, status: 'paused' }
+    if (req.place && !ids.acceptIds.includes(req.place.chatId)) return { status: 'other-house' }
+    if (req.reason === 'change' && !(await loadResponsePolicy(d)).global_enabled) return { status: 'paused' }
     const stored = await loadLiveRef(d)
-    if (!stored && !req.place) return { go: false, status: 'no-message' }
-    const [cfg] = await d.select({ by: houseConfig.shoppingUpdatedBy, at: houseConfig.shoppingUpdatedAt }).from(houseConfig).limit(1)
-    const name = cfg?.by ? ((await memberDisplayNames(d)).get(cfg.by) ?? null) : null
-    const view = renderLiveList({
-      rows: await liveListRows(d, ids.scopeId),
-      page: req.page,
-      focusItemId: req.focusItemId ?? null,
-      updatedBy: name,
-      updatedAt: cfg?.at ?? null,
-      tz: houseTz(),
-    })
-    // /shoppinghere somewhere else MOVES the list (a new post here); otherwise an existing one is edited.
+    if (!stored && !req.place) return { status: 'no-message' }
+    // /shoppinghere somewhere else MOVES the list (a new post there); otherwise an existing one is edited.
     const moving = !!(stored && req.place?.move && stored.threadId !== req.place.threadId)
-    return {
-      go: true,
-      sendId: ids.sendId,
-      text: view.text,
-      keyboard: view.keyboard,
-      stored,
-      edit: !!stored && !moving,
-      // Where a NEW post goes: where the command was sent, else where the list lived (its topic).
-      postThread: req.place ? req.place.threadId : (stored?.threadId ?? null),
-    }
-  })) as Plan
-  if (!plan.go) return { status: plan.status }
+    // Where a NEW post goes: where the command was sent, else where the list lived (its topic).
+    const postThread = req.place ? req.place.threadId : (stored?.threadId ?? null)
+    const post = { status: 'post' as const, sendId: ids.sendId, scopeId: ids.scopeId, expected: stored, postThread, moving }
+    if (!stored || moving) return post
 
-  if (plan.edit && plan.stored) {
-    const stored = plan.stored
-    const edited = (await step.run('live-edit', async () => {
-      try {
-        return await editLiveList(stored.chatId, stored.messageId, plan.text, plan.keyboard)
-      } catch (err) {
-        rethrowRateLimit(err)
-      }
-    })) as LiveEditOutcome
-    if (edited !== 'gone') {
-      // /list (or /shoppinghere in the same place) also makes sure it is pinned, and /list from another
-      // place says where the live list is rather than making a second one.
-      const pinned = req.place ? ((await step.run('live-pin', () => pinMessage(stored.chatId, stored.messageId))) as boolean) : null
-      let pointer = false
-      if (req.place && stored.threadId !== req.place.threadId) {
-        const place = req.place
-        await step.run('live-pointer', () => sendToHouse(place.chatId, LIVE_ELSEWHERE(messageLink(stored.chatId, stored.messageId)), { threadId: place.threadId ?? undefined }))
-        pointer = true
-      }
-      return { status: edited, messageId: stored.messageId, pinned, pointer }
-    }
-    // The message was deleted: post a fresh one below (where the list lived, or where /list was sent).
-  }
-
-  const expected = plan.stored?.messageId ?? null
-  const posted = (await step.run('live-post', async () => {
-    // Re-read first: if the stored list changed since this run loaded it (/shoppingoff, another post),
-    // this render is out of date — never post over it.
-    const now = await loadLiveRef(db())
-    if ((now?.messageId ?? null) !== expected) return { superseded: true as const }
+    const view = await buildView(d, ids.scopeId, req)
+    // Compare-and-set: the stored live message must still be the one this render is about to edit — never
+    // edit a message /shoppingoff (or a newer post) has just taken over.
+    if (!sameRef(await loadLiveRef(d), stored)) return { status: 'superseded' }
+    let edited: LiveEditOutcome
     try {
-      return { messageId: await sendLiveList(plan.sendId, plan.text, plan.keyboard, plan.postThread) }
+      edited = await editLiveList(stored.chatId, stored.messageId, view.text, view.keyboard)
+    } catch (err) {
+      rethrowRateLimit(err)
+    }
+    if (edited === 'gone') return post // deleted: post a fresh one below
+    // …and after: if the message stopped being the live list WHILE it was being edited (/shoppingoff
+    // cleared the id, then marked it "no longer updated"), put that marker back over this edit.
+    if (!sameRef(await loadLiveRef(d), stored)) {
+      await editShoppingBoard(stored.chatId, stored.messageId, NO_LONGER_UPDATED)
+      return { status: 'superseded' }
+    }
+    return { status: edited, stored }
+  })) as First
+
+  if (first.status === 'edited' || first.status === 'unchanged') {
+    const stored = first.stored
+    // /list (or /shoppinghere in the same place) also makes sure it is pinned, and /list from another
+    // place says where the live list is rather than making a second one.
+    const pinned = req.place ? ((await step.run('live-pin', () => pinMessage(stored.chatId, stored.messageId))) as boolean) : null
+    let pointer = false
+    if (req.place && stored.threadId !== req.place.threadId) {
+      const place = req.place
+      await step.run('live-pointer', () => sendToHouse(place.chatId, LIVE_ELSEWHERE(messageLink(stored.chatId, stored.messageId)), { threadId: place.threadId ?? undefined }))
+      pointer = true
+    }
+    return { status: first.status, messageId: stored.messageId, pinned, pointer }
+  }
+  if (first.status !== 'post') return { status: first.status }
+
+  const plan = first
+  const expectedId = plan.expected?.messageId ?? null
+  // Post + store in ONE step, the text built inside it. A retry after a failed send posts again (nothing
+  // was posted); a store that loses its compare-and-set takes the fresh post down again in the same step.
+  const posted = (await step.run('live-post', async () => {
+    const d = db()
+    // Re-read first: if the stored list changed since this render started (/shoppingoff, another post),
+    // this render is out of date — never post over it.
+    if (((await loadLiveRef(d))?.messageId ?? null) !== expectedId) return { superseded: true as const }
+    const view = await buildView(d, plan.scopeId, req)
+    let messageId: number
+    try {
+      messageId = await sendLiveList(plan.sendId, view.text, view.keyboard, plan.postThread)
     } catch (err) {
       if (isTopicGone(err)) return { gone: err instanceof Error ? err.message : String(err) }
       rethrowRateLimit(err)
     }
+    let stored = false
+    try {
+      stored = await storeLiveRef(d, expectedId, { chatId: plan.sendId, messageId, threadId: plan.postThread })
+    } catch (err) {
+      await deleteMessage(plan.sendId, messageId) // never leave an unrecorded second list behind a retry
+      throw err
+    }
+    if (!stored) {
+      // Lost the race to another path: take our post down again, so there is never a second live list.
+      await deleteMessage(plan.sendId, messageId)
+      return { superseded: true as const }
+    }
+    return { messageId }
   })) as { messageId: number } | { gone: string } | { superseded: true }
   if ('superseded' in posted) return { status: 'superseded' }
 
@@ -309,19 +343,11 @@ export async function runShoppingRender(step: TurnStep, db: () => Database, req:
     return { status: 'topic-gone' }
   }
   const messageId = posted.messageId
-  const next: LiveRef = { chatId: plan.sendId, messageId, threadId: plan.postThread }
-
-  const stored = (await step.run('live-store', () => storeLiveRef(db(), expected, next))) as boolean
-  if (!stored) {
-    // Lost the race to another path: take our post down again, so there is never a second live list.
-    await step.run('live-drop', () => deleteMessage(next.chatId, messageId))
-    return { status: 'superseded' }
-  }
-  const pinned = (await step.run('live-pin', () => pinMessage(next.chatId, messageId))) as boolean
+  const pinned = (await step.run('live-pin', () => pinMessage(plan.sendId, messageId))) as boolean
 
   // Moved (/shoppinghere elsewhere): the old message comes down — unpinned, then deleted, or marked
   // "no longer updated" (keyboard dropped) when Telegram refuses the delete.
-  const prev = plan.edit ? null : plan.stored
+  const prev = plan.moving ? plan.expected : null
   const previous = (await step.run('live-retire', async () => (prev ? retireLive(prev) : ('none' as const)))) as 'none' | 'deleted' | 'edited' | 'failed'
   return { status: 'posted', messageId, pinned, previous }
 }
