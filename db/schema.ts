@@ -369,6 +369,13 @@ export const listItems = pgTable(
     checkedBy: text('checked_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
     checkedAt: timestamp('checked_at', { withTimezone: true }), // null = still open (unbought)
     isActive: boolean('is_active').notNull().default(true), // soft-remove (never hard delete)
+    // Removed WITHOUT being bought ("remove milk", issue #23): is_active=false, and who + when. A
+    // rename that merged into an open copy of the new name removes the old row the same way.
+    removedBy: text('removed_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
+    removedAt: timestamp('removed_at', { withTimezone: true }),
+    // The last rename ("change mlik to milk"): who + when. The row keeps its id and added_by.
+    renamedBy: text('renamed_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
+    renamedAt: timestamp('renamed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

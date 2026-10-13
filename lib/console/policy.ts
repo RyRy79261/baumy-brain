@@ -236,6 +236,10 @@ export const POLICY: Record<string, TablePolicy> = {
     checkedBy: prov('who bought it'),
     checkedAt: open('null = still open'),
     isActive: prov('soft-remove'),
+    removedBy: prov('who took it off without buying it'),
+    removedAt: open('null = not removed'),
+    renamedBy: prov('who last renamed it'),
+    renamedAt: open('null = never renamed'),
     ...stamped,
   },
 

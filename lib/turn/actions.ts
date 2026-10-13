@@ -27,7 +27,7 @@ import {
   type ListEventsData,
   type OlympicsPending,
 } from '@/lib/olympics/intents'
-import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
+import { addListItems, checkOffItems, currentList, removeItems, renameItem } from '@/lib/lists/store'
 import { requestShoppingRepost } from '@/lib/lists/board'
 import { clampToWakingHours } from '@/lib/reminders/parse'
 import { fireAtFromModel, reminderTimeFromPhrase, minutesApart } from '@/lib/core/when'
@@ -51,31 +51,61 @@ import type { TurnStep } from './step'
 // AUTO-COMMIT, low-privilege (capture tier, NOT confirm-gated). Scope = the house (houseScope from
 // the lane), attribution = the authenticated sender; quarantine + pause are gated upstream
 // (listOpProposed). Undefined = the extractor found no list op after all (the classifier over-flagged).
+const MAX_RENAMES = 10 // cap a runaway batch of renames from one message
+
+/** Did this list op change the list? (Only then is the shopping topic reposted.) */
+export function listChanged(l: Pick<ListOutcome, 'added' | 'checkedOff' | 'removed' | 'renamed'>): boolean {
+  return l.added.length > 0 || l.checkedOff.length > 0 || l.removed.length > 0 || l.renamed.length > 0
+}
+
 export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOutcome | undefined> {
   // The MUTATION is ONE memoized step, and its RETURNING-derived result (added / already / checked-
   // off / not-found) is captured HERE — so a later fallible read can never recompute it against
   // already-mutated state and lie ("already there" / "couldn't find it"). The neon-http driver
   // autocommits per statement, so the write lands the instant it runs.
   type Mutation = { op: 'none' } | Omit<ListOutcome, 'open'>
-  const mut = (await step.run('list', async (): Promise<Mutation> => {
+  const raw = (await step.run('list', async (): Promise<Mutation> => {
     const db = createHttpDb()
     const ex = await extractListOp(ctx.text)
     if (ex.op === 'none') return { op: 'none' }
-    if ((ex.op === 'add' || ex.op === 'checkoff') && ex.items.length === 0) return { op: 'none' }
-    const base = { added: [], already: [], checkedOff: [], notFound: [] }
+    const renames = (ex.renames ?? []).filter((r) => r.from.trim() && r.to.trim()).slice(0, MAX_RENAMES)
+    if ((ex.op === 'add' || ex.op === 'checkoff' || ex.op === 'remove') && ex.items.length === 0) return { op: 'none' }
+    if (ex.op === 'rename' && renames.length === 0) return { op: 'none' }
+    const base = { added: [], already: [], checkedOff: [], removed: [], renamed: [], notFound: [], ambiguous: [] }
     if (ex.op === 'query') return { op: 'query', ...base }
     if (ex.op === 'add') {
       const res = await addListItems(db, { groupId: ctx.houseScope, items: ex.items, addedBy: ctx.authorId })
       return { op: 'add', ...base, added: res.added, already: res.already }
     }
+    if (ex.op === 'remove') {
+      // Off the list WITHOUT being bought (issue #23) — the same matching as a check-off.
+      const res = await removeItems(db, { groupId: ctx.houseScope, items: ex.items, removedBy: ctx.authorId })
+      return { op: 'remove', ...base, removed: res.removed, notFound: res.notFound, ambiguous: res.ambiguous }
+    }
+    if (ex.op === 'rename') {
+      // The model named only text; renameItem matches `from` to ONE open row (or changes nothing).
+      const renamed: ListOutcome['renamed'] = []
+      const notFound: string[] = []
+      const ambiguous: ListOutcome['ambiguous'] = []
+      for (const r of renames) {
+        const res = await renameItem(db, { groupId: ctx.houseScope, from: r.from, to: r.to, renamedBy: ctx.authorId })
+        if (res.outcome === 'renamed' || res.outcome === 'merged') renamed.push({ from: res.from, to: res.to, merged: res.outcome === 'merged' })
+        else if (res.outcome === 'not_found') notFound.push(res.from)
+        else if (res.outcome === 'ambiguous') ambiguous.push({ item: res.from, matches: res.matches ?? [] })
+      }
+      return { op: 'rename', ...base, renamed, notFound, ambiguous }
+    }
     const res = await checkOffItems(db, { groupId: ctx.houseScope, items: ex.items, checkedBy: ctx.authorId })
     return { op: 'checkoff', ...base, checkedOff: res.checkedOff, notFound: res.notFound }
   })) as Mutation
-  if (mut.op === 'none') return undefined
+  if (raw.op === 'none') return undefined
+  // A step memoized by an earlier build may lack removed / renamed / ambiguous — default them.
+  const mut = { ...raw, removed: raw.removed ?? [], renamed: raw.renamed ?? [], ambiguous: raw.ambiguous ?? [] }
   // The list CHANGED → ask for the (debounced) shopping-topic repost (docs/spec/shopping-list.md
   // §Shopping topic). Its own step after the memoized mutation, best-effort: a failed hand-off never
-  // re-runs the write. A no-op add ("already there") or a check-off that ticked nothing changed nothing.
-  if (mut.added.length > 0 || mut.checkedOff.length > 0) await step.run('list-repost', () => requestShoppingRepost(ctx.houseScope))
+  // re-runs the write. A no-op add ("already there"), or a check-off / remove / rename that matched
+  // nothing, changed nothing.
+  if (listChanged(mut)) await step.run('list-repost', () => requestShoppingRepost(ctx.houseScope))
   // The open list after the op — an IDEMPOTENT read in its own step, so if it throws only this
   // re-runs and the memoized mutation above is never recomputed.
   const open = (await step.run('list-open', async () => (await currentList(createHttpDb(), ctx.houseScope)).map((r) => r.item))) as string[]

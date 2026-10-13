@@ -2,7 +2,7 @@ import { createHttpDb } from '@/db/client'
 import { claimReply, releaseReply } from '@/lib/memory/write'
 import { answer } from '@/lib/ai/reply'
 import { webSearchAnswer } from '@/lib/ai/websearch'
-import { addAck, checkoffAck, renderList } from '@/lib/lists/format'
+import { addAck, checkoffAck, removeAck, renameAck, renderList } from '@/lib/lists/format'
 import { sendToHouse, sendConfirmCard, reactToMessage } from '@/lib/telegram/client'
 import { gatherGrounding } from './grounding'
 import { forgetExplanation } from './actions'
@@ -57,7 +57,17 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
     const l = ctx.outcome.list
     if (!l) return
     await once('list-send', async () => {
-      await say(l.op === 'query' ? renderList(l.open) : l.op === 'add' ? addAck(l.added, l.already, l.open.length) : checkoffAck(l.checkedOff, l.notFound, l.open))
+      await say(
+        l.op === 'query'
+          ? renderList(l.open)
+          : l.op === 'add'
+            ? addAck(l.added, l.already, l.open.length)
+            : l.op === 'remove'
+              ? removeAck(l.removed, l.notFound, l.open, l.ambiguous)
+              : l.op === 'rename'
+                ? renameAck(l.renamed, l.notFound, l.open, l.ambiguous)
+                : checkoffAck(l.checkedOff, l.notFound, l.open),
+      )
     })
     return
   }

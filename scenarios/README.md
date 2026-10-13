@@ -65,6 +65,7 @@ flipped when its phase landed.
 | `facts.scenario.test.ts` | the fact model: multi-valued predicates (F2), synonyms (F3), possessives (F1), object-side lookup (F7), the trust gate + conflicts (F5) |
 | `reminders.scenario.test.ts` | confirm / clarify modes and the clarify follow-through (A2, A3), undirected reminders (A9), edits (I1), pause |
 | `lists.scenario.test.ts` | list acks from the store outcome, article/plural-tolerant check-off (K4), list op + question (A10), list ops not notes (A11) |
+| `list-edit.scenario.test.ts` | removing without buying and renaming (issue #23): a rename merging into an open copy, remove → empty list, ONE repost after the burst; a merge said in words in the group; a miss or an ambiguous name changes nothing and says which; a forwarded "remove" never edits the list (I3); calendar / chore / fact / reminder edits never route to the list (live mode) |
 | `shopping-topic.scenario.test.ts` | the shopping topic: `/shoppinghere` from a member, a burst of list changes (group + DM) → ONE repost in the topic 2 minutes after the last change with the old post deleted, posts kept out of the window, no topic → no post |
 | `kitchen-api.scenario.test.ts` | the kitchen kiosk API and a housemate's DM read and write ONE list, including under the `BAUMY_HOUSE_CHAT_ID` pin |
 | `cancel-reminders.scenario.test.ts` | cancelling from chat through the confirm-tap wall: a weekly series stops for good, a creator cancels their DM reminder, another member cannot see it, nothing-matched lists what is scheduled |

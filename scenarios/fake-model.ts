@@ -169,7 +169,7 @@ export interface Fixtures {
   triage?: (text: string, call: ModelCall) => Verdict
   extract?: (text: string, speaker: string | null, call: ModelCall) => FactSpec[]
   reminder?: (text: string, call: ModelCall) => ReminderSpec | ReminderSpec[] | null
-  list?: (text: string, call: ModelCall) => { op: 'add' | 'checkoff' | 'query' | 'none'; items: string[] }
+  list?: (text: string, call: ModelCall) => { op: 'add' | 'checkoff' | 'remove' | 'rename' | 'query' | 'none'; items: string[]; renames?: { from: string; to: string }[] }
   forget?: (
     text: string,
     speaker: string | null,

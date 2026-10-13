@@ -54,11 +54,19 @@ export interface FactConflict {
 }
 
 export interface ListOutcome {
-  op: 'add' | 'checkoff' | 'query'
+  op: 'add' | 'checkoff' | 'remove' | 'rename' | 'query'
   added: string[]
   already: string[]
   checkedOff: string[]
+  /** Taken off WITHOUT being bought (issue #23). */
+  removed: string[]
+  /** Renames that changed the list (issue #23); `merged` = the new name was already on it, so the old row went. */
+  renamed: { from: string; to: string; merged: boolean }[]
+  /** Named but not on the list — nothing changed for these. For a rename, the `from`. (A check-off
+   *  still folds an ambiguous name in here.) */
   notFound: string[]
+  /** Remove / rename only: a name that fits MORE than one open item (`matches`) — nothing changed for it. */
+  ambiguous: { item: string; matches: string[] }[]
   /** The open list after the op (a query renders it; a compound question may quote it). */
   open: string[]
 }
@@ -318,8 +326,13 @@ export function describeOutcome(o: TurnOutcome, tz: string, opts: { withholdObje
     if (l.added.length) parts.push(`added to the shopping list: ${l.added.join(', ')}`)
     if (l.already.length) parts.push(`already on the shopping list: ${l.already.join(', ')}`)
     if (l.checkedOff.length) parts.push(`ticked off the shopping list: ${l.checkedOff.join(', ')}`)
-    if (l.notFound.length) parts.push(`NOT on the shopping list (nothing ticked): ${l.notFound.join(', ')}`)
-    if (l.op === 'query' || l.notFound.length) parts.push(`shopping list now: ${l.open.length ? l.open.join(', ') : '(empty)'}`)
+    if (l.removed.length) parts.push(`taken off the shopping list WITHOUT being bought: ${l.removed.join(', ')}`)
+    for (const r of l.renamed)
+      parts.push(r.merged ? `"${r.to}" was already on the shopping list, so "${r.from}" was taken off it` : `renamed on the shopping list: "${r.from}" is now "${r.to}"`)
+    if (l.notFound.length) parts.push(`NOT on the shopping list (${l.op === 'checkoff' ? 'nothing ticked' : 'nothing changed'}): ${l.notFound.join(', ')}`)
+    for (const a of l.ambiguous ?? [])
+      parts.push(`"${a.item}" matches more than one shopping-list item (${a.matches.join(', ')}) — nothing changed; ask which one`)
+    if (l.op === 'query' || l.notFound.length || l.ambiguous?.length) parts.push(`shopping list now: ${l.open.length ? l.open.join(', ') : '(empty)'}`)
   }
   if (o.forget?.proposed) parts.push('a forget request is waiting for a confirm tap (nothing deleted yet)')
   const c = o.cancelReminder

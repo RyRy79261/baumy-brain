@@ -55,7 +55,7 @@ interface TurnOutcome {
   captured?: { memoryItemId: string; factIds: string[]; learned: FactSummary[]; rejected: FactSummary[] }
   reminder?: { status: 'set'; fireAt: Date; content: string; recurrence?: string; deliverTo: 'house' | 'dm' }
            | { status: 'needs_time' | 'past' | 'unparsed'; content: string }
-  list?: { op: 'add' | 'checkoff' | 'query'; added: string[]; already: string[]; checkedOff: string[]; notFound: string[] }
+  list?: { op: 'add' | 'checkoff' | 'remove' | 'rename' | 'query'; added: string[]; already: string[]; checkedOff: string[]; removed: string[]; renamed: { from: string; to: string; merged: boolean }[]; notFound: string[] }  // remove / rename: issue #23, 2026-10-13
   forget?: { proposed: boolean }
   cancelReminder?: { proposed: true; pendingId; card; items } | { proposed: false; reason; target; candidates; scheduled }
 }
@@ -88,7 +88,7 @@ reads as addressed to a person — and in phase 2 the last few turns) plus the m
   vibe: '🔥'|'🎉'|'🤯'|'😁'|null,
   tier: 'quick'|'deep',   // 'think' removed (C13)
   webSearch: boolean,
-  list: 'add'|'checkoff'|'query'|'none',
+  list: 'add'|'checkoff'|'remove'|'rename'|'query'|'none',   // remove / rename: issue #23, 2026-10-13
 }
 ```
 `needsReply`/`respond`/`reaction` are removed — **responding is the planner's decision**, not the

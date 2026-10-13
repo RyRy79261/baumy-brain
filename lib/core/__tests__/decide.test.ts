@@ -94,9 +94,13 @@ describe('listOpProposed — shopping-list op gate (low-privilege, lane-scoped)'
     expect(listOpProposed(houseOrigin(), 'add', true, 'statement')).toBe(true)
     expect(listOpProposed(houseOrigin(), 'checkoff', true, 'chatter')).toBe(true)
     expect(listOpProposed(houseOrigin(), 'query', true, 'question')).toBe(true) // a list query IS a question → still handled
+    expect(listOpProposed(houseOrigin(), 'remove', true, 'request')).toBe(true) // issue #23
+    expect(listOpProposed(memberDm(), 'rename', true, 'request')).toBe(true)
   })
   it('a PAUSED house goes silent, but a member DM still works (pause is lane-scoped)', () => {
     expect(listOpProposed(houseOrigin(), 'add', false, 'statement')).toBe(false) // paused group → no list op
+    expect(listOpProposed(houseOrigin(), 'remove', false, 'request')).toBe(false)
+    expect(listOpProposed(memberDm(), 'rename', false, 'request')).toBe(true)
     expect(listOpProposed(memberDm(), 'add', false, 'statement')).toBe(true) // DM bypasses pause
   })
   it('an explicit reminder/forget WINS — the list op never preempts it', () => {
@@ -105,10 +109,14 @@ describe('listOpProposed — shopping-list op gate (low-privilege, lane-scoped)'
     expect(listOpProposed(houseOrigin(), 'add', true, 'reminder')).toBe(false)
     expect(listOpProposed(memberDm(), 'add', true, 'reminder')).toBe(false)
     expect(listOpProposed(houseOrigin(), 'add', true, 'forget')).toBe(false)
+    expect(listOpProposed(houseOrigin(), 'remove', true, 'forget')).toBe(false)
   })
   it('quarantined (forwarded/bot) content can NEVER mutate the list', () => {
     expect(listOpProposed(quarantined(), 'add', true, 'statement')).toBe(false)
     expect(listOpProposed(quarantined(), 'checkoff', true, 'statement')).toBe(false)
+    // remove / rename (issue #23) ride the same wall: relayed content never edits the list (I3)
+    expect(listOpProposed(quarantined(), 'remove', true, 'request')).toBe(false)
+    expect(listOpProposed(quarantined(), 'rename', true, 'request')).toBe(false)
   })
   it("'none' and an ignored origin never propose a list op", () => {
     expect(listOpProposed(houseOrigin(), 'none', true, 'statement')).toBe(false)
