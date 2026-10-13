@@ -250,7 +250,9 @@ list belongs to the house. The command must be the housemate's own words in the 
 forwarded message, an anonymous-admin post or a bot post cannot set it. The value is the authenticated
 `message_thread_id`, never text, and the change is audited. After each list change, a 2-minute
 debounced Inngest job reposts the whole list there and deletes the previous post. If Telegram refuses
-the delete, the old post is edited to `⬇️ The list moved down.` The post is not pinned and not
+the delete, the old post is edited to `⬇️ The list moved down.` A topic that has been deleted or
+closed is cleared (audited) without retries. `/shoppingoff` also takes the last post down, and
+`/resume` triggers a repost. The post is not pinned and not
 windowed. Full behaviour: `docs/spec/shopping-list.md` §Shopping topic. Like the other topics, it
 changes where Baumy posts and grants no trust: nothing privileged rides on the thread id.
 

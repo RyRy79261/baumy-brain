@@ -8,7 +8,7 @@ import { parseReportCommand } from '@/lib/pipeline/report'
 import { parseHouseReport, weeklyReport, guestReport, upcomingRemindersReport, recentLearningsReport } from '@/lib/reports/reports'
 import { createPendingAction } from '@/lib/confirm/store'
 import { parseNotifyCommand, setReminderThread, parseConsoleCommand, setConsoleThread, parseShoppingCommand, setShoppingThread } from '@/lib/identity/house'
-import { requestShoppingRepost } from '@/lib/lists/board'
+import { requestShoppingRepost, retireShoppingBoard } from '@/lib/lists/board'
 import { handleCommand } from '@/lib/identity/commands'
 import { writeAudit } from '@/lib/audit'
 import { houseTz } from '@/lib/env'
@@ -165,6 +165,8 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
       if (shopping === 'off') {
         await setShoppingThread(db, null)
         await writeAudit(db, 'shopping.topic.set', String(fromId), null, { threadId: null })
+        // The last list post comes down too (or is marked "no longer updated") and its id is cleared.
+        await retireShoppingBoard(db)
         await sendToHouse(chatId, "Okay — I'll stop posting the shopping list. 🐈", { threadId: messageThreadId ?? undefined })
         return
       }

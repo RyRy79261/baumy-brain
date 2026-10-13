@@ -163,8 +163,11 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   list write that changed something (`runList`, the kitchen add/check-off) calls
   `requestShoppingRepost` → `lists/shopping.changed` → `shopping-repost` (Inngest debounce 2m keyed by
   the house, concurrency 1): post the whole open list in the topic (plain text, item sigils defanged),
-  store its id, delete the previous post, or edit it to "⬇️ The list moved down." when the delete is
-  refused. No topic → nothing; paused → nothing; not pinned; **not windowed** (a status board). A new
+  atomically swap its id in for the previous one (`swapStoredBoard`, one locked statement — overlapping
+  runs never retire the same post), delete that previous post, or edit it to "⬇️ The list moved down."
+  when the delete is refused. A deleted/closed topic clears `shopping_thread_id` (audited, no retries);
+  `/shoppingoff` takes the last post down; `/resume` and the dashboard switch request a repost. No
+  topic → nothing; paused → nothing; not pinned; **not windowed** (a status board). A new
   writer of `baumy_list_items` must call `requestShoppingRepost` too.
 - **Secrets at rest:** wifi/door/bank values are AES-256-GCM encrypted (`lib/core/crypto.ts`);
   only a non-secret descriptor is stored/embedded; decrypt only to answer a direct request

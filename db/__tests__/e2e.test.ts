@@ -41,7 +41,7 @@ vi.mock('@/lib/lists/board', async (importOriginal) => {
   return { ...actual, requestShoppingRepost: async () => {} }
 })
 const { runEventSurfacingScan } = await import('@/lib/inngest/functions/surfacing')
-const { runShoppingRepost } = await import('@/lib/lists/board')
+const { runShoppingRepost, swapStoredBoard, retireShoppingBoard } = await import('@/lib/lists/board')
 const embed = async (t: string) => embedSync(t)
 const GROUP = '-100e2e'
 
@@ -314,6 +314,19 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
       const second = await captureOutbound(() => runShoppingRepost(step, () => h.db, SHOP))
       expect(second.result).toMatchObject({ status: 'posted', previous: 'deleted' })
       expect(second.sent.find((m) => m.kind === 'delete')?.meta).toBe(String(first.sent[0].messageId))
+      // The atomic swap on real Postgres: concurrent swaps each get a DIFFERENT previous post (the row
+      // lock serialises them), so overlapping reposts never retire the same one twice.
+      const swaps = await Promise.all([1, 2, 3].map((n) => swapStoredBoard(h.db, { chatId: SHOP, messageId: 5000 + n })))
+      const before = second.sent.find((m) => m.kind === 'message')!.messageId!
+      const prevIds = swaps.map((p) => p?.messageId).sort()
+      const [now] = await h.db.select({ id: houseConfig.shoppingMessageId }).from(houseConfig)
+      // the three "previous" values are the old post plus two of the new ids; the third new id is stored
+      expect(new Set(prevIds).size).toBe(3)
+      expect([...prevIds, now.id].sort()).toEqual([before, 5001, 5002, 5003].sort())
+      // /shoppingoff: the stored post comes down and the id is cleared
+      expect((await captureOutbound(() => retireShoppingBoard(h.db))).result).toBe('deleted')
+      const [cleared] = await h.db.select({ id: houseConfig.shoppingMessageId }).from(houseConfig)
+      expect(cleared.id).toBeNull()
       await setShoppingThread(h.db, null)
       expect((await captureOutbound(() => runShoppingRepost(step, () => h.db, SHOP))).result).toEqual({ status: 'no-topic' })
     } finally {

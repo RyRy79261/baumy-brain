@@ -149,8 +149,9 @@ handles it with no model involved (`lib/turn/commands.ts`):
 - **Where:** `/shoppinghere` must come from inside a topic. The thread id it stores is the message's
   Telegram-authenticated `message_thread_id` (`house_config.shopping_thread_id`, migration 0024),
   never text. In the General topic nothing is stored, and Baumy says to run it inside a topic.
-- `/shoppingoff` clears the topic. The last list message stays where it is, but nothing posts after
-  that. Both commands are audited (`shopping.topic.set`) and confirmed in the chat where they were
+- `/shoppingoff` clears the topic and takes the last list message down. It deletes the message, or,
+  if Telegram refuses, edits it to `This list is no longer updated.` It also clears the stored message
+  id. Both commands are audited (`shopping.topic.set`) and confirmed in the chat where they were
   sent. `/shoppinghere` also asks for a repost, so the list shows up in the new topic without waiting
   for the next change.
 
@@ -167,11 +168,23 @@ next change brings the topic up to date.
 The run (`lib/lists/board.ts` `runShoppingRepost`):
 
 1. Reads the house config. With no shopping topic it does **nothing**. With the house paused
-   (`/pause`) it posts nothing either, like every other proactive post to the house group.
+   (`/pause`) it posts nothing either, like every other proactive post to the house group. Turning
+   Baumy back on, with `/resume` or the dashboard switch, asks for a repost
+   (`requestShoppingRepostForHouse`), so changes made while paused show up.
 2. Posts the whole open list as ONE message in the topic, to the house's live send id. It is **not
-   pinned**, because each pin adds a service line to the topic.
-3. Stores the new message's chat and id (`shopping_message_chat_id`, `shopping_message_id`).
-4. Deletes the previous list message. Telegram refuses some deletes (for example, a message more than
+   pinned**, because each pin adds a service line to the topic. If Telegram reports that the topic is
+   gone or closed (`message thread not found`, `TOPIC_CLOSED`, `TOPIC_DELETED`), the run does not
+   throw, so Inngest does not retry it. Instead it clears `shopping_thread_id`, audited as
+   `shopping.topic.cleared`, and stops. The clear is compare-and-set: it only clears the topic this
+   run tried to post in. Later changes then do nothing, instead of failing three times each. Any other
+   send error is thrown, and Inngest retries it.
+3. Swaps the new message's chat and id into `shopping_message_chat_id` / `shopping_message_id`, and
+   gets back the previous ones, in **one statement** (`swapStoredBoard`). The statement locks the row
+   with `FOR UPDATE`, so it reads and writes the row together. Inngest's concurrency limit applies to
+   steps, not whole runs, so two reposts can interleave. Even then, each run gets a different previous
+   post: the first gets the one before both runs, and the second gets the first run's post. Each run
+   retires exactly the one it got back, so no post is orphaned.
+4. Deletes that previous list message. Telegram refuses some deletes (for example, a message more than
    48 hours old). In that case Baumy **edits** the old message to `⬇️ The list moved down.`, so there
    are never two lists that both look current. If the edit fails too, it logs a warning and moves on.
 
@@ -187,9 +200,18 @@ Each stage is its own Inngest step, so a retry never posts twice.
 ```
 
 An empty list posts `The list is empty.` Items are untrusted text, both from chat and from the kiosk.
-Before an item is printed, it is collapsed to one line (so it can't fake a line of its own) and
-control and bidi characters are stripped. An `@`, `#` or `$` that starts a word, and a `/` that starts
-a word, are swapped for their look-alikes (`＠`, `＃`, `＄`, `∕`). Telegram therefore never turns an
+Before an item is printed, it is collapsed to one line, so it can't fake a line of its own. These
+characters are stripped:
+
+- control characters;
+- bidi marks, overrides and isolates;
+- zero-width characters, the word joiner and the invisible operators (U+2060–U+2064);
+- the Arabic letter mark;
+- the soft hyphen;
+- the BOM.
+
+An `@` that starts a word, a `#` followed by any letter or digit, a `$` followed by a letter, and a `/`
+that starts a word are swapped for their look-alikes (`＠`, `＃`, `＄`, `∕`). Telegram therefore never turns an
 item into a mention that pings someone, a hashtag, a cashtag or a tappable `/command`. A list too long
 for one Telegram message (4096 characters) ends with `…and N more.`
 

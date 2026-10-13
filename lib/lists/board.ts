@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { houseConfig } from '@/db/schema'
 import { inngest } from '@/lib/inngest/client'
@@ -7,6 +7,7 @@ import { loadResponsePolicy } from '@/lib/policy'
 import { currentList } from '@/lib/lists/store'
 import { sendShoppingBoard, deleteMessage, editShoppingBoard } from '@/lib/telegram/client'
 import { now as clockNow } from '@/lib/core/clock'
+import { writeAudit } from '@/lib/audit'
 import type { TurnStep } from '@/lib/turn/step'
 
 // The shopping topic (docs/spec/shopping-list.md §Shopping topic, issue #21): after the list changes,
@@ -20,7 +21,25 @@ export const SHOPPING_DEBOUNCE = '2m' as const
 export const SHOPPING_DEBOUNCE_MS = 2 * 60_000
 export const EMPTY_BOARD = 'The list is empty.'
 export const MOVED_DOWN = '⬇️ The list moved down.'
+export const NO_LONGER_UPDATED = 'This list is no longer updated.'
 const TELEGRAM_MAX = 4096
+
+// C0/C1 controls, the soft hyphen, the Arabic letter mark, zero-width + bidi marks/overrides/isolates,
+// the word joiner + invisible operators (U+2060–U+2064) and the BOM. Built from code points so no
+// invisible character ever sits literally in this source file.
+const INVISIBLE_RANGES: [number, number][] = [
+  [0x0000, 0x001f],
+  [0x007f, 0x009f],
+  [0x00ad, 0x00ad],
+  [0x061c, 0x061c],
+  [0x200b, 0x200f],
+  [0x202a, 0x202e],
+  [0x2060, 0x2064],
+  [0x2066, 0x2069],
+  [0xfeff, 0xfeff],
+]
+const hex = (n: number) => `\\u${n.toString(16).padStart(4, '0')}`
+const INVISIBLE = new RegExp(`[${INVISIBLE_RANGES.map(([a, b]) => (a === b ? hex(a) : `${hex(a)}-${hex(b)}`)).join('')}]`, 'g')
 
 // An item is untrusted text (a housemate's words or the kiosk's request body). Printed as plain text it
 // still must not TRIGGER anything: Telegram auto-detects @mentions (a ping), #hashtags, $cashtags and
@@ -30,11 +49,11 @@ const TELEGRAM_MAX = 4096
 export function boardItem(raw: string): string {
   return (
     raw
-      .replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]/g, ' ')
+      .replace(INVISIBLE, ' ')
       .replace(/\s+/g, ' ')
       .trim()
       .replace(/@(?=\w)/g, '＠')
-      .replace(/#(?=\w)/g, '＃')
+      .replace(/#(?=[\p{L}\p{N}_])/gu, '＃') // Telegram hashtags take any letter or digit, not only ASCII
       .replace(/\$(?=[A-Za-z])/g, '＄')
       .replace(/(?<!\w)\/(?=\w)/g, '∕')
   )
@@ -71,15 +90,62 @@ export async function requestShoppingRepost(groupId: string): Promise<void> {
 }
 
 export type RepostResult =
-  | { status: 'no-topic' | 'paused' | 'other-house' }
+  | { status: 'no-topic' | 'paused' | 'other-house' | 'topic-gone' }
   | { status: 'posted'; messageId: number; previous: 'none' | 'deleted' | 'edited' | 'failed' }
 
+type BoardRef = { chatId: string; messageId: number }
+
+// Swap the stored list post for `next` (null = clear) and return what was stored BEFORE, in ONE
+// statement: the row is locked (FOR UPDATE) and read and written together, so two overlapping reposts
+// each get a different "previous" — A gets the one before it, B gets A's — and each retires exactly
+// that one. (Reading the previous id at load time let both retire the same old post and orphan A's.)
+export async function swapStoredBoard(d: Database, next: BoardRef | null): Promise<BoardRef | null> {
+  const res = (await d.execute(sql`
+    WITH old AS (
+      SELECT shopping_message_chat_id AS chat_id, shopping_message_id AS message_id
+      FROM baumy_house_config WHERE id FOR UPDATE
+    )
+    UPDATE baumy_house_config
+    SET shopping_message_chat_id = ${next?.chatId ?? null},
+        shopping_message_id = ${next?.messageId ?? null},
+        updated_at = ${clockNow().toISOString()}
+    FROM old
+    WHERE baumy_house_config.id
+    RETURNING old.chat_id, old.message_id
+  `)) as unknown
+  type Row = { chat_id: string | null; message_id: string | number | null }
+  // neon-http and PGlite shape the result differently (as retrieve.ts handles it).
+  const row = (Array.isArray(res) ? (res as Row[]) : ((res as { rows?: Row[] }).rows ?? []))[0]
+  return row?.chat_id && row.message_id != null ? { chatId: row.chat_id, messageId: Number(row.message_id) } : null
+}
+
+// Take an old list post down: delete it, or — when Telegram refuses (e.g. older than 48h) — rewrite it
+// to `fallback`, so it never reads as the current list. Never throws.
+async function retire(prev: BoardRef, fallback: string): Promise<'deleted' | 'edited' | 'failed'> {
+  if (await deleteMessage(prev.chatId, prev.messageId)) return 'deleted'
+  if (await editShoppingBoard(prev.chatId, prev.messageId, fallback)) return 'edited'
+  return 'failed'
+}
+
+// /shoppingoff: the last list post comes down too (deleted, else marked "no longer updated") and the
+// stored id is cleared, so nothing in the old topic still looks like the live list.
+export async function retireShoppingBoard(d: Database): Promise<'none' | 'deleted' | 'edited' | 'failed'> {
+  const prev = await swapStoredBoard(d, null)
+  return prev ? retire(prev, NO_LONGER_UPDATED) : 'none'
+}
+
+// Telegram's answer when the topic itself is gone or closed: a post there can never succeed, so
+// retrying (and re-failing on every change) is pointless.
+export function isTopicGone(err: unknown): boolean {
+  const e = err as { description?: unknown; message?: unknown } | null
+  const text = `${typeof e?.description === 'string' ? e.description : ''} ${typeof e?.message === 'string' ? e.message : ''}`
+  return /message thread not found|TOPIC_CLOSED|TOPIC_DELETED|TOPIC_ID_INVALID/i.test(text)
+}
+
 // The repost itself — one step per stage, so an Inngest retry never posts twice (a completed post is
-// memoized) and never loses the old message id (read before the post). The sandbox drives it inline.
+// memoized). The sandbox drives it inline.
 export async function runShoppingRepost(step: TurnStep, db: () => Database, groupId: string): Promise<RepostResult> {
-  type Plan =
-    | { go: false; status: 'no-topic' | 'paused' | 'other-house' }
-    | { go: true; sendId: string; threadId: number; text: string; prev: { chatId: string; messageId: number } | null }
+  type Plan = { go: false; status: 'no-topic' | 'paused' | 'other-house' } | { go: true; sendId: string; threadId: number; text: string }
   const plan = (await step.run('shopping-load', async (): Promise<Plan> => {
     const d = db()
     const ids = await resolveHouseIds(d)
@@ -87,38 +153,54 @@ export async function runShoppingRepost(step: TurnStep, db: () => Database, grou
     if (groupId !== ids.scopeId) return { go: false, status: 'other-house' }
     if (ids.shoppingThreadId == null) return { go: false, status: 'no-topic' }
     if (!(await loadResponsePolicy(d)).global_enabled) return { go: false, status: 'paused' }
-    const [cfg] = await d
-      .select({ chatId: houseConfig.shoppingMessageChatId, messageId: houseConfig.shoppingMessageId })
-      .from(houseConfig)
-      .limit(1)
     const items = (await currentList(d, ids.scopeId)).map((r) => r.item)
-    return {
-      go: true,
-      sendId: ids.sendId,
-      threadId: ids.shoppingThreadId,
-      text: shoppingBoardText(items),
-      prev: cfg?.chatId && cfg.messageId != null ? { chatId: cfg.chatId, messageId: cfg.messageId } : null,
-    }
+    return { go: true, sendId: ids.sendId, threadId: ids.shoppingThreadId, text: shoppingBoardText(items) }
   })) as Plan
   if (!plan.go) return { status: plan.status }
 
-  const messageId = (await step.run('shopping-post', () => sendShoppingBoard(plan.sendId, plan.text, plan.threadId))) as number
+  // A topic that was deleted or closed is RETURNED, not thrown: no retries, and the next step clears it.
+  const posted = (await step.run('shopping-post', async () => {
+    try {
+      return { messageId: await sendShoppingBoard(plan.sendId, plan.text, plan.threadId) }
+    } catch (err) {
+      if (isTopicGone(err)) return { gone: err instanceof Error ? err.message : String(err) }
+      throw err
+    }
+  })) as { messageId: number } | { gone: string }
 
-  await step.run('shopping-save', async () => {
-    await db()
-      .update(houseConfig)
-      .set({ shoppingMessageChatId: plan.sendId, shoppingMessageId: messageId, updatedAt: clockNow() })
-      .where(eq(houseConfig.id, true))
-  })
+  if ('gone' in posted) {
+    await step.run('shopping-topic-gone', async () => {
+      const d = db()
+      // Compare-and-set: only the topic this run tried — never one a housemate has set since.
+      const cleared = await d
+        .update(houseConfig)
+        .set({ shoppingThreadId: null, updatedAt: clockNow() })
+        .where(sql`${houseConfig.id} AND ${houseConfig.shoppingThreadId} = ${plan.threadId}`)
+        .returning({ id: houseConfig.id })
+      if (cleared.length) await writeAudit(d, 'shopping.topic.cleared', null, null, { threadId: plan.threadId, reason: posted.gone })
+    })
+    return { status: 'topic-gone' }
+  }
+  const messageId = posted.messageId
+
+  // Swap in the new post and get back the one it replaces (atomically — see swapStoredBoard). A retried
+  // step finds its own post already stored and retires nothing.
+  const prev = (await step.run('shopping-save', () => swapStoredBoard(db(), { chatId: plan.sendId, messageId }))) as BoardRef | null
 
   const previous = (await step.run('shopping-retire', async () => {
-    const prev = plan.prev
     if (!prev || (prev.chatId === plan.sendId && prev.messageId === messageId)) return 'none' as const
-    if (await deleteMessage(prev.chatId, prev.messageId)) return 'deleted' as const
-    // Telegram refused the delete (e.g. older than 48h): never leave two current-looking lists.
-    if (await editShoppingBoard(prev.chatId, prev.messageId, MOVED_DOWN)) return 'edited' as const
-    return 'failed' as const
+    return retire(prev, MOVED_DOWN)
   })) as 'none' | 'deleted' | 'edited' | 'failed'
 
   return { status: 'posted', messageId, previous }
+}
+
+// After /resume (or the dashboard switch turning Baumy back on), the board may have missed changes made
+// while paused: ask for a repost of the house's list. Best-effort, like every repost request.
+export async function requestShoppingRepostForHouse(d: Database): Promise<void> {
+  try {
+    await requestShoppingRepost((await resolveHouseIds(d)).scopeId)
+  } catch (err) {
+    console.warn('[baumy/lists] shopping repost request failed:', err instanceof Error ? err.message : err)
+  }
 }

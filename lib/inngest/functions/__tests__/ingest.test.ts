@@ -5,7 +5,7 @@ import { listItems } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { resolveHouseIds, setReminderThread, setConsoleThread, setShoppingThread } from '@/lib/identity/house'
-import { auditLog } from '@/db/schema'
+import { auditLog, houseConfig } from '@/db/schema'
 import { addListItems } from '@/lib/lists/store'
 import type { ClassifierVerdict } from '@/lib/ai/classify'
 import type { TelegramMessageData } from '@/lib/inngest/client'
@@ -21,6 +21,7 @@ const classifyMock = vi.fn<(t: string) => Promise<ClassifierVerdict>>()
 const extractMock = vi.fn<(t: string) => Promise<{ op: string; items: string[] }>>()
 const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
 const reactToMessage = vi.fn(async (..._a: unknown[]) => {})
+const deleteMessageMock = vi.fn(async (..._a: unknown[]) => true)
 // The reply path (used only by the ask-Baumy conversational tests) — mocked so it never touches the
 // network. Recall/facts return empty; answer() returns a canned line.
 const answerMock = vi.fn(async (..._a: unknown[]) => ({ text: 'sure thing 🐈', answered: true }))
@@ -46,6 +47,8 @@ vi.mock('@/lib/telegram/client', () => ({
   getBotId: async () => null,
   sendConfirmCard: async () => {},
   sendDmLoginResponse: async () => {},
+  deleteMessage: (...a: unknown[]) => deleteMessageMock(...a),
+  editShoppingBoard: async () => true,
 }))
 // The shopping-topic repost trigger (docs/spec/shopping-list.md §Shopping topic) — spied, never sent.
 const requestShoppingRepost = vi.fn(async (..._a: unknown[]) => {})
@@ -296,11 +299,16 @@ describe('ingest handler — /shoppinghere shopping-topic capture (member-gated,
     expect(await thread()).toBe(67)
   })
 
-  it('/shoppingoff clears it', async () => {
+  it('/shoppingoff clears it AND takes the last list post down (its stored id cleared)', async () => {
     await setShoppingThread(dbh.db, 66)
+    await dbh.db.update(houseConfig).set({ shoppingMessageChatId: HOUSE, shoppingMessageId: 4321 })
+    deleteMessageMock.mockClear()
     const res = await runIngest(houseCmd({ text: '/shoppingoff', messageThreadId: 66 }), step)
     expect(res.decision).toBe('shopping-config')
     expect(await thread()).toBeNull()
+    expect(deleteMessageMock).toHaveBeenCalledWith(HOUSE, 4321)
+    const [cfg] = await dbh.db.select({ id: houseConfig.shoppingMessageId }).from(houseConfig)
+    expect(cfg.id).toBeNull()
     expect(requestShoppingRepost).not.toHaveBeenCalled()
   })
 

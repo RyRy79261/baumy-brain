@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { ensureRegistered } from '@/lib/memory/write'
-import { members } from '@/db/schema'
+import { houseConfig, members } from '@/db/schema'
+import { upsertMember } from '@/lib/identity/roster'
+import { loadResponsePolicy } from '@/lib/policy'
 
 // Telegram sends are mocked; the DB is a real in-memory PGlite injected into the
 // command handler (no live model/API/network).
@@ -11,6 +13,10 @@ vi.mock('@/lib/telegram/client', () => ({
   sendDmLoginResponse: (...a: unknown[]) => sendDm(...(a as [])),
   sendConfirmCard: vi.fn(async () => {}),
 }))
+
+// Inngest is never reached: the shopping-topic repost request is captured here.
+const inngestSend = vi.fn(async (..._a: unknown[]) => ({ ids: [] as string[] }))
+vi.mock('@/lib/inngest/client', () => ({ inngest: { send: (...a: unknown[]) => inngestSend(...a) } }))
 
 const { handleCommand } = await import('@/lib/identity/commands')
 
@@ -144,5 +150,24 @@ describe('handleCommand — /link <code> (Baumy Olympics member linking)', async
     teardown()
     await handleCommand(dmOrigin(200, '200'), '/link ANNACODE12', db, { messageId: 6 })
     expect(reply()).toMatch(/isn't connected to me yet/)
+  })
+})
+
+describe('handleCommand — /resume brings the shopping topic up to date (issue #21)', () => {
+  it('/resume asks for a shopping-list repost for the house; /pause does not', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, null)
+    await db.insert(houseConfig).values({ id: true, houseGroupChatId: GROUP })
+    await upsertMember(db, GROUP, '100', 'Boss', 'owner')
+    vi.stubEnv('BAUMY_HOUSE_CHAT_ID', '')
+    inngestSend.mockClear()
+    await handleCommand(dmOrigin(100, '555'), '/pause', db)
+    expect((await loadResponsePolicy(db)).global_enabled).toBe(false)
+    expect(inngestSend).not.toHaveBeenCalled()
+    await handleCommand(dmOrigin(100, '555'), '/resume', db)
+    expect((await loadResponsePolicy(db)).global_enabled).toBe(true)
+    expect(inngestSend).toHaveBeenCalledTimes(1)
+    expect(inngestSend.mock.calls[0][0]).toEqual({ name: 'lists/shopping.changed', data: { groupId: GROUP } })
+    vi.unstubAllEnvs()
   })
 })
