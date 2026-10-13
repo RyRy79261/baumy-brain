@@ -1,7 +1,9 @@
 # Shopping list — a first-class, stateful house list
 
 **Status:** v1 implemented (single `shopping` list); remove and rename added 2026-10-13 (issue #23); the
-live, pinned, tap-to-tick list replaced the shopping-topic repost 2026-10-13 (issue #25, §Live list).
+live, pinned, tap-to-tick list replaced the shopping-topic repost 2026-10-13 (issue #25, §Live list);
+categories, auto-sorting and the live list's order modes added 2026-10-13 (issue #29, §Categories,
+§Live list → Order modes and headings).
 Multi-list is a deferred, additive seam (`list_name`), no migration required.
 
 ## What this adds (v1)
@@ -17,6 +19,9 @@ pollute the house group:
   the open list WITHOUT being bought (a soft remove; never recorded as bought).
 - **Rename** (2026-10-13, issue #23) — "change mlik to milk" → the item now reads "milk". If "milk" is
   already on the list, the old "mlik" is removed instead, so the list never holds two copies (a merge).
+- **Sort** (2026-10-13, issue #29) — every item lands in one of six sections (Pantry, Fresh, Coffee,
+  Cleaning, Maintenance, Household) or "Not sorted", automatically after the add; "put coffee
+  filters under coffee" (or the kiosk) moves it, and the house remembers that for next time.
 - **Query** — "what's on the shopping list?", "what do we need?" → Baumy replies with the current
   open list.
 
@@ -40,7 +45,8 @@ separately, because capture runs orthogonally, before the list op).
 **The LLM proposes; deterministic code disposes** — the same wall as every other write:
 
 1. **Propose (routing, Haiku):** the classifier returns a `list` flag ∈ `add | checkoff | remove |
-   rename | query | none` (`lib/ai/classify.ts`; `remove` / `rename` added 2026-10-13, issue #23). Routing only — no items yet. This is orthogonal to the single
+   rename | categorize | query | none` (`lib/ai/classify.ts`; `remove` / `rename` added 2026-10-13, issue #23;
+   `categorize` added 2026-10-13, issue #29). Routing only — no items yet. This is orthogonal to the single
    `decide()` Decision, so a list op never competes with reminder/forget/reply.
 2. **Gate (deterministic):** `listOpProposed(origin, flag, policyEnabled, decision)`
    (`lib/core/decide.ts`) — requires `mutate_list` allowed for the lane, excludes quarantined
@@ -50,7 +56,9 @@ separately, because capture runs orthogonally, before the list op).
    NOT skipped, so "what's on the list?" still renders it). The caller also requires a non-empty
    house **scope**.
 3. **Name the items (Sonnet, best-effort):** `extractListOp` (`lib/ai/list-extract.ts`) returns
-   `{op, items, renames?}` — `renames` is `[{from, to}]`, item TEXT only, for a `rename`. A malformed object degrades to `{op:'none'}` → the message falls through to normal
+   `{op, items, renames?, categories?}` — `renames` is `[{from, to}]`, item TEXT only, for a `rename`;
+   `categories` is `[{item, category}]` for a `categorize`, where `category` is the section WORD the
+   message used (a plain string — code checks it against the six, §Categories). A malformed object degrades to `{op:'none'}` → the message falls through to normal
    handling (never crash-loops, never blackholes — MEMORY.md best-effort rule).
 4. **Dispose (code):** `addListItems` / `checkOffItems` / `removeItems` / `renameItem` / `currentList`
    (`lib/lists/store.ts`) run against the group-scoped table. Deterministic acks (`lib/lists/format.ts`) — DM → words, group →
@@ -62,8 +70,8 @@ separately, because capture runs orthogonally, before the list op).
    changed for those. A rename that **merged** is always words, in the group too (`Merged "mlik" into
    "milk" — it was already on the list.`), because a bare 👍 would hide that the old item is gone.
 
-A fully-compromised model can at most return an op enum + item strings (and `from → to` pairs); it can
-never name the scope, the attribution, or a row id.
+A fully-compromised model can at most return an op enum + item strings (and `from → to` pairs, and
+`item → section word` pairs); it can never name the scope, the attribution, or a row id.
 
 ## Security invariants (must hold)
 
@@ -112,6 +120,14 @@ never name the scope, the attribution, or a row id.
   actor (a chat sender, a tapper, the kiosk's mapped member); one that is not a member row is stored
   as null. `shopping_message_chat_id` / `shopping_message_id` / `shopping_thread_id` (migration
   `0024`) now hold the live list and its topic.
+- **Categories** (migration `0028`, 2026-10-13, issue #29): `baumy_list_items.category` (one of the six
+  keys or null = Not sorted) · `category_source` (`picked` / `remembered` / `similar` / `guessed`, or
+  null = not sorted yet) · `categorized_by` (who picked it; member FK, `set null`) · `categorized_at`.
+  CHECK constraints hold both to the enum (`lib/lists/categories.ts`). `baumy_list_categories` — the
+  house's remembered picks, one row per `(group_id, list_name, item_normalized)` (unique).
+  `baumy_list_item_embeddings` — one Voyage vector per `(group_id, list_name, item_normalized, model)`
+  (unique; no HNSW index — a house's item names are a few hundred rows). `baumy_house_config.shopping_sort`
+  (`groups` default / `az` / `added`, CHECK). All additive; every new column is nullable or defaulted.
 - **Partial-unique index** `baumy_list_items_open_uq` on `(group_id, list_name, item_normalized)
   WHERE is_active AND checked_at IS NULL` → **one OPEN copy of an item per house list**. Checking an
   item off drops it out of the predicate, so a later "buy milk again" legitimately creates a fresh
@@ -154,6 +170,78 @@ The owner asked for both, on the kitchen screen and in Telegram ("remove milk", 
   (I3, `listOpProposed`), no confirm tap (I5), the mutation is one memoized step (I6), and every
   remove or rename that changed the list signals the live list (§Live list).
 
+## Categories (2026-10-13, issue #29)
+
+Owner rulings: 2026-10-11 — six groups, **Pantry, Fresh, Coffee, Cleaning, Maintenance, Household**,
+plus **Not sorted**; smart sorting that works the same from the app and the bot (a remembered pick,
+else the nearest known item by embedding, else an AI guess), and every correction teaches it.
+
+### The enum
+
+A fixed list (`lib/lists/categories.ts`): the stored keys are `pantry`, `fresh`, `coffee`, `cleaning`,
+`maintenance`, `household`; null is "Not sorted". Not a `pgEnum` (brain keeps free-form text columns),
+but CHECK constraints on `baumy_list_items.category` / `category_source` and
+`baumy_list_categories.category` refuse anything else, so a bad value can never be stored by any path.
+
+### Auto-sorting (after the add, never inside it)
+
+An add commits first, exactly as before, with `category` null. Then the writer (`runList` in its own
+step `list-categorize`, the kitchen add after its write) sends `lists/shopping.categorize` with
+`{ groupId, itemIds }` — the ids of the rows that add inserted (`addListItems` returns `addedIds`).
+`shopping-categorize` (Inngest, concurrency 1 per house, retries 2; `lib/lists/categorize.ts`
+`runCategorize`, one memoized step per item) sorts each row that is still this house's, active, and
+has `category_source` NULL:
+
+1. **remembered** — the house's pick for this exact item name (`baumy_list_categories`, keyed on
+   `item_normalized`, the add/dedupe key).
+2. **similar** — the nearest item NAME the house has already sorted, by pgvector cosine over
+   `baumy_list_item_embeddings` **of the current model only** (`model = EMBED_MODEL`; a vector of
+   another model is never compared). A name's category is its remembered pick when there is one, else
+   the category its most recently sorted row got; a name whose latest sort was a "Not sorted" pick
+   lends nothing. Copied only at or above **`SIMILAR_FLOOR` = 0.80**. Why 0.80: precision-first — a
+   fall-through costs one Sonnet call, a wrong copy is a visible mistake. It sits between brain's two
+   other thresholds: retrieval keeps anything above 0.2 (recall: "related at all?") and consolidation
+   folds at 0.97 (the same statement restated). Short item names in one embedding space share a high
+   baseline, so a low floor would copy across sections; 0.80 keeps name variants and close kin ("oat
+   milk" / "oatly barista", "bin bags" / "bin liners") and sends anything looser to the model.
+   [UNRESOLVED 2026-10-13] The value is reasoned, not yet measured on Voyage vectors of real item
+   names: a live calibration run may move the constant (tests pin both sides of it).
+3. **guessed** — Sonnet (`assess`; Haiku stays routing-only) via `guessCategory`
+   (`lib/ai/category-guess.ts`, `CATEGORY_GUESS_SYSTEM`): ONE call per item, the item fenced as
+   untrusted data, structured output `{ category: <six keys> | "unknown" }`. Code re-checks it
+   (`asCategory`); a malformed object (a value outside the enum) degrades to null; a transient provider
+   error rethrows so the step retries (I2). One item per call, so one item's text can never steer
+   another's category — the most an injection can do is pick a section for itself.
+
+The item's vector is embedded and stored whatever tier wins (once per name), so every sorted item can
+be the next one's anchor. The write is compare-and-set (`… WHERE category_source IS NULL`), so a
+housemate's pick that lands first is never overwritten. Nothing here can block or fail the add: the
+event is best-effort (`requestCategorize` logs and returns false when Inngest is down), an embedder
+failure skips only tier 2, and a row every tier passes on stays Not sorted. When anything was sorted,
+the run sends the debounced change signal (`requestShoppingRefresh` — no "last updated by" stamp:
+nobody changed the list), so the live list re-renders with its groups.
+
+### A housemate's pick (teaches the house)
+
+`setItemCategory` (`lib/lists/store.ts`): the row is named by id (a row still shown on this house's live
+list) or by text (an open item, matched like a check-off: exact normalized, then the ONE open item with
+that loose key; more than one → `ambiguous`, none → `not_found`, nothing changes). The row gets
+`category`, `category_source = picked`, `categorized_by` (the authenticated actor or null),
+`categorized_at`; then the house memory for that item name is upserted (`ON CONFLICT … DO UPDATE`), so
+a later add of the same item is `remembered`. A pick of null ("Not sorted") deletes the memory row.
+Group-scoped (an id from another house matches nothing). A pick changes the list, so it calls
+`noteShoppingChange` (stamp + debounced render).
+
+- **Kiosk:** `POST /api/kitchen/shopping/category` (§Kitchen API).
+- **Telegram** (it fit the existing list-op pattern, so it is in): the `categorize` list op — "put
+  coffee filters under coffee", "bin bags go in cleaning", "move oat milk to fresh". Same classifier
+  flag, `listOpProposed` gate (quarantine and forwards can never sort; pause lane-scoped), extractor
+  and memoized `list` step as every list op; at most 10 picks per message. The section word is matched
+  by code (`pickedCategory`): a key in any case → that category, `unsorted` / `not sorted` / `none` →
+  null, anything else → reported as not a section, nothing changed. Acks (`categorizeAck`): group →
+  👍 when everything named was sorted, otherwise words (what wasn't found, what was ambiguous, which
+  sections exist); DM → words ("Put coffee filters under Coffee. I'll remember that next time.").
+
 ## Kitchen API (the kiosk's front door)
 
 The house kitchen kiosk (Baumy Olympics, ADR 0003 there) shares this list over HTTP, so there is
@@ -162,13 +250,19 @@ ONE list whether a housemate DMs Baumy or taps the kiosk. `lib/lists/kitchen-api
 
 | Route | Body | Response |
 |---|---|---|
-| `GET /api/kitchen/shopping` | — | `{ ok, items: [{ id, item, addedBy, createdAt }] }` (open items, oldest first) |
+| `GET /api/kitchen/shopping` | — | `{ ok, items: [{ id, item, addedBy, createdAt, category }] }` (open items, oldest first) |
 | `POST /api/kitchen/shopping/add` | `{ items: string[1..30], telegramUserId? }` | `{ ok, added, already, attributedTo, items }` |
 | `POST /api/kitchen/shopping/checkoff` | `{ items: string[1..30], telegramUserId? }` | `{ ok, checkedOff, notFound, attributedTo, items }` |
 | `POST /api/kitchen/shopping/remove` (2026-10-13) | `{ items: string[1..30], telegramUserId? }` | `{ ok, removed, notFound, ambiguous: [{ item, matches }], attributedTo, items }` |
 | `POST /api/kitchen/shopping/rename` (2026-10-13) | `{ from: string, to: string, telegramUserId? }` (each trimmed, 1..200) | `{ ok, outcome: 'renamed' \| 'merged' \| 'unchanged' \| 'not_found' \| 'ambiguous', from, to, matches?, attributedTo, items }` (`matches` only with `ambiguous`) |
 
-`items` in every write response is the open list after the write, in the `GET` shape. For a rename,
+| `POST /api/kitchen/shopping/category` (2026-10-13, issue #29) | `{ id?: uuid, item?: string (trimmed, 1..200), category: 'pantry' \| 'fresh' \| 'coffee' \| 'cleaning' \| 'maintenance' \| 'household' \| null, telegramUserId? }` — `id` or `item` required; with both, `id` is used; `category` is required (null = Not sorted) | `{ ok, outcome: 'set' \| 'not_found' \| 'ambiguous', id?, item, category, matches?, attributedTo, items }` (`id` only when a row matched; `matches` only with `ambiguous`; `item` is the item as it reads, the text sent when nothing matched, or null for an `id` that matched nothing) |
+
+`items` in every write response is the open list after the write, in the `GET` shape. Every item
+carries `category` (2026-10-13, issue #29): one of the six keys, or null = Not sorted — also null for
+an item just added, until auto-sorting has run (a few seconds; the add response is sent before it).
+A `category` pick that matched nothing (`not_found`, `ambiguous`) is a `200` that changed nothing,
+like a rename's miss; a category outside the six (a label such as `"Coffee"`, or `"dairy"`) is a `400`. For a rename,
 `from` is the open item it matched (or what was sent, when nothing matched) and `to` is the item as it
 now reads (for `merged`, the copy that was already open). `not_found` and `ambiguous` are a `200`,
 not an error: they changed nothing.
@@ -193,7 +287,7 @@ Invariants:
   attributed to nobody (`attributedTo: null` in the response). The kiosk is one shared device, so this
   is a convenience label, not authentication.
 - **K-I4 — Same dispose layer.** `addListItems` / `checkOffItems` / `removeItems` / `renameItem` /
-  `currentList`, the same functions the Telegram lane calls: re-adding an open item is a no-op
+  `setItemCategory` / `currentList`, the same functions the Telegram lane calls: re-adding an open item is a no-op
   (`already`, partial-unique index backstop); check-off, remove and a rename's `from` are
   exact-normalized then the unambiguous loose key. Like the Telegram lane it auto-commits (capture tier, I5).
 
@@ -210,32 +304,103 @@ inline buttons. It replaces the shopping-topic repost of issue #21 (below).
 
 ```
 🛒 Shopping list
-3 to buy · 1 done
+8 to buy · 1 done
 Last updated by Ryan, Tue 13 Oct, 18:05
-[ ☐ Ginger ]
+[ ── Pantry ── ]
+[ ☐ Pasta ]
+[ ── Fresh ── ]
+[ ☐ apples ]
+[ ── Coffee ── ]
+[ ☐ oat milk ]
+[ ☐ coffee beans ]
+[ ── Cleaning ── ]
 [ ☐ bin bags ]
-[ ☐ coffee ]
-[ ☑ oat milk ]
-[ 🧹 Clear done ] [ 🔄 Refresh ]
+[ ── Maintenance ── ]
+[ ☐ light bulbs ]
+[ ── Household ── ]
+[ ☐ candles ]
+[ ── Not sorted ── ]
+[ ☐ zorblax ]
+[ ── Done ── ]
+[ ☑ sponges ]
+[ 🗂 Groups ] [ 🧹 Clear done ] [ 🔄 Refresh ]
 ```
 
 - **Header:** the title; the open count (`N to buy`, `· N done` when something is ticked, `Nothing to
   buy.` for an empty list, `Nothing left to buy` when everything is ticked); `Last updated by <name>,
   <day time>` in the house timezone (Europe/Berlin), without "by" when the change named nobody (the
   kiosk with no member); `Page p of n` when there is more than one page.
-- **One button per item per row.** Open items first (`☐ name`, oldest first), then ticked ones
-  (`☑ name`, in the order they were ticked). Ticked items stay until "Clear done". Item names appear
+- **One button per item per row.** Open items first (`☐ name`, in the house's order — §Order modes
+  and headings below), then ticked ones (`☑ name`, in the order they were ticked). Ticked items stay until "Clear done". Item names appear
   ONLY as button labels: flattened and defanged by `boardItem` (control/bidi/invisible characters
   stripped, `@`/`#`/`$`/`/` sigils swapped for look-alikes) and clipped to 40 characters with `…` (by
   code point). The housemate name in the header gets the same treatment, clipped to 32.
-- **Pages of 30** (`SHOP_PAGE_SIZE`). `◀` / `▶` appear only when needed (no `◀` on page 1, no `▶` on the
+- **Pages of 30 items** (`SHOP_PAGE_SIZE`; heading buttons don't count). `◀` / `▶` appear only when needed (no `◀` on page 1, no `▶` on the
   last page). An out-of-range page is clamped. After a tap on an item, the page holding that item is
   shown; Refresh and Clear done show page 1; an ordinary change shows page 1.
-- **Footer:** `🧹 Clear done` · `🔄 Refresh`, always.
+- **Footer:** the order button (`🗂 Groups` / `🔤 A–Z` / `🕒 Added` — it shows the CURRENT mode) ·
+  `🧹 Clear done` · `🔄 Refresh`, always.
+
+### Order modes and headings (2026-10-13, issue #29)
+
+Owner ruling 2026-10-13: the live list gets an order toggle and headings, "all of it in one go". The
+order is one value for the whole house (`baumy_house_config.shopping_sort`), cycled by the footer
+button: **Groups** (default) → **A–Z** → **Added** → Groups. `lib/lists/live.ts` `orderRows`:
+
+- **Groups** — open items under one heading per category, in the fixed order Pantry, Fresh, Coffee,
+  Cleaning, Maintenance, Household, then Not sorted last; a group with no items has no heading; within
+  a group, oldest first (the order they were added).
+- **A–Z** — open items alphabetically (case-insensitive); no headings at all.
+- **Added** — open items newest first, under **Today** (added today in the house timezone,
+  Europe/Berlin — `created_at` is written from the clock seam) and **Earlier**.
+- **Done items** always stay below the open ones, in the order they were ticked. Decision: in the
+  modes that have headings (Groups, Added) they sit under their own **Done** heading, so a ticked item
+  never reads as part of the last group above it; A–Z has none (it has no headings at all).
+
+A heading is a button `── Label ──` with callback `shop:noop`: a tap is answered silently (no toast
+text) and changes and renders nothing. A page holds 30 ITEMS; headings come on top and don't count; a
+heading is shown before the first item of each group on the page, so a group that carries on from the
+previous page gets its heading again at the top. A tapped item's page (focus) is found in the mode's
+order.
+
+```
+🛒 Shopping list
+8 to buy · 1 done
+Last updated by Ryan, Tue 13 Oct, 18:05
+[ ☐ apples ]
+[ ☐ bin bags ]
+[ ☐ candles ]
+[ ☐ coffee beans ]
+[ ☐ light bulbs ]
+[ ☐ oat milk ]
+[ ☐ Pasta ]
+[ ☐ zorblax ]
+[ ☑ sponges ]
+[ 🔤 A–Z ] [ 🧹 Clear done ] [ 🔄 Refresh ]
+```
+
+```
+🛒 Shopping list
+8 to buy · 1 done
+Last updated by Ryan, Tue 13 Oct, 18:05
+[ ── Today ── ]
+[ ☐ coffee beans ]
+[ ☐ candles ]
+[ ☐ apples ]
+[ ☐ zorblax ]
+[ ── Earlier ── ]
+[ ☐ light bulbs ]
+[ ☐ Pasta ]
+[ ☐ oat milk ]
+[ ☐ bin bags ]
+[ ── Done ── ]
+[ ☑ sponges ]
+[ 🕒 Added ] [ 🧹 Clear done ] [ 🔄 Refresh ]
+```
 
 ### Callback data
 
-Every button carries one of four shapes, each ≤ 64 bytes (the longest is `shop:chk:` + a uuid = 45):
+Every button carries one of six shapes, each ≤ 64 bytes (the longest is `shop:chk:` + a uuid = 45):
 
 | Data | Effect |
 |---|---|
@@ -243,6 +408,8 @@ Every button carries one of four shapes, each ≤ 64 bytes (the longest is `shop
 | `shop:clear` | clear every ticked item |
 | `shop:refresh` | re-render (page 1) |
 | `shop:page:<n>` | show page `n` (1–9999) |
+| `shop:noop` | a heading (issue #29): answered silently, nothing else |
+| `shop:sort:<mode>` | set the house's order to `mode` (`groups` / `az` / `added`, issue #29) — the button carries the NEXT mode, so a double tap sets the same mode twice and never skips one |
 
 `parseShopCallback` accepts exactly these and refuses anything else (oversized, a non-uuid id, a page
 of 0 or with a leading zero, trailing text, other case). Callback data is not trusted just because
@@ -280,6 +447,9 @@ Telegram delivered it: a modified client can send any string.
      since would make a second open copy (the partial-unique index refuses it): the ticked row is
      cleared instead and the toast says "<item> is already on the list".
    - `shop:clear` → `clearDoneItems` (sets `cleared_at` on every ticked, uncleared row of the house).
+   - `shop:sort:<mode>` → `setShoppingSort` (one guarded UPDATE, a no-op when the house already has
+     that mode); toast `Sorted: 🔤 A–Z`; page 1. A house setting, not a list change: no stamp.
+   - `shop:noop` → answered silently right after the parse; no read, no change, no render.
    - `shop:refresh` / `shop:page:<n>` → no change.
    A change stamps `shopping_updated_by` / `shopping_updated_at` with the tapper (a no-op tap does not).
 5. **The toast** (`answerCallbackQuery`, always, best-effort, in its own memoized step so a replay
@@ -392,6 +562,8 @@ the delete was refused). Issue #25 replaced that with the live list above: the t
   migration.
 - **Fuzzy check-off matching** beyond articles/plurals (typos, synonyms — "semi-skimmed" for "milk"):
   still a miss ("couldn't find X") rather than a guess — precision-first.
+- **More categories / per-house categories**: the six are an owner ruling (2026-10-11); a seventh is a
+  constant + a migration of the CHECK constraints.
 - **Quantities / provenance link**: folded into the item string for now; a structured `quantity`
   column or a `source_memory_item_id` lineage link (mirroring `docs/spec/fact-lineage.md`) is an
   additive future column.

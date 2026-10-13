@@ -98,6 +98,15 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
   the memory-core "graduation rule"), not a fact; auto-commits (capture tier), never confirm-gated.
   The kitchen kiosk reads/writes the SAME list over `app/api/kitchen/shopping/*` (Bearer
   `KITCHEN_API_TOKEN`, scope = `getHouseChatId`, never request input; 503 before a house exists).
+  **Categories (2026-10-13, issue #29, spec §Categories):** a FIXED six-key enum (`lib/lists/categories.ts`,
+  CHECK-constrained; null = Not sorted). Auto-sorting runs AFTER the add, never inside it: the writer sends
+  `lists/shopping.categorize` with the inserted ids → `shopping-categorize` (`lib/lists/categorize.ts`):
+  remembered pick (`baumy_list_categories`) → nearest sorted item name by Voyage cosine, current
+  `EMBED_MODEL` only, ≥ `SIMILAR_FLOOR` (`baumy_list_item_embeddings`) → Sonnet guess held to the enum
+  (one item per call, fenced as data). Compare-and-set on `category_source IS NULL`, so a pick always
+  wins; a failure leaves the item Not sorted, never fails the add. A pick (`setItemCategory`: kiosk
+  `POST …/category`, or the Telegram `categorize` list op "put X under coffee") is `picked` and upserts
+  the house memory. A new add path must call `requestCategorize` after its write.
 - **Two human-authorization walls (don't conflate them):** (1) the **confirm-tap wall** —
   `callback_query` from a member's authenticated `from.id` (`lib/confirm/*`,
   `functions/callback.ts`) gates the chat-initiated privileged actions: **memory deletion /
@@ -166,7 +175,9 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
   taps). `/list` (any active member, own words, house lane; General or a topic) posts it there or
   re-renders the existing one where it is (linking to it from elsewhere — never a second copy);
   `/shoppinghere` = `/list` in this topic that MOVES it; `/shoppingoff` clears the stored id, then
-  unpins + deletes it. Buttons: `shop:chk:<id>` / `shop:clear` / `shop:refresh` / `shop:page:<n>`
+  unpins + deletes it. Buttons: `shop:chk:<id>` / `shop:clear` / `shop:refresh` / `shop:page:<n>` /
+  `shop:sort:<mode>` (the house's order — Groups → A–Z → Added, `house_config.shopping_sort`; carries the
+  TARGET mode so a double tap is idempotent) / `shop:noop` (a section heading, answered silently; issue #29)
   (≤ 64 bytes, parsed exactly), routed in `runCallback` AFTER the roster check and BEFORE the
   confirm-card parse; the tapped message must be the stored live list (same chat AND message id); an
   item tap SETS the state its button showed (`want`, read by the webhook from the delivered
