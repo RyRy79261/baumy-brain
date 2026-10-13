@@ -158,6 +158,11 @@ export const houseConfig = pgTable(
     // Null → none posted yet. Written only by the repost job, from Telegram's own sendMessage result.
     shoppingMessageChatId: text('shopping_message_chat_id'),
     shoppingMessageId: bigint('shopping_message_id', { mode: 'number' }),
+    // Who last changed the shopping list, and when (issue #25) — the live list's "Last updated by X"
+    // line. Written with every list change (a tap, a chat add/check-off/remove/rename, the kitchen API);
+    // the id is the AUTHENTICATED actor (null when the kiosk named nobody), never text.
+    shoppingUpdatedBy: text('shopping_updated_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
+    shoppingUpdatedAt: timestamp('shopping_updated_at', { withTimezone: true }),
     houseTimezone: text('house_timezone').notNull().default('Europe/Berlin'),
     responsePolicy: jsonb('response_policy')
       .notNull()
@@ -376,6 +381,10 @@ export const listItems = pgTable(
     // The last rename ("change mlik to milk"): who + when. The row keeps its id and added_by.
     renamedBy: text('renamed_by').references(() => members.telegramUserId, { onDelete: 'set null' }),
     renamedAt: timestamp('renamed_at', { withTimezone: true }),
+    // A bought item stays on the live list, ticked (☑), until someone taps "🧹 Clear done" (issue #25):
+    // cleared_at is when it left the list for good. Null on an open row; rows bought before the live
+    // list were backfilled to their checked_at (migration 0027).
+    clearedAt: timestamp('cleared_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

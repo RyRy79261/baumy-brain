@@ -17,7 +17,7 @@ import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/for
 import { appendInbound, recentTurns, scrubWindow, purgeWindow, linkProduced, withholdProducing, EXPIRED_WINDOW_TEXT } from '@/lib/turn/window'
 import { createReminder, claimReminder, markSent, releaseReminder, scheduleNextOccurrence, loadSeriesRow, repairRecurringSeries, orphanedEventReminders, reminderDestination } from '@/lib/reminders/store'
 import { lookupEdit, withdrawForEdit, settleEditedFacts } from '@/lib/turn/edit'
-import { addListItems, checkOffItems, currentList, removeItems, renameItem, isUniqueViolation } from '@/lib/lists/store'
+import { addListItems, checkOffItems, currentList, removeItems, renameItem, isUniqueViolation, toggleListItem, clearDoneItems, liveListRows } from '@/lib/lists/store'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { loadResponsePolicy, setGlobalEnabled, addMutedTopic, removeMutedTopic } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
@@ -396,6 +396,43 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     } finally {
       __setDbOverride(null)
     }
+  })
+
+  it('live list (issue #25): concurrent taps on one item serialise on the row lock — every tap flips once, none is lost (real Postgres)', async () => {
+    const LIVE = '-100e2eLive'
+    await ensureRegistered(h.db, LIVE, null)
+    await addListItems(h.db, { groupId: LIVE, items: ['ginger'], addedBy: null })
+    const [{ id }] = await h.db.select({ id: listItems.id }).from(listItems).where(and(eq(listItems.groupId, LIVE), eq(listItems.item, 'ginger')))
+    // Five taps at once over the real pool (separate connections): Postgres re-evaluates each UPDATE's
+    // CASE on the row as the previous one left it, so they alternate. An odd number leaves it ticked.
+    const taps = await Promise.all([1, 2, 3, 4, 5].map(() => toggleListItem(h.db, { groupId: LIVE, itemId: id, by: null })))
+    const outcomes = taps.map((t) => t.outcome)
+    expect(outcomes.filter((o) => o === 'ticked')).toHaveLength(3)
+    expect(outcomes.filter((o) => o === 'unticked')).toHaveLength(2)
+    expect((await liveListRows(h.db, LIVE)).map((r) => [r.item, r.done])).toEqual([['ginger', true]])
+    // A tap scoped to another house never touches the row.
+    expect((await toggleListItem(h.db, { groupId: GROUP, itemId: id, by: null })).outcome).toBe('gone')
+    // Re-opening into an open re-added copy: the unique index refuses, the done row is cleared instead.
+    await addListItems(h.db, { groupId: LIVE, items: ['ginger'], addedBy: null })
+    expect((await toggleListItem(h.db, { groupId: LIVE, itemId: id, by: null })).outcome).toBe('already_open')
+    expect((await liveListRows(h.db, LIVE)).map((r) => [r.item, r.done])).toEqual([['ginger', false]])
+    expect(await clearDoneItems(h.db, { groupId: LIVE })).toBe(0)
+  })
+
+  it('migration 0027 backfill on real Postgres: bought rows get cleared_at = checked_at, idempotently', async () => {
+    const OLD = '-100e2eBackfill'
+    await ensureRegistered(h.db, OLD, null)
+    await addListItems(h.db, { groupId: OLD, items: ['milk', 'eggs'], addedBy: null })
+    await checkOffItems(h.db, { groupId: OLD, items: ['milk'], checkedBy: null })
+    await h.pool.query("UPDATE baumy_list_items SET cleared_at = NULL WHERE group_id = $1", [OLD]) // as before the live list
+    const migration = readFileSync(join(process.cwd(), 'db/migrations/0027_backfill_list_cleared_at.sql'), 'utf8')
+    await h.pool.query(migration)
+    await h.pool.query(migration)
+    const rows = await h.pool.query('SELECT item, checked_at, cleared_at FROM baumy_list_items WHERE group_id = $1 ORDER BY item', [OLD])
+    expect(rows.rows.map((r: { item: string; checked_at: Date | null; cleared_at: Date | null }) => [r.item, r.cleared_at?.getTime() ?? null])).toEqual([
+      ['eggs', null],
+      ['milk', (rows.rows[1] as { checked_at: Date }).checked_at.getTime()],
+    ])
   })
 
   it('event surfacing: a dated fact schedules event-anchored heads-ups on real Postgres', async () => {
