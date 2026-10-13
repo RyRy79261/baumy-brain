@@ -274,7 +274,8 @@ Last updated by Ryan, Tue 13 Oct, 18:05
   `/list` that **moves** the list there. `/shoppingoff` stops it: the message is unpinned and
   deleted (or, if Telegram refuses, edited to "This list is no longer updated.").
 - **Tick an item** by tapping it: ☐ becomes ☑, with a short toast ("✓ Ginger – ticked by Ryan").
-  Tap again to put it back. Ticked items stay at the bottom until someone taps **🧹 Clear done**.
+  Tap ☑ to put it back. A tap sets the state its button showed, so two people tapping the same ☐ at
+  once tick it once (the second hears "already ticked"). Ticked items stay at the bottom until someone taps **🧹 Clear done**.
   Only an active housemate's tap counts. Over 30 items, ◀ / ▶ page through the list.
 - **Every other change** (a chat message such as "we need milk" or "got the eggs", a DM, the
   kitchen kiosk's API) updates the message about 5 seconds after the last change, and at most 30
@@ -286,7 +287,7 @@ Button `callback_data` (each at most 64 bytes; anything else is refused):
 
 | Data | Button | Effect |
 |---|---|---|
-| `shop:chk:<itemId>` | `☐ name` / `☑ name` | Toggle one item (`itemId` is the row's uuid). |
+| `shop:chk:<itemId>` | `☐ name` / `☑ name` | Tick (☐) or untick (☑) one item — the state the tapped button showed, read from the keyboard Telegram sends with the tap (`itemId` is the row's uuid). |
 | `shop:clear` | `🧹 Clear done` | Take every ticked item off the list. |
 | `shop:refresh` | `🔄 Refresh` | Re-render page 1. |
 | `shop:page:<n>` | `◀` / `▶` | Show page `n` (1-based; clamped to the pages there are). |

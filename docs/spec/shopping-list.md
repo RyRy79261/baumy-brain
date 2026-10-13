@@ -255,23 +255,39 @@ Telegram delivered it: a modified client can send any string.
    parse (`c:` / `x:` / `l:`), so list data can never resolve a pending action, and vice versa.
 2. **What:** the data must parse; anything else is answered with an empty toast and dropped.
 3. **Where:** the tapped message's chat must be the house (`acceptIds`), and the message must be the
-   stored live list (`shopping_message_id`); otherwise the toast says "This list is no longer updated —
+   stored live list — the same chat (`shopping_message_chat_id`) AND message id (`shopping_message_id`);
+   otherwise the toast says "This list is no longer updated —
    use the pinned one." and nothing changes. Baumy never edits the tapped message in that case (a
    crafted tap on some other Baumy message must not rewrite it).
 4. **The change**, in one memoized step (an Inngest retry replays it, never toggles twice):
-   - `shop:chk:<id>` → `toggleListItem`: ONE atomic `UPDATE … SET checked_at = CASE WHEN checked_at IS
-     NULL THEN now ELSE NULL END, checked_by = CASE … END WHERE id = $id AND group_id = <house scope>
-     AND list_name AND is_active AND cleared_at IS NULL RETURNING …`. The scope comes from config, never
-     from the button: another house's item id matches nothing ("That item isn't on the list any
-     more."). Two taps at once serialise on the row lock and each flips the state it finds (one ticks,
-     the other un-ticks; both toasts are true; tested on real Postgres). Re-opening a ticked item that
-     has been re-added since would make a second open copy (the partial-unique index refuses it): the
-     ticked row is cleared instead and the toast says "<item> is already on the list".
+   - `shop:chk:<id>` → `toggleListItem` **sets the state the tapped button showed** — it does not flip.
+     [CORRECTION 2026-10-13, review of PR #26] The webhook finds the tapped button in the keyboard
+     Telegram delivers with the callback (`callback_query.message.reply_markup`, whose `callback_data`
+     equals the tapped data) and forwards `want`: `tick` for `☐ name`, `untick` for `☑ name`
+     (`tapWant`, `lib/lists/live.ts`). That payload arrives over the secret-verified webhook. The
+     UPDATE then sets the state outright, guarded: `SET checked_at = now, checked_by = <tapper> WHERE
+     id = $id AND group_id = <house scope> AND list_name AND is_active AND cleared_at IS NULL AND
+     checked_at IS NULL` for a tick (`… AND checked_at IS NOT NULL`, clearing both, for an untick). It
+     is **idempotent**: N housemates tapping the same ☐ at once tick it once (Postgres re-checks the
+     guard on the row the first tap left); the rest change nothing and hear "<item> is already ticked"
+     (or "<item> is already on the list" for an untick) — tested on real Postgres. When zero rows
+     change, the row is re-read by id + scope to tell "already in that state" from gone ("That item
+     isn't on the list any more."). The list is re-rendered either way, so a stale keyboard catches
+     up. Only when the keyboard cannot be read (an inaccessible message has no `reply_markup`, `want`
+     is null) does a tap fall back to a flip computed under the row lock (`CASE WHEN checked_at IS
+     NULL …`; concurrent flips serialise, none is lost). The scope comes from config, never from the
+     button: another house's item id matches nothing. Re-opening a ticked item that has been re-added
+     since would make a second open copy (the partial-unique index refuses it): the ticked row is
+     cleared instead and the toast says "<item> is already on the list".
    - `shop:clear` → `clearDoneItems` (sets `cleared_at` on every ticked, uncleared row of the house).
    - `shop:refresh` / `shop:page:<n>` → no change.
-   A change stamps `shopping_updated_by` / `shopping_updated_at` with the tapper.
-5. **The toast** (`answerCallbackQuery`, always, best-effort): `✓ Ginger – ticked by Ryan`,
-   `↩ Ginger – back on the list by Ryan`, `🧹 Cleared 2 done items`, `Nothing to clear.`, `Up to date.`
+   A change stamps `shopping_updated_by` / `shopping_updated_at` with the tapper (a no-op tap does not).
+5. **The toast** (`answerCallbackQuery`, always, best-effort, in its own memoized step so a replay
+   never answers twice): `✓ Ginger – ticked by Ryan`, `↩ Ginger – back on the list by Ryan`, `Ginger is
+   already ticked`, `🧹 Cleared 2 done items`, `Nothing to clear.`, `Up to date.` If the handler fails
+   before any toast, the tapper gets `Something went wrong — try again.` at once (the error still
+   propagates, so Inngest retries), and `handle-callback-query`'s `onFailure` answers every callback
+   whose retries all failed — a button never spins with no word.
 6. **The render**, at once (no debounce): a `lists/shopping.render` event; if Inngest cannot be reached,
    the render runs inline.
 
@@ -293,15 +309,24 @@ one `lists/shopping.render` (reason `change`).
 
 ONE Inngest function renders, **concurrency 1 per house, no debounce**, for taps, commands and the
 debounced change alike — so two renders never interleave, and the last one shows the last state. It is
-the only writer of the stored message id (besides `/shoppingoff`'s clear). One step per stage, so a
-retry never posts twice.
+the only writer of the stored message id (besides `/shoppingoff`'s clear).
+
+[CORRECTION 2026-10-13, review of PR #26] Inngest's concurrency limit bounds executing **steps**, not
+whole runs, so two runs' steps can interleave; and a retried step replays the memoized results of the
+steps before it. So the list is read and the message built **inside the same step that sends it** (the
+edit step `live-render`, the post step `live-post`): every edit carries the list as it is when it goes
+out, and a retried edit (a 429) rebuilds its text. A retry still never posts twice: a send and the store
+of its id are one step.
 
 1. Load: the event's house must BE the house (one house today); a command's place must be the house
    chat. A `change` render is held while the house is paused (`/pause`); taps and commands still render
    (`/resume` and the dashboard switch send a change signal, so a held edit shows up). No stored live
    message and no place → nothing: **an ordinary change never posts a message**.
-2. Edit the stored message in place (`editLiveList`, text + keyboard). Telegram's `message is not
-   modified` is a success (`unchanged`). A 429 is thrown as `RetryAfterError` with Telegram's
+2. Edit the stored message in place (`editLiveList`, text + keyboard), compare-and-set on the stored
+   id: just before the edit, the stored live message must still be the one being edited (else
+   `superseded`, no edit); and if it stopped being the live list WHILE the edit was in flight
+   (`/shoppingoff` cleared the id and marked the message), the `This list is no longer updated.` marker
+   is put back over the edit. Telegram's `message is not modified` is a success (`unchanged`). A 429 is thrown as `RetryAfterError` with Telegram's
    `retry_after`, so Inngest retries after the wait.
 3. If Telegram says the message is gone (`message to edit not found`, `MESSAGE_ID_INVALID`, `message
    can't be edited`): post a new one where the list lived (its stored topic; for `/list`, where the

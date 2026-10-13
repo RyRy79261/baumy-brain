@@ -167,9 +167,14 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   `/shoppinghere` = `/list` in this topic that MOVES it; `/shoppingoff` clears the stored id, then
   unpins + deletes it. Buttons: `shop:chk:<id>` / `shop:clear` / `shop:refresh` / `shop:page:<n>`
   (≤ 64 bytes, parsed exactly), routed in `runCallback` AFTER the roster check and BEFORE the
-  confirm-card parse; the tapped message must be the stored live list in the house chat; the toggle is
-  ONE atomic UPDATE keyed on id + house scope (two taps serialise on the row lock; re-opening into a
-  re-added open copy clears the ticked row); toast, then an immediate render. Taps auto-commit (capture
+  confirm-card parse; the tapped message must be the stored live list (same chat AND message id); an
+  item tap SETS the state its button showed (`want`, read by the webhook from the delivered
+  `reply_markup`: ☐ → tick, ☑ → untick) with ONE guarded UPDATE keyed on id + house scope — idempotent:
+  N concurrent ticks tick once, the rest toast "already ticked" (no keyboard → a flip under the row
+  lock); re-opening into a re-added open copy clears the ticked row; the toast is its own step (a
+  failure toasts "try again"; `onFailure` answers too), then an immediate render. A render reads the
+  list and builds the text INSIDE the step that edits or posts (step-level concurrency lets runs
+  interleave), compare-and-set on the stored id before and after the edit. Taps auto-commit (capture
   tier) — they are not the confirm wall. A ticked item stays (☑) until "Clear done" (`cleared_at`).
   Every other writer of `baumy_list_items` (runList, the kitchen API) calls `noteShoppingChange` (stamp
   `shopping_updated_by/at` + `lists/shopping.changed`) → `shopping-changed` (debounce 5s, timeout 30s,

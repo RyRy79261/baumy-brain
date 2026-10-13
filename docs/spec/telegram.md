@@ -259,7 +259,10 @@ keyboard) on every change. Full behaviour: `docs/spec/shopping-list.md` §Live l
   parsed exactly). They arrive as `callback_query` like the confirm cards and reach `runCallback`
   after its roster check, so only an ACTIVE member's authenticated `from.id` counts; the `shop:` branch
   is routed before the confirm-card parse. The tapped message must be the stored live list in the house
-  chat, and the item id is matched only inside the house scope. A tap is answered with a short toast
+  chat (same chat id and message id), and the item id is matched only inside the house scope. An item
+  tap SETS the state its button showed — the webhook reads the tapped button's ☐ / ☑ from the keyboard
+  Telegram delivers with the callback (`want`), so a double tap is idempotent (no `reply_markup` → a
+  flip). A tap is answered with a short toast
   (`answerCallbackQuery`) and the message is re-rendered at once. Taps auto-commit like every list op —
   they are not the confirm wall.
 - **Edits.** Other changes are debounced 5 seconds per house (30-second max wait) and become ONE edit.
