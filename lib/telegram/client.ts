@@ -128,6 +128,76 @@ export async function sendShoppingBoard(chatId: string, text: string, threadId: 
   return sent.message_id
 }
 
+// ── The live shopping list (issue #25, docs/spec/shopping-list.md §Live list) ─────────────────────────
+// ONE message per house, posted once (by /list or /shoppinghere, or again when it was deleted), pinned
+// silently, and EDITED in place on every change. The destination is code-resolved by the caller (the
+// house's live send id + the stored topic), never text. PLAIN TEXT (no parse_mode): item names are only
+// button labels, which Telegram never parses. NOT windowed: a status board, not conversation.
+export type LiveKeyboard = { text: string; callback_data: string }[][]
+
+export async function sendLiveList(chatId: string, text: string, keyboard: LiveKeyboard, threadId: number | null): Promise<number> {
+  if (!chatId) throw new Error('[baumy/telegram] no house chat id for the shopping list')
+  const captured = record({ kind: 'message', chatId, text, meta: 'live-list', keyboard, ...(threadId != null ? { threadId } : {}) }, now())
+  if (captured) return captured.messageId!
+  const sent = await api().sendMessage(chatId, text, {
+    ...NO_PREVIEW,
+    ...(threadId != null ? { message_thread_id: threadId } : {}),
+    reply_markup: { inline_keyboard: keyboard },
+  })
+  return sent.message_id
+}
+
+/** What an edit of the live list did: `edited`; `unchanged` (Telegram's "message is not modified" — the
+ *  list already reads this way, a success); `gone` (the message was deleted or can no longer be edited). */
+export type LiveEditOutcome = 'edited' | 'unchanged' | 'gone'
+
+const telegramText = (err: unknown): string => {
+  const e = err as { description?: unknown; message?: unknown } | null
+  return `${typeof e?.description === 'string' ? e.description : ''} ${typeof e?.message === 'string' ? e.message : ''}`
+}
+export const isNotModified = (err: unknown): boolean => /message is not modified/i.test(telegramText(err))
+export const isMessageGone = (err: unknown): boolean =>
+  /message to edit not found|MESSAGE_ID_INVALID|message can't be edited|message not found/i.test(telegramText(err))
+
+// Edit the live list in place (text + keyboard). Any other Telegram error is thrown (the Inngest step
+// retries it — a 429 included, with Telegram's retry_after; see lib/lists/board.ts).
+export async function editLiveList(chatId: string, messageId: number, text: string, keyboard: LiveKeyboard): Promise<LiveEditOutcome> {
+  if (record({ kind: 'edit', chatId, text, meta: String(messageId), keyboard }, now())) return 'edited'
+  try {
+    await api().editMessageText(chatId, messageId, text, { ...NO_PREVIEW, reply_markup: { inline_keyboard: keyboard } })
+    return 'edited'
+  } catch (err) {
+    if (isNotModified(err)) return 'unchanged'
+    if (isMessageGone(err)) return 'gone'
+    throw err
+  }
+}
+
+// Pin the live list SILENTLY (no notification to the house). Needs the "Pin messages" admin right; without
+// it Telegram refuses — reported as false and LOGGED, never thrown, so the list still posts and updates.
+export async function pinMessage(chatId: string, messageId: number): Promise<boolean> {
+  if (record({ kind: 'pin', chatId, text: null, meta: String(messageId) }, now())) return true
+  try {
+    await api().pinChatMessage(chatId, messageId, { disable_notification: true })
+    return true
+  } catch (err) {
+    console.warn(`[baumy/telegram] pin of ${chatId}/${messageId} refused:`, err instanceof Error ? err.message : err)
+    return false
+  }
+}
+
+// Unpin one message (the live list when it stops or moves). Best-effort like pinMessage.
+export async function unpinMessage(chatId: string, messageId: number): Promise<boolean> {
+  if (record({ kind: 'unpin', chatId, text: null, meta: String(messageId) }, now())) return true
+  try {
+    await api().unpinChatMessage(chatId, messageId)
+    return true
+  } catch (err) {
+    console.warn(`[baumy/telegram] unpin of ${chatId}/${messageId} refused:`, err instanceof Error ? err.message : err)
+    return false
+  }
+}
+
 // Delete one of Baumy's own messages. Telegram refuses some deletes (a message older than 48h, a
 // missing permission, already gone) — that is reported as false and LOGGED, never thrown, so the
 // caller can fall back to an edit.

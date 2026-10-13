@@ -5,7 +5,23 @@ import { inngest } from '@/lib/inngest/client'
 import { resolveHouseIds } from '@/lib/identity/house'
 import { loadResponsePolicy } from '@/lib/policy'
 import { currentList } from '@/lib/lists/store'
-import { sendShoppingBoard, deleteMessage, editShoppingBoard } from '@/lib/telegram/client'
+import {
+  sendShoppingBoard,
+  deleteMessage,
+  editShoppingBoard,
+  sendLiveList,
+  editLiveList,
+  pinMessage,
+  unpinMessage,
+  sendToHouse,
+  type LiveKeyboard,
+  type LiveEditOutcome,
+} from '@/lib/telegram/client'
+import { RetryAfterError } from 'inngest'
+import { memberDisplayNames } from '@/lib/identity/roster'
+import { liveListRows } from '@/lib/lists/store'
+import { renderLiveList } from '@/lib/lists/live'
+import { houseTz } from '@/lib/env'
 import { now as clockNow } from '@/lib/core/clock'
 import { writeAudit } from '@/lib/audit'
 import type { TurnStep } from '@/lib/turn/step'
@@ -172,4 +188,209 @@ export async function requestShoppingRepostForHouse(d: Database): Promise<void> 
   } catch (err) {
     console.warn('[baumy/lists] shopping repost request failed:', err instanceof Error ? err.message : err)
   }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════════
+// The live list (issue #25, docs/spec/shopping-list.md §Live list): ONE message per house, posted once,
+// pinned silently, and EDITED in place on every change. Every render — after a tap, after the debounced
+// change event, for /list and /shoppinghere — goes through `lists/shopping.render` and ONE Inngest
+// function with concurrency 1 per house (shopping-render), so renders never interleave: each reads the
+// list as it is then, and the last one shows the last state. The only writer of the stored message id.
+
+export const SHOPPING_RENDER = 'lists/shopping.render' as const
+
+/** Where /list or /shoppinghere was sent: the house chat and its forum topic (null = General). */
+export interface RenderPlace {
+  chatId: string
+  threadId: number | null
+  /** /shoppinghere: MOVE the live list here when it lives elsewhere. /list: leave it where it is. */
+  move: boolean
+}
+
+export interface RenderRequest {
+  groupId: string
+  /** Why: `change` (the debounced list change — held while /pause'd), `tap` (a button), `command`. */
+  reason: 'change' | 'tap' | 'command'
+  /** The page to show (1-based; ◀ / ▶), or the page holding this item (the one just tapped). */
+  page?: number
+  focusItemId?: string
+  place?: RenderPlace
+}
+
+// Ask for a render. Best-effort: false (logged) when Inngest could not be reached — the list write stands
+// and the next change or tap brings the message up to date. NO event id (it would dedupe later renders).
+export async function requestShoppingRender(req: RenderRequest): Promise<boolean> {
+  if (!req.groupId) return false
+  try {
+    await inngest.send({ name: SHOPPING_RENDER, data: req })
+    return true
+  } catch (err) {
+    console.warn('[baumy/lists] shopping render request failed:', err instanceof Error ? err.message : err)
+    return false
+  }
+}
+
+export type LiveRef = { chatId: string; messageId: number; threadId: number | null }
+
+export type RenderResult =
+  | { status: 'other-house' | 'paused' | 'no-message' | 'superseded' | 'topic-gone' }
+  | { status: 'edited' | 'unchanged'; messageId: number; pinned: boolean | null; pointer: boolean }
+  | { status: 'posted'; messageId: number; pinned: boolean; previous: 'none' | 'deleted' | 'edited' | 'failed' }
+
+// Telegram's flood control (429) → let Inngest retry the step after the wait Telegram asked for.
+function rethrowRateLimit(err: unknown): never {
+  const e = err as { error_code?: unknown; parameters?: { retry_after?: unknown } } | null
+  if (e?.error_code === 429) {
+    const secs = typeof e.parameters?.retry_after === 'number' ? e.parameters.retry_after : 5
+    throw new RetryAfterError('[baumy/lists] Telegram rate limit on the live list', secs * 1000, { cause: err })
+  }
+  throw err
+}
+
+export async function loadLiveRef(d: Database): Promise<LiveRef | null> {
+  const [cfg] = await d
+    .select({ chat: houseConfig.shoppingMessageChatId, id: houseConfig.shoppingMessageId, thread: houseConfig.shoppingThreadId })
+    .from(houseConfig)
+    .limit(1)
+  return cfg?.chat && cfg.id != null ? { chatId: cfg.chat, messageId: Number(cfg.id), threadId: cfg.thread ?? null } : null
+}
+
+// Store `next` as the live list — compare-and-set on the message id this run expected to replace (null =
+// none), so a render never overwrites a message another path stored (or cleared, /shoppingoff) meanwhile.
+async function storeLiveRef(d: Database, expected: number | null, next: LiveRef): Promise<boolean> {
+  const rows = await d
+    .update(houseConfig)
+    .set({ shoppingMessageChatId: next.chatId, shoppingMessageId: next.messageId, shoppingThreadId: next.threadId, updatedAt: clockNow() })
+    .where(expected == null ? sql`${houseConfig.id} AND ${houseConfig.shoppingMessageId} IS NULL` : sql`${houseConfig.id} AND ${houseConfig.shoppingMessageId} = ${expected}`)
+    .returning({ id: houseConfig.id })
+  return rows.length > 0
+}
+
+// A link to a message in a supergroup (t.me/c/…), or null for a basic group (no such link exists).
+export function messageLink(chatId: string, messageId: number): string | null {
+  return /^-100\d+$/.test(chatId) ? `https://t.me/c/${chatId.slice(4)}/${messageId}` : null
+}
+
+export const LIVE_ELSEWHERE = (link: string | null) =>
+  link ? `🛒 The live shopping list is pinned in another topic: ${link}` : '🛒 The live shopping list is pinned in another topic.'
+
+// One render: edit the live list in place; post it (and pin it, silently) only for /list or /shoppinghere
+// with none yet, for /shoppinghere moving it, or when the stored message was deleted. One step per stage,
+// so an Inngest retry never posts twice. The sandbox drives it inline.
+export async function runShoppingRender(step: TurnStep, db: () => Database, req: RenderRequest): Promise<RenderResult> {
+  type Plan =
+    | { go: false; status: 'other-house' | 'paused' | 'no-message' }
+    | { go: true; sendId: string; text: string; keyboard: LiveKeyboard; stored: LiveRef | null; edit: boolean; postThread: number | null }
+  const plan = (await step.run('live-load', async (): Promise<Plan> => {
+    const d = db()
+    const ids = await resolveHouseIds(d)
+    // The event names the house; it must BE the house (one house today) — never render another scope's list.
+    if (req.groupId !== ids.scopeId) return { go: false, status: 'other-house' }
+    // A place must be the house itself (the command's own chat — the caller checked the lane too).
+    if (req.place && !ids.acceptIds.includes(req.place.chatId)) return { go: false, status: 'other-house' }
+    if (req.reason === 'change' && !(await loadResponsePolicy(d)).global_enabled) return { go: false, status: 'paused' }
+    const stored = await loadLiveRef(d)
+    if (!stored && !req.place) return { go: false, status: 'no-message' }
+    const [cfg] = await d.select({ by: houseConfig.shoppingUpdatedBy, at: houseConfig.shoppingUpdatedAt }).from(houseConfig).limit(1)
+    const name = cfg?.by ? ((await memberDisplayNames(d)).get(cfg.by) ?? null) : null
+    const view = renderLiveList({
+      rows: await liveListRows(d, ids.scopeId),
+      page: req.page,
+      focusItemId: req.focusItemId ?? null,
+      updatedBy: name,
+      updatedAt: cfg?.at ?? null,
+      tz: houseTz(),
+    })
+    // /shoppinghere somewhere else MOVES the list (a new post here); otherwise an existing one is edited.
+    const moving = !!(stored && req.place?.move && stored.threadId !== req.place.threadId)
+    return {
+      go: true,
+      sendId: ids.sendId,
+      text: view.text,
+      keyboard: view.keyboard,
+      stored,
+      edit: !!stored && !moving,
+      // Where a NEW post goes: where the command was sent, else where the list lived (its topic).
+      postThread: req.place ? req.place.threadId : (stored?.threadId ?? null),
+    }
+  })) as Plan
+  if (!plan.go) return { status: plan.status }
+
+  if (plan.edit && plan.stored) {
+    const stored = plan.stored
+    const edited = (await step.run('live-edit', async () => {
+      try {
+        return await editLiveList(stored.chatId, stored.messageId, plan.text, plan.keyboard)
+      } catch (err) {
+        rethrowRateLimit(err)
+      }
+    })) as LiveEditOutcome
+    if (edited !== 'gone') {
+      // /list (or /shoppinghere in the same place) also makes sure it is pinned, and /list from another
+      // place says where the live list is rather than making a second one.
+      const pinned = req.place ? ((await step.run('live-pin', () => pinMessage(stored.chatId, stored.messageId))) as boolean) : null
+      let pointer = false
+      if (req.place && stored.threadId !== req.place.threadId) {
+        const place = req.place
+        await step.run('live-pointer', () => sendToHouse(place.chatId, LIVE_ELSEWHERE(messageLink(stored.chatId, stored.messageId)), { threadId: place.threadId ?? undefined }))
+        pointer = true
+      }
+      return { status: edited, messageId: stored.messageId, pinned, pointer }
+    }
+    // The message was deleted: post a fresh one below (where the list lived, or where /list was sent).
+  }
+
+  const expected = plan.stored?.messageId ?? null
+  const posted = (await step.run('live-post', async () => {
+    // Re-read first: if the stored list changed since this run loaded it (/shoppingoff, another post),
+    // this render is out of date — never post over it.
+    const now = await loadLiveRef(db())
+    if ((now?.messageId ?? null) !== expected) return { superseded: true as const }
+    try {
+      return { messageId: await sendLiveList(plan.sendId, plan.text, plan.keyboard, plan.postThread) }
+    } catch (err) {
+      if (isTopicGone(err)) return { gone: err instanceof Error ? err.message : String(err) }
+      rethrowRateLimit(err)
+    }
+  })) as { messageId: number } | { gone: string } | { superseded: true }
+  if ('superseded' in posted) return { status: 'superseded' }
+
+  if ('gone' in posted) {
+    await step.run('live-topic-gone', async () => {
+      const d = db()
+      // Compare-and-set: only the topic this run tried — never one a housemate has set since.
+      const where =
+        plan.postThread == null
+          ? sql`${houseConfig.id} AND ${houseConfig.shoppingThreadId} IS NULL`
+          : sql`${houseConfig.id} AND ${houseConfig.shoppingThreadId} = ${plan.postThread}`
+      const cleared = await d
+        .update(houseConfig)
+        .set({ shoppingThreadId: null, shoppingMessageChatId: null, shoppingMessageId: null, updatedAt: clockNow() })
+        .where(where)
+        .returning({ id: houseConfig.id })
+      if (cleared.length) await writeAudit(d, 'shopping.topic.cleared', null, null, { threadId: plan.postThread, reason: posted.gone })
+    })
+    return { status: 'topic-gone' }
+  }
+  const messageId = posted.messageId
+  const next: LiveRef = { chatId: plan.sendId, messageId, threadId: plan.postThread }
+
+  const stored = (await step.run('live-store', () => storeLiveRef(db(), expected, next))) as boolean
+  if (!stored) {
+    // Lost the race to another path: take our post down again, so there is never a second live list.
+    await step.run('live-drop', () => deleteMessage(next.chatId, messageId))
+    return { status: 'superseded' }
+  }
+  const pinned = (await step.run('live-pin', () => pinMessage(next.chatId, messageId))) as boolean
+
+  // Moved (/shoppinghere elsewhere): the old message comes down — unpinned, then deleted, or marked
+  // "no longer updated" (keyboard dropped) when Telegram refuses the delete.
+  const prev = plan.edit ? null : plan.stored
+  const previous = (await step.run('live-retire', async () => (prev ? retireLive(prev) : ('none' as const)))) as 'none' | 'deleted' | 'edited' | 'failed'
+  return { status: 'posted', messageId, pinned, previous }
+}
+
+async function retireLive(prev: { chatId: string; messageId: number }): Promise<'deleted' | 'edited' | 'failed'> {
+  await unpinMessage(prev.chatId, prev.messageId)
+  return retire(prev, NO_LONGER_UPDATED)
 }

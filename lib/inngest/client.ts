@@ -62,6 +62,18 @@ type Events = {
   // The shopping list changed (docs/spec/shopping-list.md §Shopping topic): groupId = the house SCOPE.
   // Debounced per house by shopping-repost, which reposts the list in the shopping topic.
   'lists/shopping.changed': { data: { groupId: string } }
+  // Render the live shopping list (issue #25, docs/spec/shopping-list.md §Live list): sent by a tap, by
+  // /list or /shoppinghere, and by the debounced change function. ONE function renders, one at a time per
+  // house. Every field is code-made (the house scope, a parsed page / item id, the command's own chat).
+  'lists/shopping.render': {
+    data: {
+      groupId: string
+      reason: 'change' | 'tap' | 'command'
+      page?: number
+      focusItemId?: string
+      place?: { chatId: string; threadId: number | null; move: boolean }
+    }
+  }
 }
 
 // The inbound Telegram message payload — exported so the ingest handler can be invoked

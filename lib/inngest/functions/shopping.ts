@@ -1,6 +1,6 @@
 import { inngest } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
-import { runShoppingRepost, SHOPPING_CHANGED, SHOPPING_DEBOUNCE } from '@/lib/lists/board'
+import { runShoppingRepost, runShoppingRender, SHOPPING_CHANGED, SHOPPING_DEBOUNCE, SHOPPING_RENDER } from '@/lib/lists/board'
 import type { TurnStep } from '@/lib/turn/step'
 
 // The shopping topic repost (docs/spec/shopping-list.md §Shopping topic, issue #21). Every list write
@@ -16,4 +16,17 @@ export const shoppingRepost = inngest.createFunction(
   },
   { event: SHOPPING_CHANGED },
   async ({ event, step }) => runShoppingRepost(step as unknown as TurnStep, createHttpDb, event.data.groupId),
+)
+
+// The live list render (docs/spec/shopping-list.md §Live list, issue #25): ONE run at a time per house,
+// so renders never interleave — each reads the list as it is then and edits the one live message. No
+// debounce: a tap renders at once. Rate limits (429) come back as RetryAfterError (lib/lists/board.ts).
+export const shoppingRender = inngest.createFunction(
+  {
+    id: 'shopping-render',
+    concurrency: { limit: 1, key: 'event.data.groupId' },
+    retries: 3,
+  },
+  { event: SHOPPING_RENDER },
+  async ({ event, step }) => runShoppingRender(step as unknown as TurnStep, createHttpDb, event.data),
 )

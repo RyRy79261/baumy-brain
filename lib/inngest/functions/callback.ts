@@ -11,6 +11,7 @@ import { answerCallback, editMessageText } from '@/lib/telegram/client'
 import { callOlympicsAction, type OlympicsResult } from '@/lib/olympics/client'
 import { tapResultLine, type OlympicsPending } from '@/lib/olympics/intents'
 import { LOGIN_ACTION_TYPE, loginCardChoices, loginResultLine, parseLoginTap, type LoginPending } from '@/lib/olympics/login-approval'
+import { runShopTap } from '@/lib/lists/tap'
 
 // Deterministic confirm handler (security Stage D / B4). A callback_query is a
 // Telegram-authenticated button press; only an ACTIVE member/owner from.id may
@@ -38,6 +39,10 @@ export async function runCallback(event: { data: CallbackData }, step: CallbackS
     await answerCallback(callbackId, 'Not authorized.')
     return { ignored: 'not-member' }
   }
+
+  // A tap on the live shopping list (`shop:…`, issue #25) — a list write, not a confirm: it auto-commits
+  // like every list op (lib/lists/tap.ts). Routed BEFORE the confirm-card parse below.
+  if (data.startsWith('shop:')) return runShopTap({ callbackId, fromId, chatId, messageId, data }, step, db)
 
   const [verb, id] = data.split(':')
   if ((verb !== 'c' && verb !== 'x' && verb !== 'l') || !id) {

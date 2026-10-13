@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { handleTelegramMessage } from '@/lib/inngest/functions/ingest'
 import { hygieneSweep } from '@/lib/inngest/functions/hygiene'
 import { functions } from '@/lib/inngest/functions'
-import { shoppingRepost } from '@/lib/inngest/functions/shopping'
-import { SHOPPING_CHANGED, SHOPPING_DEBOUNCE, SHOPPING_DEBOUNCE_MS } from '@/lib/lists/board'
+import { shoppingRepost, shoppingRender } from '@/lib/inngest/functions/shopping'
+import { SHOPPING_CHANGED, SHOPPING_DEBOUNCE, SHOPPING_DEBOUNCE_MS, SHOPPING_RENDER } from '@/lib/lists/board'
 
 // Function-level config that no handler test can see.
 describe('inngest function config', () => {
@@ -22,5 +22,12 @@ describe('inngest function config', () => {
     expect(SHOPPING_DEBOUNCE).toBe('2m')
     expect(SHOPPING_DEBOUNCE_MS).toBe(2 * 60_000) // the sandbox plays the same debounce
     expect((shoppingRepost.opts as { triggers?: unknown }).triggers).toEqual([{ event: SHOPPING_CHANGED }])
+  })
+  it('the live-list render is registered: one run at a time PER HOUSE, no debounce (a tap renders at once — issue #25)', () => {
+    expect(functions).toContain(shoppingRender)
+    expect(shoppingRender.opts.id).toBe('shopping-render')
+    expect(shoppingRender.opts.concurrency).toEqual({ limit: 1, key: 'event.data.groupId' })
+    expect(shoppingRender.opts.debounce).toBeUndefined()
+    expect((shoppingRender.opts as { triggers?: unknown }).triggers).toEqual([{ event: SHOPPING_RENDER }])
   })
 })
