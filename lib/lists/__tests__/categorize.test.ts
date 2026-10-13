@@ -33,6 +33,8 @@ vi.mock('@/lib/lists/board', async (importOriginal) => {
 })
 const { autoCategorizeItem, runCategorize, requestCategorize, nearestSorted, backfillCandidates, SIMILAR_FLOOR, SHOPPING_CATEGORIZE } = await import('@/lib/lists/categorize')
 const { runShoppingRender } = await import('@/lib/lists/board')
+const { setGlobalEnabled } = await import('@/lib/policy')
+const { captureOutbound } = await import('@/lib/telegram/outbox')
 
 const G = '-100sortHouse'
 const OTHER = '-100otherHouse'
@@ -373,6 +375,23 @@ describe('review fixes (PR #30)', () => {
     sent.length = 0
     await runShoppingRender(step, () => db, { groupId: G, reason: 'change' })
     expect(sent.filter((e) => e.name === SHOPPING_CATEGORIZE)).toEqual([])
+  })
+
+  it('no backfill while the house is paused — not on a held change render, not on a tap render; it resumes after', async () => {
+    const db = await setup()
+    await db.insert(houseConfig).values({ id: true, houseGroupChatId: G, shoppingMessageChatId: G, shoppingMessageId: 77 })
+    const old = await add(db, 'oat milk')
+    await db.update(listItems).set({ createdAt: new Date(Date.now() - 3_600_000) }).where(eq(listItems.id, old))
+    await setGlobalEnabled(db, false)
+    const step = { run: async <T>(_id: string, fn: () => Promise<T>) => fn() }
+    const held = await captureOutbound(() => runShoppingRender(step, () => db, { groupId: G, reason: 'change' }))
+    expect(held.result).toEqual({ status: 'paused' })
+    await captureOutbound(() => runShoppingRender(step, () => db, { groupId: G, reason: 'tap', page: 1 }))
+    expect(sent.filter((e) => e.name === SHOPPING_CATEGORIZE)).toEqual([])
+    // present: once resumed, the same render sends it
+    await setGlobalEnabled(db, true)
+    await captureOutbound(() => runShoppingRender(step, () => db, { groupId: G, reason: 'change' }))
+    expect(sent.filter((e) => e.name === SHOPPING_CATEGORIZE)).toEqual([{ name: SHOPPING_CATEGORIZE, data: { groupId: G, itemIds: [old] } }])
   })
 
   it('a housemate\'s pick gets a vector (via the categorize run), so it lends its category to a similar later item', async () => {

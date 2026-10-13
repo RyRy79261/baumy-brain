@@ -28,7 +28,7 @@ const fixtures = {
       ? statement({ worthRemembering: false, list: 'add' })
       : /^put .* under/.test(t)
         ? request({ asksBaumy: true, worthRemembering: false, list: 'categorize' })
-        : /^put the (milk|bins)/.test(t)
+        : /^put the (milk|bins|pasta)|^put pasta in the cupboard/.test(t)
           ? // Offline the triage MISROUTES these on purpose (the worst case the code must survive); live, the
             // real classifier should say list "none" (its prompt names them as counter-examples).
             statement({ worthRemembering: false, list: 'categorize' })
@@ -44,6 +44,8 @@ const fixtures = {
           ? { op: 'categorize' as const, items: [], categories: [{ item: 'oat milk', category: 'coffee' }] }
           : /put pasta under snacks/.test(t)
             ? { op: 'categorize' as const, items: [], categories: [{ item: 'pasta', category: 'snacks' }] }
+            : /put (the )?pasta in the cupboard/.test(t)
+              ? { op: 'categorize' as const, items: [], categories: [{ item: 'pasta', category: 'cupboard' }] }
             : /put the milk in the fridge/.test(t)
               ? { op: 'categorize' as const, items: [], categories: [{ item: 'milk', category: 'fridge' }] }
               : /put the bins out/.test(t)
@@ -159,7 +161,17 @@ describe('scenario: shopping categories (issue #29)', () => {
         const rows = await db.select().from(listItems).where(eq(listItems.groupId, r.sb.houseChatId))
         return rows.length === 1 && rows[0].item === 'pasta' && rows[0].categorySource !== 'picked'
       }, 'the list is just pasta, untouched'),
-      // present before absent: a non-section for an item that IS on the list is still answered
+      check('no list change was signalled by any of it', (r, e) => e(r.events.filter((x) => x.name === 'lists/shopping.changed')).toHaveLength(2)),
+      // pasta IS on the list — but said to the group, not to Baumy, it is still about the cupboard: silence
+      say('Marco', 'put pasta in the cupboard'),
+      expectSilent(),
+      // directly addressed (an @mention), the same thing is answered: the section word is not a section
+      say('Marco', 'put pasta in the cupboard', { mention: true }),
+      expectWords({
+        contains: /isn't a section/,
+        judge: 'Says "cupboard" is not one of the shopping sections and lists the real ones. Must not say pasta was moved.',
+      }),
+      // and in a DM
       say('Ryan', 'put pasta under snacks', { dm: true }),
       expectWords({
         contains: /isn't a section/,

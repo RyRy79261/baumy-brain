@@ -108,9 +108,9 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
   `POST …/category`, or the Telegram `categorize` list op "put X under coffee") is `picked` and upserts
   the house memory, then asks the categorize run for the row (its name gets a vector). Each item is isolated
   (one failing for good stays Not sorted; the rest go on); a row is auto-sorted at most once (`categorized_at`
-  = tried); every live-list render backfills old untried open rows, 30 at a time, after its edit. A rename to a
+  = tried); every live-list render backfills old untried open rows, 30 at a time, after its edit (never while paused). A rename to a
   new name drops an AUTOMATIC category and re-sorts (a pick is kept). A non-section for an item not on the list
-  ("put the bins out") is silence, not a list op. A new add path must call `requestCategorize` after its write.
+  ("put the bins out") is silence, not a list op; for an item on the list it is answered only when directed. A new add path must call `requestCategorize` after its write.
 - **Two human-authorization walls (don't conflate them):** (1) the **confirm-tap wall** —
   `callback_query` from a member's authenticated `from.id` (`lib/confirm/*`,
   `functions/callback.ts`) gates the chat-initiated privileged actions: **memory deletion /

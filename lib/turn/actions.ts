@@ -126,6 +126,10 @@ export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOut
           // Not one of the six sections. The item is matched FIRST: when it is not on the list either, this
           // was never about the list ("put the milk in the fridge", "put the bins out") — silence, no list
           // op. Only a section word for an item that IS on the list is worth "that isn't a section".
+          // And even for an item that IS on the list, a stray section word is only answered when Baumy was
+          // asked (a DM, an @mention, a reply to Baumy — `directed`): "put the milk in the fridge" said to the
+          // group while milk is on the list is still about the fridge, not the list.
+          if (!ctx.directed.value) continue
           if ((await findOpenItem(db, { groupId: ctx.houseScope, item: p.item })).outcome === 'not_found') continue
           badCategory.push({ item: p.item.trim(), category: p.category.trim() })
           continue

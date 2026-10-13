@@ -236,7 +236,10 @@ sends them as a `lists/shopping.categorize` event. Why the render: every house r
 often (every change, tap and `/list`), so the first render after the deploy starts it with no command,
 no cron and no new column; the sorted batch's own re-render then brings the next 30. It is idempotent
 because a tried row never matches again (an unsortable row is marked tried, not retried forever), and
-best-effort (a failure is logged; the next render tries again). A house with no live list is backfilled
+best-effort (a failure is logged; the next render tries again). Never while the house is paused
+(`/pause`, re-review of PR #30): a held change render does not backfill, and neither does a tap or
+command render during the pause, so a pause spends no Sonnet / Voyage calls on it; the first render
+after `/resume` starts it. A house with no live list is backfilled
 only once it renders one (`/list`).
 
 **Rename** [CORRECTION 2026-10-13, review of PR #30]: a rename to a NEW name (not a case-only fix) drops
@@ -268,8 +271,10 @@ and the chat step free of a Voyage call; best-effort like every categorize reque
   null, anything else → not a section. The ITEM is matched first [CORRECTION 2026-10-13, review of PR
   #30]: a non-section for an item that is NOT on the list ("put the milk in the fridge", "put the bins
   out") is not about the list at all — it is dropped silently, and when nothing else in the message was a
-  list pick the op is `none` (the message falls through, no reply). Only a non-section for an item that
-  IS on the list is reported ("snacks isn't a section…"). The triage and extractor prompts name those
+  list pick the op is `none` (the message falls through, no reply). A non-section for an item that IS on
+  the list is reported ("snacks isn't a section…") only when Baumy was asked — a DM, an @mention, a reply
+  to Baumy (`directed`) [CORRECTION 2026-10-13, re-review of PR #30]; said to the group ("put the pasta in
+  the cupboard" while pasta is on the list) it is dropped silently too. The triage and extractor prompts name those
   counter-examples as list `none`. Acks (`categorizeAck`): group →
   👍 when everything named was sorted, otherwise words (what wasn't found, what was ambiguous, which
   sections exist); DM → words ("Put coffee filters under Coffee. I'll remember that next time.").

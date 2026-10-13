@@ -287,9 +287,12 @@ export async function runShoppingRender(step: TurnStep, db: () => Database, req:
   // After the render (it never delays the edit): the one-off sort of rows auto-sorting never saw (issue
   // #29) — after a deploy, the first render of the old list sorts it, 30 rows a time; each sorted batch's
   // own re-render brings the next. Idempotent (a tried row never matches again) and best-effort.
-  if (result.status !== 'other-house') {
+  // Not while the house is paused (/pause): a backfill spends Sonnet / Voyage calls on nobody's request.
+  if (result.status !== 'other-house' && result.status !== 'paused') {
     await step.run('live-backfill', async () => {
       try {
+        // …nor on a tap or command render during the pause (they still render; they do not backfill).
+        if (!(await loadResponsePolicy(db())).global_enabled) return false
         const ids = await backfillCandidates(db(), req.groupId)
         return ids.length ? await requestCategorize(req.groupId, ids) : false
       } catch (err) {
