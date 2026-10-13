@@ -18,6 +18,7 @@ one shared memory — built so the group chat has to remember *less*, not scroll
 | 🧠 **Remembers the house** | Every message is captured, embedded, and distilled into a trust-gated knowledge graph. Ask "who's in the cave this week?" months later and it knows. |
 | 💬 **Answers, grounded** | Replies only from what the house actually said — with an *honest miss* when it doesn't know, never a hallucinated fact. Reacts (👀✍👍) more than it speaks. |
 | ⏰ **Reminders** | "remind us to pay rent friday" → DST-correct, exactly-once delivery to the house group. |
+| 🛒 **Live shopping list** | One pinned message per house, edited in place on every change; housemates tick items by tapping them. |
 | 👥 **Learns people** | People are first-class entities — housemates, guests, the landlord — with relationships, notes, and attributed sentiment (never a score, never volunteered). |
 | 🌙 **Reflects** | A sleep-time job consolidates what it knows into durable per-person profiles — the "it learns over time" step. |
 | 🧽 **Forgets on request** | "forget my full name" → Baumy proposes exactly what it'll remove and only deletes on a confirm tap. Soft-hide (reversible) or hard-purge (right-to-be-forgotten). |
@@ -247,6 +248,49 @@ sequenceDiagram
 and drops the embedding (right-to-be-forgotten). The mode is chosen from the request's wording
 and shown in the proposal *before* anything commits. Reminders are the one exception to the
 wall — they auto-commit, because a reminder only posts text to the fixed house group.
+
+---
+
+## The live shopping list
+
+The house shopping list (`docs/spec/shopping-list.md` §Live list) is **one Telegram message per
+house**: posted once, pinned silently, and **edited in place** whenever the list changes. Baumy
+never posts a new copy on an ordinary change.
+
+```
+🛒 Shopping list
+3 to buy · 1 done
+Last updated by Ryan, Tue 13 Oct, 18:05
+[ ☐ Ginger ]
+[ ☐ bin bags ]
+[ ☐ coffee ]
+[ ☑ oat milk ]
+[ 🧹 Clear done ] [ 🔄 Refresh ]
+```
+
+- **Start it** with `/list` in the house group (General, or inside a topic). Any housemate can,
+  in their own words. If the house already has a live list, `/list` re-renders it where it is and,
+  when it lives in another place (General or another topic), replies with a link to it. `/shoppinghere` inside a topic is
+  `/list` that **moves** the list there. `/shoppingoff` stops it: the message is unpinned and
+  deleted (or, if Telegram refuses, edited to "This list is no longer updated.").
+- **Tick an item** by tapping it: ☐ becomes ☑, with a short toast ("✓ Ginger – ticked by Ryan").
+  Tap ☑ to put it back. A tap sets the state its button showed, so two people tapping the same ☐ at
+  once tick it once (the second hears "already ticked"). Ticked items stay at the bottom until someone taps **🧹 Clear done**.
+  Only an active housemate's tap counts. Over 30 items, ◀ / ▶ page through the list.
+- **Every other change** (a chat message such as "we need milk" or "got the eggs", a DM, the
+  kitchen kiosk's API) updates the message about 5 seconds after the last change, and at most 30
+  seconds after the first, so a burst of adds is one edit.
+- **Owner setup:** give Baumy the **Pin messages** admin right in the group (without it the list
+  still posts and updates, unpinned), then run `/list` or `/shoppinghere` once.
+
+Button `callback_data` (each at most 64 bytes; anything else is refused):
+
+| Data | Button | Effect |
+|---|---|---|
+| `shop:chk:<itemId>` | `☐ name` / `☑ name` | Tick (☐) or untick (☑) one item — the state the tapped button showed, read from the keyboard Telegram sends with the tap (`itemId` is the row's uuid). |
+| `shop:clear` | `🧹 Clear done` | Take every ticked item off the list. |
+| `shop:refresh` | `🔄 Refresh` | Re-render page 1. |
+| `shop:page:<n>` | `◀` / `▶` | Show page `n` (1-based; clamped to the pages there are). |
 
 ---
 

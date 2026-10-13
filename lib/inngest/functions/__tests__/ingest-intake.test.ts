@@ -39,8 +39,8 @@ vi.mock('@/lib/memory/retrieve', async (o) => ({
 }))
 vi.mock('@/lib/memory/facts', async (o) => ({ ...(await o<typeof import('@/lib/memory/facts')>()), currentFactsForQuery: (...a: unknown[]) => factsQueryMock(...a) }))
 vi.mock('@/lib/reports/reports', async (o) => ({ ...(await o<typeof import('@/lib/reports/reports')>()), weeklyReport: (...a: unknown[]) => weeklyMock(...a) }))
-// The shopping-topic repost trigger is Inngest's — never sent from a unit test (offline).
-vi.mock('@/lib/lists/board', async (o) => ({ ...(await o<typeof import('@/lib/lists/board')>()), requestShoppingRepost: async () => {} }))
+// The live shopping list's triggers are Inngest's — never sent from a unit test (offline).
+vi.mock('@/lib/lists/board', async (o) => ({ ...(await o<typeof import('@/lib/lists/board')>()), noteShoppingChange: async () => {}, requestShoppingRender: async () => true }))
 vi.mock('@/lib/telegram/client', () => ({
   sendToHouse: (...a: unknown[]) => sendToHouse(...a),
   reactToMessage: (...a: unknown[]) => reactToMessage(...a),

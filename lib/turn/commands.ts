@@ -7,8 +7,16 @@ import { issuesConfigured, labelsFor } from '@/lib/github/issues'
 import { parseReportCommand } from '@/lib/pipeline/report'
 import { parseHouseReport, weeklyReport, guestReport, upcomingRemindersReport, recentLearningsReport } from '@/lib/reports/reports'
 import { createPendingAction } from '@/lib/confirm/store'
-import { parseNotifyCommand, setReminderThread, parseConsoleCommand, setConsoleThread, parseShoppingCommand, setShoppingThread } from '@/lib/identity/house'
-import { requestShoppingRepost, retireShoppingBoard } from '@/lib/lists/board'
+import {
+  parseNotifyCommand,
+  setReminderThread,
+  parseConsoleCommand,
+  setConsoleThread,
+  parseShoppingCommand,
+  parseListCommand,
+  setShoppingThread,
+} from '@/lib/identity/house'
+import { requestShoppingRender, retireShoppingBoard, runShoppingRender, type RenderRequest } from '@/lib/lists/board'
 import { handleCommand } from '@/lib/identity/commands'
 import { writeAudit } from '@/lib/audit'
 import { houseTz } from '@/lib/env'
@@ -33,7 +41,7 @@ export interface CommandEnv {
   houseThreadId: number | undefined
 }
 
-export type CommandDecision = 'report' | 'report-view' | 'notify-config' | 'console-config' | 'shopping-config' | 'command' | 'unknown-command'
+export type CommandDecision = 'report' | 'report-view' | 'notify-config' | 'console-config' | 'shopping-config' | 'shopping-list' | 'command' | 'unknown-command'
 
 export async function runCommands(step: TurnStep, env: CommandEnv): Promise<CommandDecision | null> {
   const { rawText, origin, roster, fromId, chatId, messageId, messageThreadId, houseScope, sayHouse, houseThreadId } = env
@@ -152,35 +160,48 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
     return 'console-config'
   }
 
-  // Shopping topic (/shoppinghere in the target topic, /shoppingoff to stop) — docs/spec/shopping-list.md
-  // §Shopping topic. ANY active member (the list is the whole house's, so not owner-only), HOUSE lane,
-  // in their OWN words: a forwarded message, an anonymous-admin post or a bot post never sets it. The
-  // value is the authenticated message_thread_id, NEVER text. It only picks where the list is posted
-  // within the fixed house group — no trust, no privilege. Audited. Anything refused falls through to
-  // the unknown-command drop below (I7).
+  // The live shopping list (docs/spec/shopping-list.md §Live list, issue #25): /list (post it here, or
+  // re-render the one there is), /shoppinghere (/list in this topic, MOVING the list here) and
+  // /shoppingoff (stop it). ANY active member (the list is the whole house's, so not owner-only), HOUSE
+  // lane, in their OWN words: a forwarded message, an anonymous-admin post or a bot post never runs one.
+  // The place is the authenticated chat + message_thread_id, NEVER text. It only picks where the list
+  // lives within the fixed house group — no trust, no privilege. Anything refused falls through to the
+  // unknown-command drop below (I7). Independent of /pause, like the other house commands.
+  const ownHouseWords = origin.lane === 'house' && fromId != null && roster.isMember(fromId) && !isRelayed(origin.memoryTrust) && !origin.anonymous
   const shopping = parseShoppingCommand(rawText)
-  if (shopping && origin.lane === 'house' && fromId != null && roster.isMember(fromId) && !isRelayed(origin.memoryTrust) && !origin.anonymous) {
-    await step.run('shopping-config', async () => {
-      const db = createHttpDb()
-      if (shopping === 'off') {
+  const listCmd = parseListCommand(rawText)
+  if ((shopping || listCmd) && ownHouseWords) {
+    if (shopping === 'off') {
+      await step.run('shopping-config', async () => {
+        const db = createHttpDb()
         await setShoppingThread(db, null)
         await writeAudit(db, 'shopping.topic.set', String(fromId), null, { threadId: null })
-        // The last list post comes down too (or is marked "no longer updated") and its id is cleared.
+        // The live list comes down too: its id is cleared, it is unpinned and deleted (or marked "no
+        // longer updated", buttons gone).
         await retireShoppingBoard(db)
-        await sendToHouse(chatId, "Okay — I'll stop posting the shopping list. 🐈", { threadId: messageThreadId ?? undefined })
-        return
-      }
-      if (messageThreadId == null) {
-        await sendToHouse(chatId, 'Run /shoppinghere INSIDE the topic you want the shopping list in — this looks like the General topic. 😼')
-        return
-      }
-      await setShoppingThread(db, messageThreadId)
-      await writeAudit(db, 'shopping.topic.set', String(fromId), null, { threadId: messageThreadId })
-      await sendToHouse(chatId, "🛒 Got it — I'll keep the shopping list posted in this topic, fresh after every change.", { threadId: messageThreadId })
-      // Post the list here now-ish (the same debounced repost), rather than waiting for the next change.
-      await requestShoppingRepost(houseScope)
-    })
-    return 'shopping-config'
+        await sendToHouse(chatId, "Okay — I'll stop updating the shopping list. 🐈", { threadId: messageThreadId ?? undefined })
+      })
+      return 'shopping-config'
+    }
+    if (shopping === 'here' && messageThreadId == null) {
+      await step.run('shopping-config', () =>
+        sendToHouse(chatId, 'Run /shoppinghere INSIDE the topic you want the shopping list in — this looks like the General topic. Use /list to show it here. 😼'),
+      )
+      return 'shopping-config'
+    }
+    const move = shopping === 'here'
+    if (move) {
+      await step.run('shopping-config', async () => {
+        const db = createHttpDb()
+        await writeAudit(db, 'shopping.topic.set', String(fromId), null, { threadId: messageThreadId })
+        await sendToHouse(chatId, "🛒 Got it — the shopping list lives in this topic now. I'll keep it pinned and up to date.", { threadId: messageThreadId ?? undefined })
+      })
+    }
+    // Post / re-render through the one serialised render function (it stores the message and its topic).
+    const req: RenderRequest = { groupId: houseScope, reason: 'command', place: { chatId, threadId: messageThreadId, move } }
+    const sent = (await step.run('shopping-list', () => requestShoppingRender(req))) as boolean
+    if (!sent) await runShoppingRender(step, createHttpDb, req) // Inngest unreachable: render inline
+    return move ? 'shopping-config' : 'shopping-list'
   }
 
   // Member-DM commands (house-management). Deterministic; no classify/LLM.

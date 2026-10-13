@@ -5,7 +5,7 @@ import { createHttpDb } from '@/db/client'
 import { requireAdmin } from '@/lib/auth/require-admin'
 import { applyMemberAccess } from '@/lib/identity/access'
 import { cancelReminder } from '@/lib/reminders/store'
-import { requestShoppingRepostForHouse } from '@/lib/lists/board'
+import { requestShoppingRefreshForHouse } from '@/lib/lists/board'
 import { setGlobalEnabled, addMutedTopic, removeMutedTopic, setReplyFrequency, REPLY_FLOORS, type ReplyFrequency } from '@/lib/policy'
 
 // All dashboard mutations re-verify the live session server-side; the form payload is
@@ -38,8 +38,8 @@ export async function setPolicyEnabledAction(formData: FormData): Promise<void> 
   const enabled = formData.get('enabled') === 'on'
   const db = createHttpDb()
   await setGlobalEnabled(db, enabled, { actor: session.uid, action: 'policy.enabled', metadata: { enabled } })
-  // Turning Baumy back on: the shopping topic missed any change made while paused — repost it.
-  if (enabled) await requestShoppingRepostForHouse(db)
+  // Turning Baumy back on: the live shopping list missed any change made while paused — update it.
+  if (enabled) await requestShoppingRefreshForHouse(db)
   revalidatePath('/admin/settings')
 }
 

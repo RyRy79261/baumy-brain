@@ -79,8 +79,16 @@ export function parseConsoleCommand(text: string | null | undefined): 'here' | '
   return m ? (m[1].toLowerCase() as 'here' | 'off') : null
 }
 
-// Detect the shopping-topic command: /shoppinghere (post the shopping list in THIS topic) or
-// /shoppingoff (stop posting it). Same shape/guarantees as parseNotifyCommand; the caller enforces who
+// Detect /list (issue #25): post the live shopping list here, or re-render the one there is. Exact
+// command only ("/list", "/list@baumy_bot", optionally followed by text that is ignored) — never
+// "/listen" or "/links". The caller enforces who and where, like the topic commands.
+export function parseListCommand(text: string | null | undefined): boolean {
+  if (!text) return false
+  return /^\/list(?:@\w+)?(?:\s|$)/i.test(text.trim())
+}
+
+// Detect the shopping-topic command: /shoppinghere (the live shopping list lives in THIS topic) or
+// /shoppingoff (stop updating it). Same shape/guarantees as parseNotifyCommand; the caller enforces who
 // (an active member, own words, house lane) and takes the thread id from the authenticated message.
 export function parseShoppingCommand(text: string | null | undefined): 'here' | 'off' | null {
   if (!text) return null

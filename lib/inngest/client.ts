@@ -50,6 +50,8 @@ type Events = {
       chatId: string
       messageId: number | null
       data: string
+      /** A live-list item tap: the state the tapped button showed asked for (lib/lists/live.ts tapWant). */
+      want?: 'tick' | 'untick' | null
     }
   }
   'reminder/arm.due': { data: { reminderId: string } }
@@ -59,9 +61,21 @@ type Events = {
   // Group→supergroup migration (docs/spec/telegram.md D9): oldId/newId derived from the
   // migrate_to_chat_id / migrate_from_chat_id service message (authenticated transport fields).
   'telegram/chat_migrated': { data: { updateId: number; oldId: string; newId: string } }
-  // The shopping list changed (docs/spec/shopping-list.md §Shopping topic): groupId = the house SCOPE.
-  // Debounced per house by shopping-repost, which reposts the list in the shopping topic.
+  // The shopping list changed (docs/spec/shopping-list.md §Live list): groupId = the house SCOPE.
+  // Debounced per house by shopping-changed (5s, at most 30s), which asks shopping-render for ONE edit.
   'lists/shopping.changed': { data: { groupId: string } }
+  // Render the live shopping list (issue #25, docs/spec/shopping-list.md §Live list): sent by a tap, by
+  // /list or /shoppinghere, and by the debounced change function. ONE function renders, one at a time per
+  // house. Every field is code-made (the house scope, a parsed page / item id, the command's own chat).
+  'lists/shopping.render': {
+    data: {
+      groupId: string
+      reason: 'change' | 'tap' | 'command'
+      page?: number
+      focusItemId?: string
+      place?: { chatId: string; threadId: number | null; move: boolean }
+    }
+  }
 }
 
 // The inbound Telegram message payload — exported so the ingest handler can be invoked

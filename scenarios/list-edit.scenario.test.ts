@@ -1,7 +1,6 @@
 import { describe } from 'vitest'
 import { and, eq, isNull } from 'drizzle-orm'
 import { listItems } from '@/db/schema'
-import { EMPTY_BOARD } from '@/lib/lists/board'
 import { scenario, say, advance, check, expectDb, expectReaction, expectWords, expectNoWords, expectNoPrompt, type Run } from './dsl'
 import { request, statement, chatter } from './shapes'
 import { HOUSE } from './house'
@@ -16,7 +15,8 @@ const openItems = async (db: Db, groupId: string) =>
   (await db.select().from(listItems).where(and(eq(listItems.groupId, groupId), eq(listItems.isActive, true), isNull(listItems.checkedAt)))).map(
     (r) => r.item,
   )
-const boards = (r: Run) => r.turns.flatMap((t) => t.entries).filter((e) => e.kind === 'message' && e.meta === 'board')
+const lists = (r: Run) => r.turns.flatMap((t) => t.entries).filter((e) => e.kind === 'message' && e.meta === 'live-list')
+const edits = (r: Run) => r.turns.flatMap((t) => t.entries).filter((e) => e.kind === 'edit')
 const changes = (r: Run) => r.events.filter((x) => x.name === 'lists/shopping.changed').length
 
 const fixtures = {
@@ -53,14 +53,16 @@ const fixtures = {
 }
 
 describe('scenario: removing and renaming list items (issue #23)', () => {
-  scenario('add milk + mlik → change mlik to milk (merge) → remove milk → empty list, ONE repost after the burst', {
+  scenario('add milk + mlik → change mlik to milk (merge) → remove milk → empty list, ONE edit of the live list after the burst', {
     people: HOUSE,
     startAt: '2026-10-13 18:00',
     fixtures,
     steps: [
       say('Marco', '/shoppinghere', { topic: TOPIC }),
-      advance({ minutes: 3 }), // /shoppinghere's own post goes out first
-      check('the topic has its first (empty) post', (r, e) => e(boards(r)).toHaveLength(1)),
+      check('the live list is posted in the topic at once (empty)', (r, e) => {
+        e(lists(r)).toHaveLength(1)
+        e(lists(r)[0].threadId).toBe(TOPIC)
+      }),
 
       say('Marco', 'add milk, mlik', { mention: true }),
       expectReaction('✍'),
@@ -82,14 +84,15 @@ describe('scenario: removing and renaming list items (issue #23)', () => {
         // nothing was bought: both rows left the list as REMOVED, never checked off
         return rows.length === 2 && rows.every((x) => !x.isActive && x.checkedAt === null && x.removedBy !== null)
       }, 'milk and mlik were removed, not bought, and who did it is recorded'),
-      check('every change asked for a repost (add, merge, remove — after /shoppinghere\'s own)', (r, e) => e(changes(r)).toBe(1 + 3)),
+      check('every change signalled the live list (add, merge, remove)', (r, e) => e(changes(r)).toBe(3)),
 
-      advance({ minutes: 3 }),
-      check('ONE repost after the burst: the empty list, in the topic', (r, e) => {
-        const all = boards(r)
-        e(all).toHaveLength(2)
-        e(all[1].text).toBe(EMPTY_BOARD)
-        e(all[1].threadId).toBe(TOPIC)
+      advance({ minutes: 1 }),
+      check('ONE edit of the live list after the burst, saying it is empty and who changed it last; no new post', (r, e) => {
+        e(lists(r)).toHaveLength(1)
+        const all = edits(r)
+        e(all).toHaveLength(1)
+        e(all[0].meta).toBe(String(lists(r)[0].messageId))
+        e(all[0].text).toBe('🛒 Shopping list\nNothing to buy.\nLast updated by Chloe, Tue 13 Oct, 18:00')
       }),
     ],
   })
@@ -118,7 +121,7 @@ describe('scenario: removing and renaming list items (issue #23)', () => {
       // A forwarded message is someone else's words: it can never take anything off the list.
       say('Chloe', 'take bread off the list', { dm: true, forwarded: true }),
       expectDb(async (db, r) => (await openItems(db, r.sb.houseChatId)).includes('bread'), 'bread is still on the list'),
-      check('nothing changed, so no repost was asked for after the add', (r, e) => e(changes(r)).toBe(1)),
+      check('nothing changed, so no live-list edit was asked for after the add', (r, e) => e(changes(r)).toBe(1)),
     ],
   })
 

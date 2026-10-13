@@ -48,13 +48,20 @@ vi.mock('@/lib/telegram/client', () => ({
   sendConfirmCard: async () => {},
   sendDmLoginResponse: async () => {},
   deleteMessage: (...a: unknown[]) => deleteMessageMock(...a),
+  unpinMessage: (...a: unknown[]) => unpinMessageMock(...a),
   editShoppingBoard: async () => true,
 }))
-// The shopping-topic repost trigger (docs/spec/shopping-list.md §Shopping topic) — spied, never sent.
-const requestShoppingRepost = vi.fn(async (..._a: unknown[]) => {})
+// The live shopping list's triggers (docs/spec/shopping-list.md §Live list) — spied, never sent.
+const noteShoppingChange = vi.fn(async (..._a: unknown[]) => {})
+const requestShoppingRender = vi.fn(async (..._a: unknown[]) => true)
+const unpinMessageMock = vi.fn(async (..._a: unknown[]) => true)
 vi.mock('@/lib/lists/board', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/lists/board')>()
-  return { ...actual, requestShoppingRepost: (...a: unknown[]) => requestShoppingRepost(...a) }
+  return {
+    ...actual,
+    noteShoppingChange: (...a: unknown[]) => noteShoppingChange(...a),
+    requestShoppingRender: (...a: unknown[]) => requestShoppingRender(...a),
+  }
 })
 vi.mock('@/lib/ai/reply', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/ai/reply')>()
@@ -126,24 +133,24 @@ describe('ingest handler — shopping list end-to-end (real routing, mocked LLM/
     extractMock.mockReset()
     sendToHouse.mockClear()
     reactToMessage.mockClear()
-    requestShoppingRepost.mockClear()
+    noteShoppingChange.mockClear()
   })
 
-  it('a list CHANGE asks for the debounced shopping-topic repost, for the HOUSE scope (issue #21)', async () => {
+  it('a list CHANGE stamps the sender and asks for the debounced live-list edit, for the HOUSE scope (issue #25)', async () => {
     classifyMock.mockResolvedValue(verdict({ list: 'add' }))
     extractMock.mockResolvedValue({ op: 'add', items: ['milk'] })
     await runIngest(event({ text: 'buy milk' }), step)
-    expect(requestShoppingRepost).toHaveBeenCalledTimes(1)
-    expect(requestShoppingRepost).toHaveBeenCalledWith(HOUSE)
+    expect(noteShoppingChange).toHaveBeenCalledTimes(1)
+    expect(noteShoppingChange.mock.calls[0].slice(1)).toEqual([HOUSE, String(MEMBER)])
 
     classifyMock.mockResolvedValue(verdict({ list: 'checkoff' }))
     extractMock.mockResolvedValue({ op: 'checkoff', items: ['milk'] })
     await runIngest(event({ text: 'got the milk' }), step)
-    expect(requestShoppingRepost).toHaveBeenCalledTimes(2)
-    expect(requestShoppingRepost).toHaveBeenLastCalledWith(HOUSE)
+    expect(noteShoppingChange).toHaveBeenCalledTimes(2)
+    expect(noteShoppingChange.mock.calls[1].slice(1)).toEqual([HOUSE, String(MEMBER)])
   })
 
-  it('a list op that changed NOTHING (already listed / nothing ticked / a query) asks for no repost', async () => {
+  it('a list op that changed NOTHING (already listed / nothing ticked / a query) asks for no live-list edit', async () => {
     await addListItems(dbh.db, { groupId: HOUSE, items: ['milk'], addedBy: null })
     classifyMock.mockResolvedValue(verdict({ list: 'add' }))
     extractMock.mockResolvedValue({ op: 'add', items: ['milk'] })
@@ -155,7 +162,7 @@ describe('ingest handler — shopping list end-to-end (real routing, mocked LLM/
     extractMock.mockResolvedValue({ op: 'query', items: [] })
     await runIngest(event({ text: "what's on the list?" }), step)
     expect(sendToHouse).toHaveBeenCalledTimes(3) // all three ran (and answered)
-    expect(requestShoppingRepost).not.toHaveBeenCalled()
+    expect(noteShoppingChange).not.toHaveBeenCalled()
   })
 
   it('a member DM "buy milk" writes THROUGH to the house list + confirms privately', async () => {
@@ -258,10 +265,11 @@ describe('ingest handler — /notifyhere reminders-topic capture (owner-gated, h
   })
 })
 
-// The shopping topic (docs/spec/shopping-list.md §Shopping topic, issue #21): ANY active member sets it
-// with /shoppinghere INSIDE the topic, in their own words, in the house lane. The value is the
-// authenticated message_thread_id — never text. /shoppingoff clears it.
-describe('ingest handler — /shoppinghere shopping-topic capture (member-gated, house lane, own words)', () => {
+// The live shopping list's commands (docs/spec/shopping-list.md §Live list, issue #25): ANY active member,
+// in their own words, in the house lane. /list posts or re-renders it here; /shoppinghere is /list INSIDE
+// a topic that moves it there; /shoppingoff stops it. The place is the authenticated chat +
+// message_thread_id — never text — and the render (the one function that posts) stores it.
+describe('ingest handler — /list, /shoppinghere, /shoppingoff (member-gated, house lane, own words)', () => {
   const OWNER = 900
   beforeEach(async () => {
     dbh.db = await makeTestDb()
@@ -273,57 +281,88 @@ describe('ingest handler — /shoppinghere shopping-topic capture (member-gated,
     extractMock.mockReset()
     sendToHouse.mockClear()
     reactToMessage.mockClear()
-    requestShoppingRepost.mockClear()
+    requestShoppingRender.mockClear()
+    deleteMessageMock.mockClear()
+    unpinMessageMock.mockClear()
   })
 
   const houseCmd = (over: Partial<TelegramMessageData> = {}) => event({ chatId: HOUSE, chatType: 'supergroup', fromId: MEMBER, ...over })
   const thread = async () => (await resolveHouseIds(dbh.db)).shoppingThreadId
 
-  it('a member (not only the owner) /shoppinghere inside a topic sets it, confirms there, audits, and asks for a repost', async () => {
+  const render = (threadId: number | null, move: boolean) => ({ groupId: HOUSE, reason: 'command', place: { chatId: HOUSE, threadId, move } })
+
+  it('a member (not only the owner) /shoppinghere inside a topic: confirms there, audits, and asks for the list to MOVE here', async () => {
     const res = await runIngest(houseCmd({ text: '/shoppinghere', messageThreadId: 66 }), step)
     expect(res.decision).toBe('shopping-config')
-    expect(await thread()).toBe(66)
     expect(sendToHouse).toHaveBeenCalledTimes(1)
     expect(sendToHouse.mock.calls[0][0]).toBe(HOUSE)
     expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: 66 })
     expect(String(sendToHouse.mock.calls[0][1])).toMatch(/shopping list/i)
-    expect(requestShoppingRepost).toHaveBeenCalledWith(HOUSE)
+    expect(requestShoppingRender.mock.calls).toEqual([[render(66, true)]])
     const audit = await dbh.db.select().from(auditLog).where(eq(auditLog.action, 'shopping.topic.set'))
     expect(audit).toHaveLength(1)
     expect(audit[0].actorMemberId).toBe(String(MEMBER))
     expect(audit[0].metadata).toEqual({ threadId: 66 })
   })
 
-  it('the owner can set it too', async () => {
+  it('the owner can run it too', async () => {
     await runIngest(houseCmd({ fromId: OWNER, text: '/shoppinghere@baumybot', messageThreadId: 67 }), step)
-    expect(await thread()).toBe(67)
+    expect(requestShoppingRender.mock.calls).toEqual([[render(67, true)]])
   })
 
-  it('/shoppingoff clears it AND takes the last list post down (its stored id cleared)', async () => {
+  it('/list in a topic or in General: post or re-render the live list THERE (no move), no words of its own', async () => {
+    expect((await runIngest(houseCmd({ text: '/list', messageThreadId: 66 }), step)).decision).toBe('shopping-list')
+    expect((await runIngest(houseCmd({ text: '/list@baumybot', messageThreadId: null }), step)).decision).toBe('shopping-list')
+    expect(requestShoppingRender.mock.calls).toEqual([[render(66, false)], [render(null, false)]])
+    expect(sendToHouse).not.toHaveBeenCalled()
+  })
+
+  it('/listen or /links are not /list', async () => {
+    await runIngest(houseCmd({ text: '/listen', messageThreadId: 66 }), step)
+    await runIngest(houseCmd({ text: '/links', messageThreadId: 66 }), step)
+    expect(requestShoppingRender).not.toHaveBeenCalled()
+  })
+
+  it('/list refused like /shoppinghere: forwarded, anonymous admin, another bot, a DM', async () => {
+    await runIngest(houseCmd({ text: '/list', isForwarded: true }), step)
+    await runIngest(houseCmd({ text: '/list', fromId: 1087968824, isBot: true, senderChatId: HOUSE }), step)
+    await runIngest(houseCmd({ text: '/list', fromId: 5555, isBot: true }), step)
+    await runIngest(event({ text: '/list' }), step) // the member's DM
+    expect(requestShoppingRender).not.toHaveBeenCalled()
+    // …and the same command from the member in the group does ask (the refusals were about who/where)
+    await runIngest(houseCmd({ text: '/list' }), step)
+    expect(requestShoppingRender).toHaveBeenCalledTimes(1)
+  })
+
+  it('/shoppingoff clears it AND takes the live list down (unpinned, deleted, its stored id cleared)', async () => {
     await setShoppingThread(dbh.db, 66)
     await dbh.db.update(houseConfig).set({ shoppingMessageChatId: HOUSE, shoppingMessageId: 4321 })
     deleteMessageMock.mockClear()
     const res = await runIngest(houseCmd({ text: '/shoppingoff', messageThreadId: 66 }), step)
     expect(res.decision).toBe('shopping-config')
     expect(await thread()).toBeNull()
+    expect(requestShoppingRender).not.toHaveBeenCalled()
+    expect(unpinMessageMock).toHaveBeenCalledWith(HOUSE, 4321)
     expect(deleteMessageMock).toHaveBeenCalledWith(HOUSE, 4321)
     const [cfg] = await dbh.db.select({ id: houseConfig.shoppingMessageId }).from(houseConfig)
     expect(cfg.id).toBeNull()
-    expect(requestShoppingRepost).not.toHaveBeenCalled()
+    expect(requestShoppingRender).not.toHaveBeenCalled()
   })
 
-  it('must be sent INSIDE a topic: in General it stores nothing and says where to run it', async () => {
+  it('/shoppinghere must be sent INSIDE a topic: in General it moves nothing and says where to run it', async () => {
     const res = await runIngest(houseCmd({ text: '/shoppinghere', messageThreadId: null }), step)
     expect(res.decision).toBe('shopping-config')
     expect(await thread()).toBeNull()
+    expect(requestShoppingRender).not.toHaveBeenCalled()
     expect(String(sendToHouse.mock.calls[0][1])).toContain('INSIDE the topic')
-    expect(requestShoppingRepost).not.toHaveBeenCalled()
+    expect(requestShoppingRender).not.toHaveBeenCalled()
   })
 
   it('a FORWARDED /shoppinghere (someone else\'s words) never sets it — dropped as an unknown command', async () => {
     const res = await runIngest(houseCmd({ text: '/shoppinghere', messageThreadId: 66, isForwarded: true }), step)
     expect(res.decision).not.toBe('shopping-config')
     expect(await thread()).toBeNull()
+    expect(requestShoppingRender).not.toHaveBeenCalled()
     expect(sendToHouse).not.toHaveBeenCalled()
   })
 
@@ -331,24 +370,28 @@ describe('ingest handler — /shoppinghere shopping-topic capture (member-gated,
     const res = await runIngest(houseCmd({ text: '/shoppinghere', messageThreadId: 66, fromId: 1087968824, isBot: true, senderChatId: HOUSE }), step)
     expect(res.decision).not.toBe('shopping-config')
     expect(await thread()).toBeNull()
+    expect(requestShoppingRender).not.toHaveBeenCalled()
   })
 
   it('another bot\'s post never sets it', async () => {
     const res = await runIngest(houseCmd({ text: '/shoppinghere', messageThreadId: 66, fromId: 5555, isBot: true }), step)
     expect(res.decision).not.toBe('shopping-config')
     expect(await thread()).toBeNull()
+    expect(requestShoppingRender).not.toHaveBeenCalled()
   })
 
   it('from another lane — a member DM — it never sets the house topic', async () => {
     const res = await runIngest(event({ text: '/shoppinghere', messageThreadId: 66 }), step)
     expect(res.decision).toBe('command') // the DM command path (it doesn't know it) — never the house topic
     expect(await thread()).toBeNull()
+    expect(requestShoppingRender).not.toHaveBeenCalled()
   })
 
   it('from a foreign group it never sets the house topic', async () => {
     const res = await runIngest(houseCmd({ chatId: '-100foreign', text: '/shoppinghere', messageThreadId: 66 }), step)
     expect(res.decision).toBe('drop')
     expect(await thread()).toBeNull()
+    expect(requestShoppingRender).not.toHaveBeenCalled()
   })
 })
 

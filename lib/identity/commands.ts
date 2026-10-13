@@ -3,7 +3,7 @@ import { createHttpDb, type Database } from '@/db/client'
 import { loadRoster, setDmChatId } from '@/lib/identity/roster'
 import { issueLoginToken } from '@/lib/auth/tokens'
 import { setGlobalEnabled } from '@/lib/policy'
-import { requestShoppingRepostForHouse } from '@/lib/lists/board'
+import { requestShoppingRefreshForHouse } from '@/lib/lists/board'
 import { sendDmLoginResponse } from '@/lib/telegram/client'
 import { START_MESSAGE } from '@/lib/ai/prompts'
 import type { Origin } from '@/lib/core/origin'
@@ -68,8 +68,8 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
     // reach this. Always reversible with the opposite command / the dashboard.
     const enable = cmd === '/resume'
     await setGlobalEnabled(db, enable, { actor: String(origin.fromId), action: enable ? 'policy.resume' : 'policy.pause' })
-    // Changes made while paused were never posted to the shopping topic — bring it up to date.
-    if (enable) await requestShoppingRepostForHouse(db)
+    // Changes made while paused were never shown on the live shopping list — bring it up to date.
+    if (enable) await requestShoppingRefreshForHouse(db)
     await sendDmLoginResponse(
       origin.chatId,
       enable ? '▶️ Baumy resumed — replies and reminders are back on.' : '⏸️ Baumy paused — it will stay quiet (still captures memory) until /resume.',

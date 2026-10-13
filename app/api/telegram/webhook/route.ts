@@ -2,6 +2,7 @@ import { verifyWebhookSecret } from '@/lib/telegram/verify'
 import { parseUpdate, type TelegramMessage } from '@/lib/telegram/schema'
 import { inngest } from '@/lib/inngest/client'
 import { messageContent } from '@/lib/telegram/content'
+import { tapWant } from '@/lib/lists/live'
 
 // The "200-fast-then-defer-to-Inngest" spine (architecture D5/D6/D7/D8). grammY
 // types the update; ALL work happens in Inngest functions off this request path.
@@ -48,6 +49,10 @@ export async function POST(req: Request): Promise<Response> {
           chatId: cq.message?.chat.id != null ? String(cq.message.chat.id) : '',
           messageId: cq.message?.message_id ?? null,
           data: cq.data ?? '',
+          // A live-shopping-list item tap (issue #25): what the tapped button SHOWED (☐ → tick, ☑ →
+          // untick), from the keyboard Telegram sent with this callback — so a tap sets a state instead
+          // of flipping one, and a double tap is idempotent. Null when it can't be read.
+          want: tapWant((cq.message as { reply_markup?: unknown } | undefined)?.reply_markup, cq.data),
         },
       })
       return Response.json({ ok: true })

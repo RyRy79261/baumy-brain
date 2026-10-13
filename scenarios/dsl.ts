@@ -6,9 +6,10 @@ import { reminders } from '@/db/schema'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { embedSync, setEmbedOverride } from '@/lib/ai/embed'
 import { setConsoleThread } from '@/lib/identity/house'
-import { SHOPPING_CHANGED } from '@/lib/lists/board'
+import { SHOPPING_CHANGED, SHOPPING_RENDER, type RenderRequest } from '@/lib/lists/board'
+import { tapWant } from '@/lib/lists/live'
 import { inngest } from '@/lib/inngest/client'
-import { createSandbox, sendAs, tapAs, advanceBy, noteShoppingChanged, type Sandbox, type SandboxPerson, type SendOptions, type TranscriptEntry } from '@/lib/sandbox/harness'
+import { createSandbox, sendAs, tapAs, advanceBy, noteShoppingChanged, renderShoppingNow, type Sandbox, type SandboxPerson, type SendOptions, type TranscriptEntry } from '@/lib/sandbox/harness'
 import { setOlympicsTransport } from '@/lib/olympics/client'
 import { FAKE_OLYMPICS_TOKEN, FAKE_OLYMPICS_URL, type FakeOlympics } from './olympics-fake'
 import { installFakeModels, installRecordingModels, type CallRole, type Fixtures, type ModelCall, type ModelRecorder } from './fake-model'
@@ -173,12 +174,14 @@ async function runScenario(spec: ScenarioSpec, mode: 'offline' | 'live'): Promis
   const events: Run['events'] = []
   const realSend = inngest.send
   const client = inngest as unknown as { send: (p: unknown) => Promise<{ ids: string[] }> }
-  // The one event the harness DOES act on: a shopping-list change arms the debounced topic repost.
+  // The two events the harness DOES act on: a shopping-list change arms the debounced live-list render,
+  // and a render request (a tap, /list, /shoppinghere) renders at once, like shopping-render.
   let sbRef: Sandbox | null = null
   client.send = async (payload) => {
     for (const e of [payload].flat() as { name: string; data: unknown }[]) {
       events.push({ name: e.name, data: e.data })
-      if (e.name === SHOPPING_CHANGED && sbRef) noteShoppingChanged(sbRef)
+      if (e.name === SHOPPING_CHANGED && sbRef) noteShoppingChanged(sbRef, (e.data as { groupId: string }).groupId)
+      if (e.name === SHOPPING_RENDER && sbRef) await renderShoppingNow(sbRef, e.data as RenderRequest)
     }
     return { ids: [] }
   }
@@ -323,8 +326,44 @@ export function tap(who: string, verb: 'confirm' | 'cancel' = 'confirm'): Step {
   }
 }
 
+/**
+ * Tap a button on the live shopping list as `who` (issue #25): the latest live-list message's button whose
+ * label matches `label` (a string = contains, or a RegExp), on that message — through the real callback
+ * handler. `label` may also be raw `{ data }` callback_data (a crafted tap).
+ */
+export function tapList(
+  who: string,
+  label: string | RegExp | { data: string },
+  /** `want`: what the tapper's (possibly out-of-date) button showed — default: read from the current keyboard. */
+  opts: { messageId?: number; want?: 'tick' | 'untick' } = {},
+): Step {
+  return {
+    label: `${who} taps ${typeof label === 'object' && 'data' in label ? label.data : String(label)} on the live list`,
+    async run(r) {
+      const person = r.spec.people.find((p) => p.name.toLowerCase() === who.toLowerCase())
+      if (!person) throw new Error(`[scenarios] no such person: ${who}`)
+      const live = r.turns.flatMap((t) => t.entries).filter((e) => e.kind === 'message' && e.meta === 'live-list').at(-1)
+      if (!live?.messageId) fail('no live list has been posted to tap')
+      // The keyboard as it reads NOW: the latest edit of that message, else the post itself.
+      const shown = r.turns.flatMap((t) => t.entries).filter((e) => (e.kind === 'edit' && e.meta === String(live!.messageId)) || e === live).at(-1)!
+      let data: string | undefined
+      if (typeof label === 'object' && 'data' in label) data = label.data
+      else
+        data = shown.keyboard
+          ?.flat()
+          .find((b) => (typeof label === 'string' ? b.text.includes(label) : label.test(b.text)))?.callback_data
+      if (!data) fail(`no button matching ${String(label)} on the live list`)
+      const before = r.models.calls.length
+      // As the webhook does: what the tapped button SHOWED, read from the keyboard (☐ → tick, ☑ → untick).
+      const want = opts.want ?? tapWant({ inline_keyboard: shown.keyboard ?? [] }, data)
+      const entries = await tapAs(r.sb, person.id, '', { data, want, chatId: live!.chatId, messageId: opts.messageId ?? live!.messageId })
+      r.turns.push({ kind: 'tap', who: person.name, text: data!, messageId: -1, dm: false, entries, calls: r.models.calls.slice(before) })
+    },
+  }
+}
+
 /** Move the clock forward, running every cron that falls in between at its own instant. */
-export function advance(d: { days?: number; hours?: number; minutes?: number }): Step {
+export function advance(d: { days?: number; hours?: number; minutes?: number; seconds?: number }): Step {
   return {
     label: `advance ${JSON.stringify(d)}`,
     async run(r) {

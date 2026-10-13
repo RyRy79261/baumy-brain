@@ -242,19 +242,37 @@ nothing privileged rides on the topic id (itself a Telegram-authenticated field)
 memory, never a backdoor. A real HTTP introspection API belongs in the authed dashboard, not a public
 endpoint.
 
-### D9d — Shopping topic (2026-10-13, issue #21)
-A forum topic where Baumy keeps the house shopping list posted (`house_config.shopping_thread_id`,
-migration 0024). Any active housemate sets it by sending `/shoppinghere` INSIDE the topic, and
-`/shoppingoff` clears it. Unlike `/notifyhere` and `/baumyhere`, this is not owner-only, because the
-list belongs to the house. The command must be the housemate's own words in the house lane, so a
-forwarded message, an anonymous-admin post or a bot post cannot set it. The value is the authenticated
-`message_thread_id`, never text, and the change is audited. After each list change, a 2-minute
-debounced Inngest job reposts the whole list there and deletes the previous post. If Telegram refuses
-the delete, the old post is edited to `⬇️ The list moved down.` A topic that has been deleted or
-closed is cleared (audited) without retries. `/shoppingoff` also takes the last post down, and
-`/resume` triggers a repost. The post is not pinned and not
-windowed. Full behaviour: `docs/spec/shopping-list.md` §Shopping topic. Like the other topics, it
-changes where Baumy posts and grants no trust: nothing privileged rides on the thread id.
+### D9d — The live shopping list (2026-10-13, issues #21 and #25)
+**[CORRECTION 2026-10-13]** Issue #21's "repost the whole list after every change and delete the old
+post" is replaced by issue #25's **live list**: ONE message per house, posted once, pinned silently
+(`pinChatMessage` with `disable_notification`), and edited in place (`editMessageText` with the inline
+keyboard) on every change. Full behaviour: `docs/spec/shopping-list.md` §Live list.
+
+- **Commands.** Any active housemate, in their own words, in the house lane (a forward, an
+  anonymous-admin post or a bot post cannot run one): `/list` posts the live list where it is sent
+  (General or a topic) or, when the house already has one, re-renders it where it is and links to it;
+  `/shoppinghere` inside a topic is `/list` that moves the list into that topic
+  (`house_config.shopping_thread_id`, migration 0024 — the authenticated `message_thread_id`, never
+  text; audited); `/shoppingoff` stops it (unpinned, deleted, or edited to "This list is no longer
+  updated." with no buttons). One live message per house: `/list` never makes a second one.
+- **Buttons.** `shop:chk:<itemId>`, `shop:clear`, `shop:refresh`, `shop:page:<n>` (each ≤ 64 bytes,
+  parsed exactly). They arrive as `callback_query` like the confirm cards and reach `runCallback`
+  after its roster check, so only an ACTIVE member's authenticated `from.id` counts; the `shop:` branch
+  is routed before the confirm-card parse. The tapped message must be the stored live list in the house
+  chat (same chat id and message id), and the item id is matched only inside the house scope. An item
+  tap SETS the state its button showed — the webhook reads the tapped button's ☐ / ☑ from the keyboard
+  Telegram delivers with the callback (`want`), so a double tap is idempotent (no `reply_markup` → a
+  flip). A tap is answered with a short toast
+  (`answerCallbackQuery`) and the message is re-rendered at once. Taps auto-commit like every list op —
+  they are not the confirm wall.
+- **Edits.** Other changes are debounced 5 seconds per house (30-second max wait) and become ONE edit.
+  `message is not modified` is a success; a deleted message is re-posted where it lived and pinned; a
+  deleted or closed topic is cleared (audited) without retries; a 429 retries after Telegram's
+  `retry_after`. Pinning needs the **Pin messages** admin right; without it the list still posts and
+  updates.
+- **Not windowed**, plain text (no `parse_mode`), item names only as defanged button labels. Like the
+  other topics, the shopping topic changes where Baumy posts and grants no trust: nothing privileged
+  rides on the thread id.
 
 ### D10 — Register `setWebhook` from a one-shot protected admin action, not Vercel cron
 `setWebhook` is a run-once deploy-time operation; Vercel cron is banned for cost. Trigger it

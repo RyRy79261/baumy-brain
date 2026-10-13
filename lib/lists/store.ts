@@ -1,6 +1,6 @@
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
-import { listItems } from '@/db/schema'
+import { houseConfig, listItems, members } from '@/db/schema'
 import { now as clockNow } from '@/lib/core/clock'
 
 // A house list is a first-class, group-scoped, stateful table (docs/spec/shopping-list.md) —
@@ -302,4 +302,117 @@ export async function currentList(db: Database, groupId: string, listName: strin
     .from(listItems)
     .where(openWhere(groupId, listName))
     .orderBy(asc(listItems.createdAt))
+}
+
+// ── The live list (issue #25, docs/spec/shopping-list.md §Live list) ─────────────────────────────────
+// A bought item stays on the live list, ticked, until someone taps "Clear done": the list shows every
+// active row with cleared_at NULL — open (checked_at NULL) first, oldest first, then done, in the order
+// they were ticked. `currentList` above (the OPEN items) is unchanged: it is what to buy.
+
+export interface LiveRow {
+  id: string
+  item: string
+  done: boolean
+}
+
+// Every row still SHOWN on the live list (open + done-not-cleared), group-scoped (I4).
+const shownWhere = (groupId: string, listName: string) =>
+  and(eq(listItems.groupId, groupId), eq(listItems.listName, listName), eq(listItems.isActive, true), isNull(listItems.clearedAt))
+
+export async function liveListRows(db: Database, groupId: string, listName: string = DEFAULT_LIST): Promise<LiveRow[]> {
+  const rows = await db
+    .select({ id: listItems.id, item: listItems.item, checkedAt: listItems.checkedAt, createdAt: listItems.createdAt })
+    .from(listItems)
+    .where(shownWhere(groupId, listName))
+    .orderBy(sql`${listItems.checkedAt} IS NOT NULL`, asc(listItems.checkedAt), asc(listItems.createdAt), asc(listItems.id))
+  return rows.map((r) => ({ id: r.id, item: r.item, done: r.checkedAt != null }))
+}
+
+/**
+ * What a tap on an item did (`shop:chk:<id>`).
+ * - `ticked`           — it was open; now it is done (checked_at / checked_by set).
+ * - `unticked`         — it was done; now it is open again (checked_at / checked_by cleared).
+ * - `already_ticked`   — a tick asked for (☐ tapped) but it was already done: nothing changed.
+ * - `already_unticked` — an untick asked for (☑ tapped) but it was already open: nothing changed.
+ * - `readded`          — it was done, but the same item has been re-added since, so re-opening it would
+ *                        make a second open copy (the partial-unique index): the done row was cleared
+ *                        instead, and the open copy stays.
+ * - `gone`             — no such row on THIS house's live list (removed, cleared, another house, a bad id).
+ */
+export interface ToggleResult {
+  outcome: 'ticked' | 'unticked' | 'already_ticked' | 'already_unticked' | 'readded' | 'gone'
+  item: string | null
+}
+
+// Set ONE item's state by id — keyed on the id AND the house scope (I4), so a tap can never reach another
+// house's row. `want` is what the tapped button showed (☐ → tick, ☑ → untick; lib/lists/live.ts tapWant):
+// the UPDATE SETS that state outright, guarded by `checked_at IS NULL` (tick) / `IS NOT NULL` (untick), so
+// it is IDEMPOTENT — two people tapping the same ☐ at once tick it once; the second finds nothing to do
+// and reports `already_ticked`. Only when the tapped keyboard could not be read (`want` null) does it fall
+// back to a flip computed by Postgres under the row lock (each tap flips the state it finds). `by` is the
+// tapper's authenticated id.
+export async function toggleListItem(
+  db: Database,
+  input: { groupId: string; itemId: string; by: string | null; want?: 'tick' | 'untick' | null; listName?: string },
+): Promise<ToggleResult> {
+  const listName = input.listName ?? DEFAULT_LIST
+  const at = clockNow().toISOString()
+  const where = and(eq(listItems.id, input.itemId), shownWhere(input.groupId, listName))
+  const want = input.want ?? null
+  try {
+    const set =
+      want === 'tick'
+        ? { checkedAt: sql`${at}::timestamptz`, checkedBy: sql`${input.by}::text` }
+        : want === 'untick'
+          ? { checkedAt: sql`NULL`, checkedBy: sql`NULL` }
+          : {
+              checkedAt: sql`CASE WHEN ${listItems.checkedAt} IS NULL THEN ${at}::timestamptz ELSE NULL END`,
+              checkedBy: sql`CASE WHEN ${listItems.checkedAt} IS NULL THEN ${input.by}::text ELSE NULL END`,
+            }
+    const guard = want === 'tick' ? isNull(listItems.checkedAt) : want === 'untick' ? isNotNull(listItems.checkedAt) : undefined
+    const [row] = await db
+      .update(listItems)
+      .set(set as Record<string, unknown>)
+      .where(and(where, guard))
+      .returning({ item: listItems.item, checkedAt: listItems.checkedAt })
+    if (row) return { outcome: row.checkedAt != null ? 'ticked' : 'unticked', item: row.item }
+    if (!want) return { outcome: 'gone', item: null }
+    // Nothing to do: the row is already in the asked state — or it is not on this house's list at all.
+    const [now] = await db.select({ item: listItems.item, checkedAt: listItems.checkedAt }).from(listItems).where(where)
+    if (!now) return { outcome: 'gone', item: null }
+    return { outcome: now.checkedAt != null ? 'already_ticked' : 'already_unticked', item: now.item }
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err
+    // Re-opening collided with an open copy of the same item (re-added since it was ticked): the list
+    // must never hold two open copies, so the done row leaves the list instead.
+    const [row] = await db
+      .update(listItems)
+      .set({ clearedAt: clockNow() })
+      .where(and(where, isNotNull(listItems.checkedAt)))
+      .returning({ item: listItems.item })
+    return row ? { outcome: 'readded', item: row.item } : { outcome: 'gone', item: null }
+  }
+}
+
+// "🧹 Clear done": every done row on this house's live list leaves it (cleared_at). The rows stay as the
+// bought record (checked_at / checked_by untouched). Returns how many were cleared.
+export async function clearDoneItems(db: Database, input: { groupId: string; listName?: string }): Promise<number> {
+  const listName = input.listName ?? DEFAULT_LIST
+  const rows = await db
+    .update(listItems)
+    .set({ clearedAt: clockNow() })
+    .where(and(shownWhere(input.groupId, listName), isNotNull(listItems.checkedAt)))
+    .returning({ id: listItems.id })
+  return rows.length
+}
+
+// Record who changed the list and when — the live list's "Last updated by X" line. `by` is an
+// authenticated id (a tapper, a chat sender, the kiosk's mapped member) or null; one that is not a
+// member row is stored as null (the FK), never guessed at.
+export async function markShoppingUpdated(db: Database, by: string | null): Promise<void> {
+  const known = by ? sql`(SELECT ${members.telegramUserId} FROM ${members} WHERE ${members.telegramUserId} = ${by})` : sql`NULL`
+  await db
+    .update(houseConfig)
+    .set({ shoppingUpdatedBy: sql`${known}`, shoppingUpdatedAt: clockNow(), updatedAt: clockNow() })
+    .where(sql`${houseConfig.id}`)
 }

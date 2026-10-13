@@ -116,8 +116,8 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   (`REQUESTER_ONLY_ACTIONS`), and the tap sends `X-Baumy-Confirmed: 1` with the `Idempotency-Key`
   minted at propose time — a retried tap (or a card reopened after Olympics did not answer) resends
   the same key, so Olympics runs it once. Olympics reads (what's on, standings) and `/link` (DM only;
-  refused in the group) run without a tap. **Reminder CREATION and shopping-list add/check-off/remove/rename are exempt from both — they
-  auto-commit** (`lib/turn/actions.ts` `runReminder` + `runList`): a reminder only posts text to a
+  refused in the group) run without a tap. **Reminder CREATION and shopping-list add/check-off/remove/rename (and live-list taps, `shop:…`) are
+  exempt from both — they auto-commit** (`lib/turn/actions.ts` `runReminder` + `runList`): a reminder only posts text to a
   fixed, code-resolved destination (the house group, or its creator's own DM — D2), and a list op only mutates the house's own group-scoped list (reversible,
   low-privilege). Both are the capture tier. Do not re-add a confirm step to either. (Cancelling a reminder is the
   opposite case — it removes something the house may rely on — so it stays behind the tap.) A reminder is
@@ -159,18 +159,29 @@ node --experimental-strip-types scripts/set-webhook.ts   # register the Telegram
   it is for Baumy — `asksBaumy`, C6). `/reminders` + `/recent` are deterministic, **secret-safe** read-only introspection
   (exclude `is_secure`). The topic changes **verbosity, not trust** — still untrusted house text, no
   privileged path rides on the topic id. A real introspection API belongs in the authed dashboard.
-- **Shopping topic (`docs/spec/shopping-list.md` §Shopping topic, `telegram.md` D9d):**
-  `house_config.shopping_thread_id`, set by ANY active member's `/shoppinghere` inside the topic (own
-  words, house lane — never a forward / anonymous admin / bot; `/shoppingoff` clears; audited). Every
-  list write that changed something (`runList`, the kitchen add/check-off/remove/rename) calls
-  `requestShoppingRepost` → `lists/shopping.changed` → `shopping-repost` (Inngest debounce 2m keyed by
-  the house, concurrency 1): post the whole open list in the topic (plain text, item sigils defanged),
-  atomically swap its id in for the previous one (`swapStoredBoard`, one locked statement — overlapping
-  runs never retire the same post), delete that previous post, or edit it to "⬇️ The list moved down."
-  when the delete is refused. A deleted/closed topic clears `shopping_thread_id` (audited, no retries);
-  `/shoppingoff` takes the last post down; `/resume` and the dashboard switch request a repost. No
-  topic → nothing; paused → nothing; not pinned; **not windowed** (a status board). A new
-  writer of `baumy_list_items` must call `requestShoppingRepost` too.
+- **Live shopping list (`docs/spec/shopping-list.md` §Live list, `telegram.md` D9d, issue #25 — replaced
+  the issue #21 repost):** ONE message per house, posted once, pinned silently, **edited in place**
+  (`lib/lists/live.ts` pure render + callback data; `lib/lists/board.ts` effects; `lib/lists/tap.ts`
+  taps). `/list` (any active member, own words, house lane; General or a topic) posts it there or
+  re-renders the existing one where it is (linking to it from elsewhere — never a second copy);
+  `/shoppinghere` = `/list` in this topic that MOVES it; `/shoppingoff` clears the stored id, then
+  unpins + deletes it. Buttons: `shop:chk:<id>` / `shop:clear` / `shop:refresh` / `shop:page:<n>`
+  (≤ 64 bytes, parsed exactly), routed in `runCallback` AFTER the roster check and BEFORE the
+  confirm-card parse; the tapped message must be the stored live list (same chat AND message id); an
+  item tap SETS the state its button showed (`want`, read by the webhook from the delivered
+  `reply_markup`: ☐ → tick, ☑ → untick) with ONE guarded UPDATE keyed on id + house scope — idempotent:
+  N concurrent ticks tick once, the rest toast "already ticked" (no keyboard → a flip under the row
+  lock); re-opening into a re-added open copy clears the ticked row; the toast is its own step (a
+  failure toasts "try again"; `onFailure` answers too), then an immediate render. A render reads the
+  list and builds the text INSIDE the step that edits or posts (step-level concurrency lets runs
+  interleave), compare-and-set on the stored id before and after the edit. Taps auto-commit (capture
+  tier) — they are not the confirm wall. A ticked item stays (☑) until "Clear done" (`cleared_at`).
+  Every other writer of `baumy_list_items` (runList, the kitchen API) calls `noteShoppingChange` (stamp
+  `shopping_updated_by/at` + `lists/shopping.changed`) → `shopping-changed` (debounce 5s, timeout 30s,
+  per house) → `lists/shopping.render` → `shopping-render` (concurrency 1 per house, the ONLY renderer):
+  edit; `message is not modified` = success; gone → re-post + pin + compare-and-set store; a change
+  never posts. A change render is held while paused; taps and commands are not. Pin failures never break
+  posting. **Not windowed**, plain text. A new writer of `baumy_list_items` must call `noteShoppingChange`.
 - **Secrets at rest:** wifi/door/bank values are AES-256-GCM encrypted (`lib/core/crypto.ts`);
   only a non-secret descriptor is stored/embedded; decrypt only to answer a direct request
   (`lib/turn/grounding.ts` `disclose`: MODE answer + `asksForSecret` on that value — never for an
