@@ -36,6 +36,9 @@ describe('extractListOp', () => {
     expect(EXTRACT_LIST_SYSTEM).toMatch(/"rename"/)
     expect(EXTRACT_LIST_SYSTEM).toMatch(/change mlik to milk/)
     expect(EXTRACT_LIST_SYSTEM).toMatch(/untrusted DATA/)
+    // not-the-shopping-list edits are "none"
+    expect(EXTRACT_LIST_SYSTEM).toMatch(/"remove" and "rename" are only for items on the SHOPPING list/)
+    for (const neg of ['remove dinner from the calendar', 'rename the chore', 'rename the wifi to BaumyNet', 'remove the reminder']) expect(EXTRACT_LIST_SYSTEM).toContain(neg)
   })
 
   it('is BEST-EFFORT: a malformed object degrades to not-a-list-op, never throws', async () => {

@@ -134,12 +134,13 @@ export async function handleRemove(req: Request): Promise<Response> {
     const by = await mapMember(db, body.telegramUserId)
     const res = await removeItems(db, { groupId: scope, items: body.items, removedBy: by })
     if (res.removed.length > 0) await requestShoppingRepost(scope)
-    return json({ ok: true, removed: res.removed, notFound: res.notFound, attributedTo: by, items: view(await currentList(db, scope)) })
+    return json({ ok: true, removed: res.removed, notFound: res.notFound, ambiguous: res.ambiguous, attributedTo: by, items: view(await currentList(db, scope)) })
   })
 }
 
 // Rename ONE open item (issue #23). `outcome`: renamed | merged (the new name was already open, so the
-// old row was removed) | unchanged | not_found (no open item, or more than one, matches `from`).
+// old row was removed) | unchanged | not_found (no open item matches `from`) | ambiguous (more than one
+// does — `matches` names them).
 export async function handleRename(req: Request): Promise<Response> {
   return withKitchenHouse(req, async (db, scope) => {
     const body = await parseBody<RenameBody>(req, RenameBody)
@@ -147,6 +148,14 @@ export async function handleRename(req: Request): Promise<Response> {
     const by = await mapMember(db, body.telegramUserId)
     const res = await renameItem(db, { groupId: scope, from: body.from, to: body.to, renamedBy: by })
     if (res.outcome === 'renamed' || res.outcome === 'merged') await requestShoppingRepost(scope)
-    return json({ ok: true, outcome: res.outcome, from: res.from, to: res.to, attributedTo: by, items: view(await currentList(db, scope)) })
+    return json({
+      ok: true,
+      outcome: res.outcome,
+      from: res.from,
+      to: res.to,
+      ...(res.outcome === 'ambiguous' ? { matches: res.matches ?? [] } : {}),
+      attributedTo: by,
+      items: view(await currentList(db, scope)),
+    })
   })
 }

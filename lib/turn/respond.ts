@@ -63,9 +63,9 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
           : l.op === 'add'
             ? addAck(l.added, l.already, l.open.length)
             : l.op === 'remove'
-              ? removeAck(l.removed, l.notFound, l.open)
+              ? removeAck(l.removed, l.notFound, l.open, l.ambiguous)
               : l.op === 'rename'
-                ? renameAck(l.renamed, l.notFound, l.open)
+                ? renameAck(l.renamed, l.notFound, l.open, l.ambiguous)
                 : checkoffAck(l.checkedOff, l.notFound, l.open),
       )
     })

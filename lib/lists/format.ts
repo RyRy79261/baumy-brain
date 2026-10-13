@@ -52,25 +52,37 @@ function leftTail(remaining: string[]): string {
   return ` ${remaining.length} left.`
 }
 
-// Ack for a remove (off the list WITHOUT being bought — issue #23): what came off, what wasn't on it.
-export function removeAck(removed: string[], notFound: string[], remaining: string[]): string {
-  const left = leftTail(remaining)
-  if (removed.length && notFound.length) return `Took ${joinAnd(removed)} off the list. Couldn't find ${quoted(notFound)} on it though.${left}`
-  if (removed.length) return `Took ${joinAnd(removed)} off the list.${left}`
-  if (notFound.length) return `Couldn't find ${quoted(notFound)} on the list — nothing taken off. 😼`
-  return `Nothing to take off there. 😼`
+// A name that loosely fits MORE than one open item: nothing was changed for it, and the ack names the
+// candidates so the sender can say which (distinct from "couldn't find").
+function ambiguousLine(ambiguous: { item: string; matches: string[] }[], nothingDone: string | null): string {
+  const each = ambiguous.map((a) => `"${a.item}" matches more than one item (${joinAnd(a.matches)})`).join('; ')
+  return nothingDone ? `${each} — nothing ${nothingDone}; say which one.` : `${each} — say which one.`
 }
 
-// Ack for a rename (issue #23): each change, a merge said as such, and any name not on the list.
-export function renameAck(renamed: { from: string; to: string; merged: boolean }[], notFound: string[], remaining: string[]): string {
-  const parts = renamed.map((r) =>
-    r.merged ? `"${r.to}" was already on the list, so I took "${r.from}" off.` : `Changed "${r.from}" to "${r.to}".`,
-  )
-  if (notFound.length) {
-    parts.push(renamed.length ? `Couldn't find ${quoted(notFound)} on the list though.` : `Couldn't find ${quoted(notFound)} on the list — nothing changed. 😼`)
-  }
-  if (!renamed.length) return parts.join(' ') || `Nothing to change there. 😼`
-  return `${parts.join(' ')}${leftTail(remaining)}`
+// Ack for a remove (off the list WITHOUT being bought — issue #23): what came off, what wasn't on it,
+// and any name that fits more than one item.
+export function removeAck(removed: string[], notFound: string[], remaining: string[], ambiguous: { item: string; matches: string[] }[] = []): string {
+  if (!removed.length && !notFound.length && !ambiguous.length) return `Nothing to take off there. 😼`
+  const parts: string[] = []
+  if (removed.length) parts.push(`Took ${joinAnd(removed)} off the list.`)
+  if (notFound.length) parts.push(removed.length ? `Couldn't find ${quoted(notFound)} on it though.` : `Couldn't find ${quoted(notFound)} on the list — nothing taken off.`)
+  if (ambiguous.length) parts.push(ambiguousLine(ambiguous, removed.length || notFound.length ? null : 'taken off'))
+  return removed.length ? `${parts.join(' ')}${leftTail(remaining)}` : `${parts.join(' ')} 😼`
+}
+
+// Ack for a rename (issue #23): each change — a merge said as one ("Merged "mlik" into "milk""), any
+// name not on the list, and any name that fits more than one item.
+export function renameAck(
+  renamed: { from: string; to: string; merged: boolean }[],
+  notFound: string[],
+  remaining: string[],
+  ambiguous: { item: string; matches: string[] }[] = [],
+): string {
+  if (!renamed.length && !notFound.length && !ambiguous.length) return `Nothing to change there. 😼`
+  const parts = renamed.map((r) => (r.merged ? `Merged "${r.from}" into "${r.to}" — it was already on the list.` : `Changed "${r.from}" to "${r.to}".`))
+  if (notFound.length) parts.push(renamed.length ? `Couldn't find ${quoted(notFound)} on the list though.` : `Couldn't find ${quoted(notFound)} on the list — nothing changed.`)
+  if (ambiguous.length) parts.push(ambiguousLine(ambiguous, renamed.length || notFound.length ? null : 'changed'))
+  return renamed.length ? `${parts.join(' ')}${leftTail(remaining)}` : `${parts.join(' ')} 😼`
 }
 
 // Render the current open list (a query reply). Plain text, one bullet per item.

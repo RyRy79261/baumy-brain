@@ -71,7 +71,7 @@ export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOut
     const renames = (ex.renames ?? []).filter((r) => r.from.trim() && r.to.trim()).slice(0, MAX_RENAMES)
     if ((ex.op === 'add' || ex.op === 'checkoff' || ex.op === 'remove') && ex.items.length === 0) return { op: 'none' }
     if (ex.op === 'rename' && renames.length === 0) return { op: 'none' }
-    const base = { added: [], already: [], checkedOff: [], removed: [], renamed: [], notFound: [] }
+    const base = { added: [], already: [], checkedOff: [], removed: [], renamed: [], notFound: [], ambiguous: [] }
     if (ex.op === 'query') return { op: 'query', ...base }
     if (ex.op === 'add') {
       const res = await addListItems(db, { groupId: ctx.houseScope, items: ex.items, addedBy: ctx.authorId })
@@ -80,25 +80,27 @@ export async function runList(step: TurnStep, ctx: TurnContext): Promise<ListOut
     if (ex.op === 'remove') {
       // Off the list WITHOUT being bought (issue #23) — the same matching as a check-off.
       const res = await removeItems(db, { groupId: ctx.houseScope, items: ex.items, removedBy: ctx.authorId })
-      return { op: 'remove', ...base, removed: res.removed, notFound: res.notFound }
+      return { op: 'remove', ...base, removed: res.removed, notFound: res.notFound, ambiguous: res.ambiguous }
     }
     if (ex.op === 'rename') {
       // The model named only text; renameItem matches `from` to ONE open row (or changes nothing).
       const renamed: ListOutcome['renamed'] = []
       const notFound: string[] = []
+      const ambiguous: ListOutcome['ambiguous'] = []
       for (const r of renames) {
         const res = await renameItem(db, { groupId: ctx.houseScope, from: r.from, to: r.to, renamedBy: ctx.authorId })
         if (res.outcome === 'renamed' || res.outcome === 'merged') renamed.push({ from: res.from, to: res.to, merged: res.outcome === 'merged' })
         else if (res.outcome === 'not_found') notFound.push(res.from)
+        else if (res.outcome === 'ambiguous') ambiguous.push({ item: res.from, matches: res.matches ?? [] })
       }
-      return { op: 'rename', ...base, renamed, notFound }
+      return { op: 'rename', ...base, renamed, notFound, ambiguous }
     }
     const res = await checkOffItems(db, { groupId: ctx.houseScope, items: ex.items, checkedBy: ctx.authorId })
     return { op: 'checkoff', ...base, checkedOff: res.checkedOff, notFound: res.notFound }
   })) as Mutation
   if (raw.op === 'none') return undefined
-  // A step memoized by the build before issue #23 has no removed / renamed — default them.
-  const mut = { ...raw, removed: raw.removed ?? [], renamed: raw.renamed ?? [] }
+  // A step memoized by an earlier build may lack removed / renamed / ambiguous — default them.
+  const mut = { ...raw, removed: raw.removed ?? [], renamed: raw.renamed ?? [], ambiguous: raw.ambiguous ?? [] }
   // The list CHANGED → ask for the (debounced) shopping-topic repost (docs/spec/shopping-list.md
   // §Shopping topic). Its own step after the memoized mutation, best-effort: a failed hand-off never
   // re-runs the write. A no-op add ("already there"), or a check-off / remove / rename that matched

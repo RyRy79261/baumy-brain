@@ -40,6 +40,9 @@ describe('classify (triage, spec §2)', () => {
     expect(classifierVerdict.shape.list.options).toEqual(['add', 'checkoff', 'remove', 'rename', 'query', 'none'])
     expect(TRIAGE_SYSTEM).toMatch(/"remove" if something comes off it WITHOUT being bought/)
     expect(TRIAGE_SYSTEM).toMatch(/"rename" if an item on it should be corrected/)
+    // …and ONLY for shopping items: calendar / chore / fact / reminder edits are list "none"
+    expect(TRIAGE_SYSTEM).toMatch(/"remove" and "rename" are ONLY for items on the SHOPPING list: removing or renaming anything else is list "none"/)
+    for (const neg of ['remove dinner from the calendar', 'rename the chore', 'rename the wifi to BaumyNet', 'remove the reminder']) expect(TRIAGE_SYSTEM).toContain(neg)
   })
 
   it('tier is quick | deep only (C13)', async () => {

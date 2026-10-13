@@ -2,7 +2,7 @@ import { describe } from 'vitest'
 import { and, eq, isNull } from 'drizzle-orm'
 import { listItems } from '@/db/schema'
 import { EMPTY_BOARD } from '@/lib/lists/board'
-import { scenario, say, advance, check, expectDb, expectReaction, expectWords, expectNoWords, type Run } from './dsl'
+import { scenario, say, advance, check, expectDb, expectReaction, expectWords, expectNoWords, expectNoPrompt, type Run } from './dsl'
 import { request, statement, chatter } from './shapes'
 import { HOUSE } from './house'
 
@@ -21,20 +21,24 @@ const changes = (r: Run) => r.events.filter((x) => x.name === 'lists/shopping.ch
 
 const fixtures = {
   triage: (t: string) =>
-    /^add /.test(t)
+    /calendar|chore|wifi|reminder/.test(t)
+      ? request({ asksBaumy: true, worthRemembering: false }) // not a shopping item: list 'none'
+      : /^add /.test(t)
       ? request({ asksBaumy: true, worthRemembering: false, list: 'add' })
       : /^change /.test(t)
         ? request({ asksBaumy: true, worthRemembering: false, list: 'rename' })
         : /^remove |take .* off/.test(t)
           ? request({ asksBaumy: true, worthRemembering: false, list: 'remove' })
-          : /we need/.test(t)
+          : /^we need/.test(t)
             ? statement({ worthRemembering: false, list: 'add' })
             : chatter(),
   list: (t: string) =>
     /^add milk, mlik/.test(t)
       ? { op: 'add' as const, items: ['milk', 'mlik'] }
       : /^we need bread/.test(t)
-        ? { op: 'add' as const, items: ['bread'] }
+        ? { op: 'add' as const, items: ['bread', 'egg', 'eggs'] }
+        : /remove the eggs/.test(t)
+          ? { op: 'remove' as const, items: ['the eggs'] }
         : /change mlik to milk/.test(t)
           ? { op: 'rename' as const, items: [], renames: [{ from: 'mlik', to: 'milk' }] }
           : /change bred to bread/.test(t)
@@ -61,10 +65,12 @@ describe('scenario: removing and renaming list items (issue #23)', () => {
       say('Marco', 'add milk, mlik', { mention: true }),
       expectReaction('✍'),
       expectDb(async (db, r) => (await openItems(db, r.sb.houseChatId)).sort().join() === 'milk,mlik', 'milk and mlik are both on the list'),
-      say('Ryan', 'change mlik to milk', { dm: true }),
+      // In the GROUP a merge is still said in words (a bare 👍 would hide that "mlik" is gone).
+      say('Ryan', 'change mlik to milk', { mention: true }),
+      expectReaction({ not: '👍' }),
       expectWords({
-        contains: /milk/,
-        judge: 'Says milk was already on the list, so the misspelt "mlik" was taken off (merged). Must not say anything was bought, and must not say milk is on the list twice.',
+        contains: /Merged "mlik" into "milk"/,
+        judge: 'Says "mlik" was merged into "milk" because milk was already on the list. Short. Must not say anything was bought, and must not say milk is on the list twice.',
       }),
       expectDb(async (db, r) => (await openItems(db, r.sb.houseChatId)).join() === 'milk', 'one milk, no mlik'),
       say('Chloe', 'remove milk', { mention: true }),
@@ -100,12 +106,42 @@ describe('scenario: removing and renaming list items (issue #23)', () => {
         contains: /cheese/,
         judge: 'Says the cheese was not on the shopping list, so nothing was taken off. Must not say anything was removed or bought.',
       }),
+      // "the eggs" loosely fits two items (egg, eggs): nothing changes, and Baumy says which it could mean
+      say('Ryan', 'remove the eggs', { dm: true }),
+      expectWords({
+        contains: /more than one item/,
+        judge: 'Says "the eggs" matches more than one item on the list (egg and eggs) and asks which one; says nothing was taken off. Must not say the eggs were not found.',
+      }),
+      expectDb(async (db, r) => (await openItems(db, r.sb.houseChatId)).length === 3, 'nothing was removed'),
       say('Ryan', 'change bred to bread', { dm: true }),
       expectWords({ contains: /bred/, judge: 'Says "bred" is not on the shopping list, so nothing was changed.' }),
       // A forwarded message is someone else's words: it can never take anything off the list.
       say('Chloe', 'take bread off the list', { dm: true, forwarded: true }),
-      expectDb(async (db, r) => (await openItems(db, r.sb.houseChatId)).join() === 'bread', 'bread is still on the list'),
+      expectDb(async (db, r) => (await openItems(db, r.sb.houseChatId)).includes('bread'), 'bread is still on the list'),
       check('nothing changed, so no repost was asked for after the add', (r, e) => e(changes(r)).toBe(1)),
+    ],
+  })
+
+  // Remove / rename are for SHOPPING items only (TRIAGE_SYSTEM): editing the calendar, a chore, a house
+  // fact or a reminder never routes to the list. Offline the triage fixture says so (chatter); the point
+  // of these steps is LIVE mode (pnpm test:scenarios:live), where the real classifier must route them away.
+  scenario('removing or renaming something that is not a shopping item never touches the list', {
+    people: HOUSE,
+    startAt: '2026-10-13 18:00',
+    fixtures,
+    steps: [
+      say('Marco', 'we need bread'),
+      expectReaction('✍'),
+      say('Ryan', 'remove dinner from the calendar', { dm: true }),
+      expectNoPrompt('list', 'a calendar edit is not a list op'),
+      say('Ryan', 'rename the chore', { dm: true }),
+      expectNoPrompt('list', 'a chore edit is not a list op'),
+      say('Ryan', 'rename the wifi to BaumyNet', { dm: true }),
+      expectNoPrompt('list', 'a house fact / setting is not a list op'),
+      say('Ryan', 'remove the reminder', { dm: true }),
+      expectNoPrompt('list', 'a reminder is not a list op'),
+      expectDb(async (db, r) => (await openItems(db, r.sb.houseChatId)).sort().join() === 'bread,egg,eggs', 'the list is unchanged'),
+      check('no list change was signalled after the add', (r, e) => e(changes(r)).toBe(1)),
     ],
   })
 })

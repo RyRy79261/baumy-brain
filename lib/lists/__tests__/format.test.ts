@@ -78,11 +78,30 @@ describe('list acks — deterministic, in Baumy voice', () => {
   describe('renameAck (issue #23)', () => {
     it('a rename, and a merge said as such', () => {
       expect(renameAck([{ from: 'mlik', to: 'milk', merged: false }], [], ['milk'])).toBe('Changed "mlik" to "milk". 1 left: milk.')
-      expect(renameAck([{ from: 'mlik', to: 'milk', merged: true }], [], ['milk'])).toContain('"milk" was already on the list, so I took "mlik" off.')
+      expect(renameAck([{ from: 'mlik', to: 'milk', merged: true }], [], ['milk'])).toBe('Merged "mlik" into "milk" — it was already on the list. 1 left: milk.')
     })
     it('not found → says so and that nothing changed', () => {
       expect(renameAck([], ['mlik'], ['milk'])).toBe('Couldn\'t find "mlik" on the list — nothing changed. 😼')
       expect(renameAck([{ from: 'bred', to: 'bread', merged: false }], ['mlik'], ['bread'])).toContain('Couldn\'t find "mlik" on the list though.')
+    })
+  })
+
+  describe('ambiguous remove / rename — distinct from not found', () => {
+    const amb = [{ item: 'sponge', matches: ['sponge cloth', 'sponges'] }]
+    it('names the items it could mean, and that nothing changed', () => {
+      const r = removeAck([], [], ['sponge cloth', 'sponges'], amb)
+      expect(r).toBe('"sponge" matches more than one item (sponge cloth and sponges) — nothing taken off; say which one. 😼')
+      expect(r).not.toMatch(/couldn't find/i)
+      expect(renameAck([], [], [], amb)).toBe('"sponge" matches more than one item (sponge cloth and sponges) — nothing changed; say which one. 😼')
+    })
+    it('alongside a miss and a success, each is said separately', () => {
+      const r = removeAck(['milk'], ['nutmeg'], ['sponge cloth', 'sponges'], amb)
+      expect(r).toBe(
+          'Took milk off the list. Couldn\'t find "nutmeg" on it though. "sponge" matches more than one item (sponge cloth and sponges) — say which one. 2 left: sponge cloth and sponges.',
+      )
+      expect(renameAck([], ['nutmeg'], [], amb)).toBe(
+        'Couldn\'t find "nutmeg" on the list — nothing changed. "sponge" matches more than one item (sponge cloth and sponges) — say which one. 😼',
+      )
     })
   })
 })

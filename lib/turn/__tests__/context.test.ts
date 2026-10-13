@@ -52,7 +52,7 @@ describe('describeOutcome — THIS TURN', () => {
       {
         captured: { memoryItemId: 'n', factIds: ['f'], learned: [summarizeFact({ subject: 'zosia', predicate: 'stays_in', object: "chloe's room" }, 'Sat 3 Oct')], rejected: [] },
         reminder: { status: 'set', fireAt: new Date('2026-10-02T18:00:00Z'), content: 'bins out', deliverTo: 'house' },
-        list: { op: 'checkoff', added: [], already: [], checkedOff: ['milk'], removed: [], renamed: [], notFound: ['eggs'], open: ['bread'] },
+        list: { op: 'checkoff', added: [], already: [], checkedOff: ['milk'], removed: [], renamed: [], notFound: ['eggs'], ambiguous: [], open: ['bread'] },
       },
       'Europe/Berlin',
     )
@@ -61,7 +61,7 @@ describe('describeOutcome — THIS TURN', () => {
     )
   })
   it('a remove / rename (issue #23): taken off WITHOUT being bought, renamed vs merged, and what was not found', () => {
-    const base = { added: [], already: [], checkedOff: [], open: ['milk'] }
+    const base = { added: [], already: [], checkedOff: [], ambiguous: [], open: ['milk'] }
     expect(describeOutcome({ list: { op: 'remove', ...base, removed: ['tea'], renamed: [], notFound: ['nutmeg'] } }, 'Europe/Berlin')).toBe(
       'taken off the shopping list WITHOUT being bought: tea; NOT on the shopping list (nothing changed): nutmeg; shopping list now: milk',
     )
@@ -71,6 +71,12 @@ describe('describeOutcome — THIS TURN', () => {
     ]
     expect(describeOutcome({ list: { op: 'rename', ...base, removed: [], renamed, notFound: [] } }, 'Europe/Berlin')).toBe(
       '"milk" was already on the shopping list, so "mlik" was taken off it; renamed on the shopping list: "bred" is now "bread"',
+    )
+  })
+  it('an ambiguous remove / rename says it matches more than one item, distinct from not found', () => {
+    const l = { op: 'remove' as const, added: [], already: [], checkedOff: [], removed: [], renamed: [], notFound: ['nutmeg'], ambiguous: [{ item: 'sponge', matches: ['sponge cloth', 'sponges'] }], open: ['sponge cloth', 'sponges'] }
+    expect(describeOutcome({ list: l }, 'Europe/Berlin')).toBe(
+      'NOT on the shopping list (nothing changed): nutmeg; "sponge" matches more than one shopping-list item (sponge cloth, sponges) — nothing changed; ask which one; shopping list now: sponge cloth, sponges',
     )
   })
   it('a reminder cancellation: waiting for a tap (nothing cancelled yet), or NOT cancelled with what IS scheduled', () => {

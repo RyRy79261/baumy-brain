@@ -122,15 +122,16 @@ const openWhere = (groupId: string, listName: string) =>
 // proposes a description, code disposes on exact scoped rows" half — the model never names a row id,
 // and only rows in THIS group are ever touched. Exact-normalized match first; then an article/plural-
 // tolerant key, but only for an unambiguous single open item (looseItemKey). Anything else is
-// reported as notFound rather than guessed at.
+// reported rather than guessed at: notFound (nothing fits) or ambiguous (more than one open item fits —
+// `matches` names them, so the ack can say which).
 async function closeItems(
   db: Database,
   input: { groupId: string; items: string[]; by: string | null; listName?: string },
   close: Close,
-): Promise<{ closed: string[]; notFound: string[] }> {
+): Promise<{ closed: string[]; notFound: string[]; ambiguous: Ambiguous[] }> {
   const listName = input.listName ?? DEFAULT_LIST
   const wanted = dedupeInput(input.items)
-  if (wanted.size === 0) return { closed: [], notFound: [] }
+  if (wanted.size === 0) return { closed: [], notFound: [], ambiguous: [] }
 
   const norms = [...wanted.keys()]
   const updated = await db
@@ -143,6 +144,7 @@ async function closeItems(
   const closed = updated.map((r) => r.item)
   const missing = [...wanted].filter(([norm]) => !found.has(norm))
   const notFound: string[] = []
+  const ambiguous: Ambiguous[] = []
   if (missing.length) {
     // Second pass, loose key (articles / plain plurals — K4): an open item counts only when it is the
     // ONE open item with that key, so a near-miss is never guessed at.
@@ -150,7 +152,11 @@ async function closeItems(
     const done = new Set<string>()
     for (const [, display] of missing) {
       const hits = (byKey.get(looseItemKey(display)) ?? []).filter((r) => !done.has(r.id))
-      if (hits.length !== 1) {
+      if (hits.length > 1) {
+        ambiguous.push({ item: display, matches: hits.map((h) => h.item) })
+        continue
+      }
+      if (hits.length === 0) {
         notFound.push(display)
         continue
       }
@@ -165,7 +171,13 @@ async function closeItems(
       } else notFound.push(display)
     }
   }
-  return { closed, notFound }
+  return { closed, notFound, ambiguous }
+}
+
+/** A named item that fits more than one open item (loosely) — nothing was changed for it. */
+export interface Ambiguous {
+  item: string
+  matches: string[]
 }
 
 async function openByLooseKey(db: Database, groupId: string, listName: string): Promise<Map<string, { id: string; item: string }[]>> {
@@ -181,7 +193,8 @@ export async function checkOffItems(
   input: { groupId: string; items: string[]; checkedBy: string | null; listName?: string },
 ): Promise<{ checkedOff: string[]; notFound: string[] }> {
   const res = await closeItems(db, { groupId: input.groupId, items: input.items, by: input.checkedBy, listName: input.listName }, { kind: 'checkoff' })
-  return { checkedOff: res.closed, notFound: res.notFound }
+  // A check-off still folds an ambiguous name into notFound (its K4 ack wording, unchanged).
+  return { checkedOff: res.closed, notFound: [...res.notFound, ...res.ambiguous.map((a) => a.item)] }
 }
 
 // Remove items WITHOUT buying them (issue #23): a SOFT remove — is_active=false, removed_at /
@@ -190,9 +203,9 @@ export async function checkOffItems(
 export async function removeItems(
   db: Database,
   input: { groupId: string; items: string[]; removedBy: string | null; listName?: string },
-): Promise<{ removed: string[]; notFound: string[] }> {
+): Promise<{ removed: string[]; notFound: string[]; ambiguous: Ambiguous[] }> {
   const res = await closeItems(db, { groupId: input.groupId, items: input.items, by: input.removedBy, listName: input.listName }, { kind: 'remove' })
-  return { removed: res.closed, notFound: res.notFound }
+  return { removed: res.closed, notFound: res.notFound, ambiguous: res.ambiguous }
 }
 
 /**
@@ -201,12 +214,15 @@ export async function removeItems(
  * - `renamed`   — the row now reads `to` (same row: its id and added_by are kept).
  * - `merged`    — `to` was ALREADY open, so the old row was removed (is_active=false), not duplicated.
  * - `unchanged` — the new name is exactly the old one: nothing to do.
- * - `not_found` — no open item matches `from`, or it matches more than one: nothing changed.
+ * - `not_found` — no open item matches `from`: nothing changed.
+ * - `ambiguous` — `from` fits more than one open item (`matches` names them): nothing changed.
  */
 export interface RenameResult {
-  outcome: 'renamed' | 'merged' | 'unchanged' | 'not_found'
+  outcome: 'renamed' | 'merged' | 'unchanged' | 'not_found' | 'ambiguous'
   from: string
   to: string
+  /** Only for `ambiguous`: the open items `from` fits. */
+  matches?: string[]
 }
 
 // Postgres unique_violation — a concurrent add of the new name won the partial-unique index.
@@ -236,7 +252,8 @@ export async function renameItem(
     .from(listItems)
     .where(and(openWhere(input.groupId, listName), eq(listItems.itemNormalized, fromNorm)))
   const hits = exact.length ? exact : ((await openByLooseKey(db, input.groupId, listName)).get(looseItemKey(fromDisplay)) ?? [])
-  if (hits.length !== 1) return { outcome: 'not_found', from: fromDisplay, to: toDisplay }
+  if (hits.length > 1) return { outcome: 'ambiguous', from: fromDisplay, to: toDisplay, matches: hits.map((h) => h.item) }
+  if (hits.length === 0) return { outcome: 'not_found', from: fromDisplay, to: toDisplay }
   const row = hits[0]
   if (row.item === toDisplay) return { outcome: 'unchanged', from: row.item, to: row.item }
 

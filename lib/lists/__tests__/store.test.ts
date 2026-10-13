@@ -163,7 +163,13 @@ describe('house shopping list — remove and rename (issue #23)', () => {
     await addListItems(db, { groupId: B, items: ['cheese'], addedBy: null })
     const res = await removeItems(db, { groupId: A, items: ['a sponge', 'milk', 'cheese'], removedBy: null })
     expect(res.removed).toEqual([])
-    expect(sorted(res.notFound)).toEqual(['a sponge', 'cheese', 'milk'])
+    expect(sorted(res.notFound)).toEqual(['cheese', 'milk'])
+    // ambiguous is reported apart from not-found, naming what it could mean
+    expect(res.ambiguous).toHaveLength(1)
+    expect(res.ambiguous[0].item).toBe('a sponge')
+    expect(sorted(res.ambiguous[0].matches)).toEqual(['sponge', 'sponges'])
+    // a check-off keeps folding an ambiguous name into notFound (K4 ack unchanged)
+    expect((await checkOffItems(db, { groupId: A, items: ['a sponge'], checkedBy: null })).notFound).toEqual(['a sponge'])
     expect(sorted((await currentList(db, A)).map((r) => r.item))).toEqual(['almond milk', 'sponge', 'sponges'])
     expect((await currentList(db, B)).map((r) => r.item)).toEqual(['cheese'])
   })
@@ -209,7 +215,9 @@ describe('house shopping list — remove and rename (issue #23)', () => {
     await ensureRegistered(db, B, null)
     await addListItems(db, { groupId: A, items: ['sponge', 'sponges', 'egg'], addedBy: null })
     await addListItems(db, { groupId: B, items: ['cheese'], addedBy: null })
-    expect(await renameItem(db, { groupId: A, from: 'a sponge', to: 'scourer', renamedBy: null })).toEqual({ outcome: 'not_found', from: 'a sponge', to: 'scourer' })
+    const amb = await renameItem(db, { groupId: A, from: 'a sponge', to: 'scourer', renamedBy: null })
+    expect(amb).toMatchObject({ outcome: 'ambiguous', from: 'a sponge', to: 'scourer' })
+    expect(sorted(amb.matches ?? [])).toEqual(['sponge', 'sponges'])
     expect(await renameItem(db, { groupId: A, from: 'nutmeg', to: 'mace', renamedBy: null })).toMatchObject({ outcome: 'not_found' })
     expect(await renameItem(db, { groupId: A, from: 'cheese', to: 'brie', renamedBy: null })).toMatchObject({ outcome: 'not_found' })
     expect(await renameItem(db, { groupId: A, from: 'egg', to: '   ', renamedBy: null })).toMatchObject({ outcome: 'not_found' })
@@ -250,5 +258,42 @@ describe('house shopping list — remove and rename (issue #23)', () => {
     expect(err).not.toBeNull()
     expect(isUniqueViolation(err)).toBe(true)
     expect(isUniqueViolation(new Error('boom'))).toBe(false)
+  })
+
+  // The concurrent-add race: between renameItem's "is `to` already open?" check and its UPDATE, someone
+  // adds `to`, so the UPDATE hits the partial-unique index (23505). It must become a merge, not throw.
+  it('a rename that loses the race to a concurrent add of the new name becomes a merge', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, A, null)
+    await addListItems(db, { groupId: A, items: ['mlik'], addedBy: null })
+    let raced = false
+    // A db whose rename UPDATE (the one that sets item_normalized) first lets a "concurrent" add of
+    // "milk" land, then runs for real — so PGlite throws a genuine unique_violation.
+    const racy = new Proxy(db, {
+      get(target, key, recv) {
+        if (key !== 'update') return Reflect.get(target, key, recv)
+        return (table: typeof listItems) => ({
+          set: (values: Record<string, unknown>) => ({
+            where: (w: Parameters<ReturnType<ReturnType<typeof db.update>['set']>['where']>[0]) => {
+              const real = () => target.update(table).set(values).where(w)
+              if (!('itemNormalized' in values) || raced) return real()
+              return {
+                returning: (cols: Parameters<ReturnType<typeof real>['returning']>[0]) =>
+                  (async () => {
+                    raced = true
+                    await addListItems(target, { groupId: A, items: ['milk'], addedBy: null })
+                    return real().returning(cols)
+                  })(),
+              }
+            },
+          }),
+        })
+      },
+    }) as typeof db
+    expect(await renameItem(racy, { groupId: A, from: 'mlik', to: 'milk', renamedBy: null })).toEqual({ outcome: 'merged', from: 'mlik', to: 'milk' })
+    expect(raced).toBe(true)
+    expect((await currentList(db, A)).map((r) => r.item)).toEqual(['milk'])
+    const [old] = await db.select().from(listItems).where(eq(listItems.itemNormalized, 'mlik'))
+    expect(old.isActive).toBe(false)
   })
 })

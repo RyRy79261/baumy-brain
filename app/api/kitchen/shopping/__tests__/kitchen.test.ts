@@ -338,6 +338,21 @@ describe('kitchen shopping API — remove and rename (issue #23)', () => {
     expect(await openItems(db, HOUSE)).toEqual(['bread', 'milk'])
   })
 
+  it('an ambiguous name is reported apart from not found, names its matches, and changes nothing', async () => {
+    await house(db)
+    await addListItems(db, { groupId: HOUSE, items: ['sponge', 'sponges'], addedBy: null })
+    const rm = (await (await REMOVE(req('/remove', { body: { items: ['a sponge', 'nutmeg'] } }))).json()) as Record<string, unknown>
+    expect(rm).toMatchObject({ ok: true, removed: [], notFound: ['nutmeg'] })
+    expect(rm.ambiguous).toEqual([{ item: 'a sponge', matches: expect.arrayContaining(['sponge', 'sponges']) }])
+    const rn = (await (await RENAME(req('/rename', { body: { from: 'a sponge', to: 'scourer' } }))).json()) as Record<string, unknown>
+    expect(rn).toMatchObject({ ok: true, outcome: 'ambiguous', from: 'a sponge', to: 'scourer' })
+    expect([...(rn.matches as string[])].sort()).toEqual(['sponge', 'sponges'])
+    // a plain not_found carries no matches
+    expect(await (await RENAME(req('/rename', { body: { from: 'nutmeg', to: 'mace' } }))).json()).not.toHaveProperty('matches')
+    expect(await openItems(db, HOUSE)).toEqual(['sponge', 'sponges'])
+    expect(requestShoppingRepost).not.toHaveBeenCalled()
+  })
+
   it('asks for the repost ONLY when the list changed', async () => {
     await house(db)
     await addListItems(db, { groupId: HOUSE, items: ['milk', 'mlik', 'tea'], addedBy: null })

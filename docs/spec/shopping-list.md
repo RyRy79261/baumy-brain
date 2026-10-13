@@ -56,7 +56,9 @@ separately, because capture runs orthogonally, before the list op).
    something new went on, 👀 when it was all already listed; check-off → 👍 only when everything named
    was ticked, otherwise the `checkoffAck` words (what wasn't on the list, what's left); remove and
    rename the same way → 👍 only when everything named was changed, otherwise the `removeAck` /
-   `renameAck` words, which say what wasn't found and that nothing changed for it.
+   `renameAck` words, which say what wasn't found, what matched more than one item, and that nothing
+   changed for those. A rename that **merged** is always words, in the group too (`Merged "mlik" into
+   "milk" — it was already on the list.`), because a bare 👍 would hide that the old item is gone.
 
 A fully-compromised model can at most return an op enum + item strings (and `from → to` pairs); it can
 never name the scope, the attribution, or a row id.
@@ -126,9 +128,15 @@ The owner asked for both, on the kitchen screen and in Telegram ("remove milk", 
     concurrent add of `to` wins the partial-unique index between the check and the write, the unique
     violation is caught and the rename becomes this merge.
   - `unchanged` — `to` is exactly the current text: nothing to do.
-  - `not_found` — no open item matches `from`, or more than one does: nothing changes.
-- **A miss changes nothing.** A missing or ambiguous match is reported (`notFound` / `not_found`), and
-  the ack says what wasn't found — never a guess.
+  - `not_found` — no open item matches `from`: nothing changes.
+  - `ambiguous` — `from` loosely fits more than one open item (`matches` names them): nothing changes.
+- **A miss changes nothing.** A missing match is reported as not found; an ambiguous one separately,
+  with the items it could mean (`ambiguous: [{item, matches}]` for a remove, outcome `ambiguous` +
+  `matches` for a rename), and the ack asks which one — never a guess. (A check-off keeps folding an
+  ambiguous name into `notFound`, its K4 wording.)
+- **Routing.** `remove` / `rename` are for SHOPPING items only: the triage and extractor prompts say
+  that removing or renaming a calendar event, a chore, a reminder or a house fact ("remove dinner from
+  the calendar", "rename the wifi to BaumyNet") is list `none`.
 - **Same walls as add / check-off.** Group-scoped (I1, I4), attributed from the authenticated sender
   or the kiosk's mapped member (I2, K-I3), quarantined and forwarded content can never trigger either
   (I3, `listOpProposed`), no confirm tap (I5), the mutation is one memoized step (I6), and every
@@ -145,13 +153,13 @@ ONE list whether a housemate DMs Baumy or taps the kiosk. `lib/lists/kitchen-api
 | `GET /api/kitchen/shopping` | — | `{ ok, items: [{ id, item, addedBy, createdAt }] }` (open items, oldest first) |
 | `POST /api/kitchen/shopping/add` | `{ items: string[1..30], telegramUserId? }` | `{ ok, added, already, attributedTo, items }` |
 | `POST /api/kitchen/shopping/checkoff` | `{ items: string[1..30], telegramUserId? }` | `{ ok, checkedOff, notFound, attributedTo, items }` |
-| `POST /api/kitchen/shopping/remove` (2026-10-13) | `{ items: string[1..30], telegramUserId? }` | `{ ok, removed, notFound, attributedTo, items }` |
-| `POST /api/kitchen/shopping/rename` (2026-10-13) | `{ from: string, to: string, telegramUserId? }` (each trimmed, 1..200) | `{ ok, outcome: 'renamed' \| 'merged' \| 'unchanged' \| 'not_found', from, to, attributedTo, items }` |
+| `POST /api/kitchen/shopping/remove` (2026-10-13) | `{ items: string[1..30], telegramUserId? }` | `{ ok, removed, notFound, ambiguous: [{ item, matches }], attributedTo, items }` |
+| `POST /api/kitchen/shopping/rename` (2026-10-13) | `{ from: string, to: string, telegramUserId? }` (each trimmed, 1..200) | `{ ok, outcome: 'renamed' \| 'merged' \| 'unchanged' \| 'not_found' \| 'ambiguous', from, to, matches?, attributedTo, items }` (`matches` only with `ambiguous`) |
 
 `items` in every write response is the open list after the write, in the `GET` shape. For a rename,
 `from` is the open item it matched (or what was sent, when nothing matched) and `to` is the item as it
-now reads (for `merged`, the copy that was already open). `not_found` is a `200`, not an error: it
-changed nothing.
+now reads (for `merged`, the copy that was already open). `not_found` and `ambiguous` are a `200`,
+not an error: they changed nothing.
 
 Errors: `401 unauthorized` (missing/wrong token, or `KITCHEN_API_TOKEN` unset), `503 not_configured`
 (no house yet), `400 bad_request` (malformed body).

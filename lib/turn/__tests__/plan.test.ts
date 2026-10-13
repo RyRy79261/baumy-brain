@@ -77,7 +77,7 @@ const plan = (c: Case): Plan => planResponse(ctx(c), c.policy ?? POLICY)
 
 const CAPTURED: TurnOutcome['captured'] = { memoryItemId: 'n1', factIds: [], learned: [], rejected: [] }
 const set = (): TurnOutcome['reminder'] => ({ status: 'set', fireAt: new Date('2026-10-02T18:00:00Z'), content: 'bins', deliverTo: 'house' })
-const list = (o: Partial<NonNullable<TurnOutcome['list']>>): TurnOutcome['list'] => ({ op: 'add', added: [], already: [], checkedOff: [], removed: [], renamed: [], notFound: [], open: [], ...o })
+const list = (o: Partial<NonNullable<TurnOutcome['list']>>): TurnOutcome['list'] => ({ op: 'add', added: [], already: [], checkedOff: [], removed: [], renamed: [], notFound: [], ambiguous: [], open: [], ...o })
 const DIRECTED_WHYS: DirectedWhy[] = ['mention', 'reply_to_baumy', 'name', 'console_topic']
 
 describe('planResponse — pause and trust', () => {
@@ -185,6 +185,12 @@ describe('planResponse — list (K4 store outcome, A10 continue to the question)
     const renamed = [{ from: 'mlik', to: 'milk', merged: false }]
     expect(plan({ outcome: { list: list({ op: 'rename', renamed }) } })).toEqual({ kind: 'react', emoji: '👍', row: 'list' })
     expect(plan({ outcome: { list: list({ op: 'rename', notFound: ['mlik'] }) } })).toEqual({ kind: 'list-words', row: 'list' })
+    // an ambiguous name → words (it says which items it could mean), even alongside a success
+    const amb = [{ item: 'sponge', matches: ['sponge cloth', 'sponges'] }]
+    expect(plan({ outcome: { list: list({ op: 'remove', removed: ['milk'], ambiguous: amb }) } })).toEqual({ kind: 'list-words', row: 'list' })
+    expect(plan({ outcome: { list: list({ op: 'rename', ambiguous: amb }) } })).toEqual({ kind: 'list-words', row: 'list' })
+    // a MERGED rename is said in words in the group too, never a bare 👍
+    expect(plan({ outcome: { list: list({ op: 'rename', renamed: [{ from: 'mlik', to: 'milk', merged: true }] }) } })).toEqual({ kind: 'list-words', row: 'list' })
     // a check-off's count never stands in for a remove's
     expect(plan({ outcome: { list: list({ op: 'remove', checkedOff: ['milk'] }) } })).toEqual({ kind: 'list-words', row: 'list' })
     expect(plan({ lane: 'member_dm', outcome: { list: list({ op: 'remove', removed: ['milk'] }) } })).toMatchObject({ kind: 'list-words' })
