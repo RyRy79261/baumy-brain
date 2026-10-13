@@ -45,6 +45,34 @@ export function checkoffAck(checkedOff: string[], notFound: string[], remaining:
   return `Nothing to check off there. 😼`
 }
 
+// "N left: a, b." — the tail of a check-off / remove / rename ack.
+function leftTail(remaining: string[]): string {
+  if (remaining.length === 0) return ` The list's empty now. 🐈‍⬛`
+  if (remaining.length <= 6) return ` ${remaining.length} left: ${joinAnd(remaining)}.`
+  return ` ${remaining.length} left.`
+}
+
+// Ack for a remove (off the list WITHOUT being bought — issue #23): what came off, what wasn't on it.
+export function removeAck(removed: string[], notFound: string[], remaining: string[]): string {
+  const left = leftTail(remaining)
+  if (removed.length && notFound.length) return `Took ${joinAnd(removed)} off the list. Couldn't find ${quoted(notFound)} on it though.${left}`
+  if (removed.length) return `Took ${joinAnd(removed)} off the list.${left}`
+  if (notFound.length) return `Couldn't find ${quoted(notFound)} on the list — nothing taken off. 😼`
+  return `Nothing to take off there. 😼`
+}
+
+// Ack for a rename (issue #23): each change, a merge said as such, and any name not on the list.
+export function renameAck(renamed: { from: string; to: string; merged: boolean }[], notFound: string[], remaining: string[]): string {
+  const parts = renamed.map((r) =>
+    r.merged ? `"${r.to}" was already on the list, so I took "${r.from}" off.` : `Changed "${r.from}" to "${r.to}".`,
+  )
+  if (notFound.length) {
+    parts.push(renamed.length ? `Couldn't find ${quoted(notFound)} on the list though.` : `Couldn't find ${quoted(notFound)} on the list — nothing changed. 😼`)
+  }
+  if (!renamed.length) return parts.join(' ') || `Nothing to change there. 😼`
+  return `${parts.join(' ')}${leftTail(remaining)}`
+}
+
 // Render the current open list (a query reply). Plain text, one bullet per item.
 export function renderList(openItems: string[]): string {
   if (openItems.length === 0) return `The shopping list's empty — nothing on it right now. 🐈‍⬛`

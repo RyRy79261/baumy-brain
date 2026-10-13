@@ -82,11 +82,14 @@ const words = (mode: ReplyMode, row: PlanRow, extra: { alsoReact?: PlannerEmoji;
 //   group add:      something new went on → ✍;  everything already there → 👀 (the list is right).
 //   group checkoff: everything named was ticked → 👍;  anything NOT found → words (what was ticked,
 //                   what wasn't on the list, what's left) — silence there lets someone buy twice.
+//   group remove / rename (issue #23): the same as a check-off — 👍 only when everything named was
+//                   changed; anything not found (or ambiguous) → words saying what wasn't found.
 //   a query (either lane), any DM op → words.
 function listAck(l: ListOutcome, dm: boolean): { react: PlannerEmoji } | 'words' {
   if (l.op === 'query' || dm) return 'words'
   if (l.op === 'add') return { react: l.added.length > 0 ? NOTED : '👀' }
-  return l.notFound.length === 0 && l.checkedOff.length > 0 ? { react: '👍' } : 'words'
+  const done = l.op === 'checkoff' ? l.checkedOff.length : l.op === 'remove' ? l.removed.length : l.renamed.length
+  return l.notFound.length === 0 && done > 0 ? { react: '👍' } : 'words'
 }
 
 export function planResponse(ctx: TurnContext, policy: ResponsePolicy): Plan {

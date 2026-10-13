@@ -8,6 +8,10 @@ import { isAllowed } from './policy'
 // response planner (lib/turn/plan.ts), which reads what these actions actually did.
 export type Decision = 'drop' | 'capture' | 'reply' | 'reminder' | 'cancel_reminder' | 'forget'
 
+// The classifier's shopping-list routing flag (lib/ai/classify.ts — routing only; the extractor names
+// the items and code disposes). remove / rename: issue #23.
+export type ListFlag = 'add' | 'checkoff' | 'remove' | 'rename' | 'query' | 'none'
+
 export type Intent = 'statement' | 'question' | 'request' | 'reminder' | 'cancel_reminder' | 'forget' | 'banter' | 'chatter'
 
 export interface Verdict {
@@ -84,7 +88,7 @@ export function shouldCapture(origin: Origin, v: Verdict, th: Thresholds = DEFAU
   return v.worthRemembering && isAllowed(origin, 'capture') && clampConfidence(v.confidence) >= th.capture
 }
 
-// A shopping-list op (add / check off / query) is a LOW-PRIVILEGE, group-scoped, reversible
+// A shopping-list op (add / check off / remove / rename / query) is a LOW-PRIVILEGE, group-scoped, reversible
 // mutation — the capture/reminder tier, NOT the confirm-tap tier (docs/spec/shopping-list.md).
 // The classifier PROPOSES the op flag; this disposes whether to act: relayed (forwarded/bot)
 // content can never mutate a list, and a paused GROUP goes silent while a member DM still works
@@ -97,7 +101,7 @@ export function shouldCapture(origin: Origin, v: Verdict, th: Thresholds = DEFAU
 // created because the ask was undirected — A9 — the list must not silently act on it instead).
 export function listOpProposed(
   origin: Origin,
-  listFlag: 'add' | 'checkoff' | 'query' | 'none',
+  listFlag: ListFlag,
   policyEnabled: boolean,
   intent: Intent,
 ): boolean {

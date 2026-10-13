@@ -106,66 +106,176 @@ export async function addListItems(
   return { added, already }
 }
 
-// Check items off (bought/done): flip checked_at/checked_by on the OPEN rows in this scope whose
-// normalized text matches. This is the "LLM proposes a description, code disposes on exact scoped
-// rows" half — the model never names a row id, and only rows in THIS group are ever touched.
-// Exact-normalized match first; then an article/plural-tolerant key, but only for an unambiguous
-// single open item (looseItemKey). Anything else is reported as notFound rather than guessed at.
-export async function checkOffItems(
+// The two ways an open item LEAVES the list. Check-off = bought (checked_at / checked_by). Remove =
+// taken off WITHOUT being bought (is_active=false, removed_at / removed_by — issue #23): it is never
+// a "bought" record, so nothing that reads checked_at counts it.
+type Close = { kind: 'checkoff' } | { kind: 'remove' }
+function closeSet(close: Close, by: string | null) {
+  return close.kind === 'checkoff' ? { checkedAt: clockNow(), checkedBy: by } : { isActive: false, removedAt: clockNow(), removedBy: by }
+}
+
+// Every OPEN row of one house list — the WHERE every match/close below starts from (I4: group-scoped).
+const openWhere = (groupId: string, listName: string) =>
+  and(eq(listItems.groupId, groupId), eq(listItems.listName, listName), eq(listItems.isActive, true), isNull(listItems.checkedAt))
+
+// Close (check off / remove) the OPEN rows in this scope that the named items match. This is the "LLM
+// proposes a description, code disposes on exact scoped rows" half — the model never names a row id,
+// and only rows in THIS group are ever touched. Exact-normalized match first; then an article/plural-
+// tolerant key, but only for an unambiguous single open item (looseItemKey). Anything else is
+// reported as notFound rather than guessed at.
+async function closeItems(
   db: Database,
-  input: { groupId: string; items: string[]; checkedBy: string | null; listName?: string },
-): Promise<{ checkedOff: string[]; notFound: string[] }> {
+  input: { groupId: string; items: string[]; by: string | null; listName?: string },
+  close: Close,
+): Promise<{ closed: string[]; notFound: string[] }> {
   const listName = input.listName ?? DEFAULT_LIST
   const wanted = dedupeInput(input.items)
-  if (wanted.size === 0) return { checkedOff: [], notFound: [] }
+  if (wanted.size === 0) return { closed: [], notFound: [] }
 
   const norms = [...wanted.keys()]
   const updated = await db
     .update(listItems)
-    .set({ checkedAt: clockNow(), checkedBy: input.checkedBy })
-    .where(
-      and(
-        eq(listItems.groupId, input.groupId),
-        eq(listItems.listName, listName),
-        eq(listItems.isActive, true),
-        isNull(listItems.checkedAt),
-        inArray(listItems.itemNormalized, norms),
-      ),
-    )
+    .set(closeSet(close, input.by))
+    .where(and(openWhere(input.groupId, listName), inArray(listItems.itemNormalized, norms)))
     .returning({ item: listItems.item, n: listItems.itemNormalized })
 
   const found = new Set(updated.map((r) => r.n))
-  const checkedOff = updated.map((r) => r.item)
+  const closed = updated.map((r) => r.item)
   const missing = [...wanted].filter(([norm]) => !found.has(norm))
   const notFound: string[] = []
   if (missing.length) {
     // Second pass, loose key (articles / plain plurals — K4): an open item counts only when it is the
     // ONE open item with that key, so a near-miss is never guessed at.
-    const open = await db
-      .select({ id: listItems.id, item: listItems.item })
-      .from(listItems)
-      .where(and(eq(listItems.groupId, input.groupId), eq(listItems.listName, listName), eq(listItems.isActive, true), isNull(listItems.checkedAt)))
-    const byKey = new Map<string, { id: string; item: string }[]>()
-    for (const r of open) byKey.set(looseItemKey(r.item), [...(byKey.get(looseItemKey(r.item)) ?? []), r])
-    const ticked = new Set<string>()
+    const byKey = await openByLooseKey(db, input.groupId, listName)
+    const done = new Set<string>()
     for (const [, display] of missing) {
-      const hits = (byKey.get(looseItemKey(display)) ?? []).filter((r) => !ticked.has(r.id))
+      const hits = (byKey.get(looseItemKey(display)) ?? []).filter((r) => !done.has(r.id))
       if (hits.length !== 1) {
         notFound.push(display)
         continue
       }
       const [row] = await db
         .update(listItems)
-        .set({ checkedAt: clockNow(), checkedBy: input.checkedBy })
-        .where(and(eq(listItems.id, hits[0].id), eq(listItems.groupId, input.groupId), isNull(listItems.checkedAt)))
+        .set(closeSet(close, input.by))
+        .where(and(eq(listItems.id, hits[0].id), openWhere(input.groupId, listName)))
         .returning({ item: listItems.item })
       if (row) {
-        ticked.add(hits[0].id)
-        checkedOff.push(row.item)
+        done.add(hits[0].id)
+        closed.push(row.item)
       } else notFound.push(display)
     }
   }
-  return { checkedOff, notFound }
+  return { closed, notFound }
+}
+
+async function openByLooseKey(db: Database, groupId: string, listName: string): Promise<Map<string, { id: string; item: string }[]>> {
+  const open = await db.select({ id: listItems.id, item: listItems.item }).from(listItems).where(openWhere(groupId, listName))
+  const byKey = new Map<string, { id: string; item: string }[]>()
+  for (const r of open) byKey.set(looseItemKey(r.item), [...(byKey.get(looseItemKey(r.item)) ?? []), r])
+  return byKey
+}
+
+// Check items off (bought/done): checked_at / checked_by on the matched open rows (closeItems).
+export async function checkOffItems(
+  db: Database,
+  input: { groupId: string; items: string[]; checkedBy: string | null; listName?: string },
+): Promise<{ checkedOff: string[]; notFound: string[] }> {
+  const res = await closeItems(db, { groupId: input.groupId, items: input.items, by: input.checkedBy, listName: input.listName }, { kind: 'checkoff' })
+  return { checkedOff: res.closed, notFound: res.notFound }
+}
+
+// Remove items WITHOUT buying them (issue #23): a SOFT remove — is_active=false, removed_at /
+// removed_by — on the matched open rows, by the same exact-then-unambiguous-loose rule as check-off.
+// Never a "bought" record: checked_at stays NULL.
+export async function removeItems(
+  db: Database,
+  input: { groupId: string; items: string[]; removedBy: string | null; listName?: string },
+): Promise<{ removed: string[]; notFound: string[] }> {
+  const res = await closeItems(db, { groupId: input.groupId, items: input.items, by: input.removedBy, listName: input.listName }, { kind: 'remove' })
+  return { removed: res.closed, notFound: res.notFound }
+}
+
+/**
+ * What a rename did (issue #23). `from` is the open item it matched (its display text), or what was
+ * asked for when nothing matched; `to` is the item as it now reads on the list.
+ * - `renamed`   — the row now reads `to` (same row: its id and added_by are kept).
+ * - `merged`    — `to` was ALREADY open, so the old row was removed (is_active=false), not duplicated.
+ * - `unchanged` — the new name is exactly the old one: nothing to do.
+ * - `not_found` — no open item matches `from`, or it matches more than one: nothing changed.
+ */
+export interface RenameResult {
+  outcome: 'renamed' | 'merged' | 'unchanged' | 'not_found'
+  from: string
+  to: string
+}
+
+// Postgres unique_violation — a concurrent add of the new name won the partial-unique index.
+export function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | null
+  return e?.code === '23505' || e?.cause?.code === '23505'
+}
+
+// Rename ONE open item ("change mlik to milk"). `from` is matched like a check-off (exact, then the
+// ONE open item with that loose key — an ambiguous or missing match changes nothing). `to` is the new
+// display text, clamped like an add. If `to` (exact-normalized, the add/dedupe key) is ALREADY open,
+// the old row is removed instead — the list never holds two copies. Group-scoped; attributed.
+export async function renameItem(
+  db: Database,
+  input: { groupId: string; from: string; to: string; renamedBy: string | null; listName?: string },
+): Promise<RenameResult> {
+  const listName = input.listName ?? DEFAULT_LIST
+  const fromDisplay = input.from.trim().slice(0, MAX_ITEM_LEN)
+  const toDisplay = input.to.trim().slice(0, MAX_ITEM_LEN)
+  const toNorm = normalizeItem(toDisplay)
+  const fromNorm = normalizeItem(fromDisplay)
+  if (!fromNorm || !toNorm) return { outcome: 'not_found', from: fromDisplay, to: toDisplay }
+
+  // Find the ONE open row `from` names.
+  const exact = await db
+    .select({ id: listItems.id, item: listItems.item })
+    .from(listItems)
+    .where(and(openWhere(input.groupId, listName), eq(listItems.itemNormalized, fromNorm)))
+  const hits = exact.length ? exact : ((await openByLooseKey(db, input.groupId, listName)).get(looseItemKey(fromDisplay)) ?? [])
+  if (hits.length !== 1) return { outcome: 'not_found', from: fromDisplay, to: toDisplay }
+  const row = hits[0]
+  if (row.item === toDisplay) return { outcome: 'unchanged', from: row.item, to: row.item }
+
+  const merge = async (): Promise<RenameResult> => {
+    const [kept] = await db
+      .select({ item: listItems.item })
+      .from(listItems)
+      .where(and(openWhere(input.groupId, listName), eq(listItems.itemNormalized, toNorm)))
+    if (!kept) return { outcome: 'not_found', from: row.item, to: toDisplay } // the open copy left meanwhile
+    const [gone] = await db
+      .update(listItems)
+      .set(closeSet({ kind: 'remove' }, input.renamedBy))
+      .where(and(eq(listItems.id, row.id), openWhere(input.groupId, listName)))
+      .returning({ id: listItems.id })
+    return gone ? { outcome: 'merged', from: row.item, to: kept.item } : { outcome: 'not_found', from: row.item, to: toDisplay }
+  }
+
+  // A DIFFERENT open row already reads `to` → merge. (Same normalized key = a display-only fix, e.g.
+  // "Milk" → "milk": the row itself is the open copy, so it is renamed in place.)
+  if (toNorm !== normalizeItem(row.item)) {
+    const [other] = await db
+      .select({ id: listItems.id })
+      .from(listItems)
+      .where(and(openWhere(input.groupId, listName), eq(listItems.itemNormalized, toNorm)))
+    if (other) return merge()
+  }
+  try {
+    const [renamed] = await db
+      .update(listItems)
+      .set({ item: toDisplay, itemNormalized: toNorm, renamedBy: input.renamedBy, renamedAt: clockNow() })
+      .where(and(eq(listItems.id, row.id), openWhere(input.groupId, listName)))
+      .returning({ item: listItems.item })
+    // The row left the open list between the read and the write (ticked / removed concurrently).
+    return renamed ? { outcome: 'renamed', from: row.item, to: renamed.item } : { outcome: 'not_found', from: row.item, to: toDisplay }
+  } catch (err) {
+    // A concurrent add of `to` won the partial-unique index between the check and the write → merge.
+    if (isUniqueViolation(err)) return merge()
+    throw err
+  }
 }
 
 // The current OPEN list for a scope (unbought items), oldest first.
@@ -173,8 +283,6 @@ export async function currentList(db: Database, groupId: string, listName: strin
   return db
     .select({ id: listItems.id, item: listItems.item, addedBy: listItems.addedBy, createdAt: listItems.createdAt })
     .from(listItems)
-    .where(
-      and(eq(listItems.groupId, groupId), eq(listItems.listName, listName), eq(listItems.isActive, true), isNull(listItems.checkedAt)),
-    )
+    .where(openWhere(groupId, listName))
     .orderBy(asc(listItems.createdAt))
 }

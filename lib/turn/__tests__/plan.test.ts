@@ -77,7 +77,7 @@ const plan = (c: Case): Plan => planResponse(ctx(c), c.policy ?? POLICY)
 
 const CAPTURED: TurnOutcome['captured'] = { memoryItemId: 'n1', factIds: [], learned: [], rejected: [] }
 const set = (): TurnOutcome['reminder'] => ({ status: 'set', fireAt: new Date('2026-10-02T18:00:00Z'), content: 'bins', deliverTo: 'house' })
-const list = (o: Partial<NonNullable<TurnOutcome['list']>>): TurnOutcome['list'] => ({ op: 'add', added: [], already: [], checkedOff: [], notFound: [], open: [], ...o })
+const list = (o: Partial<NonNullable<TurnOutcome['list']>>): TurnOutcome['list'] => ({ op: 'add', added: [], already: [], checkedOff: [], removed: [], renamed: [], notFound: [], open: [], ...o })
 const DIRECTED_WHYS: DirectedWhy[] = ['mention', 'reply_to_baumy', 'name', 'console_topic']
 
 describe('planResponse — pause and trust', () => {
@@ -177,6 +177,17 @@ describe('planResponse — list (K4 store outcome, A10 continue to the question)
     expect(plan({ outcome: { list: list({ op: 'checkoff', checkedOff: ['milk'] }) } })).toEqual({ kind: 'react', emoji: '👍', row: 'list' })
     expect(plan({ outcome: { list: list({ op: 'checkoff', checkedOff: ['milk'], notFound: ['eggs'] }) } })).toEqual({ kind: 'list-words', row: 'list' })
     expect(plan({ outcome: { list: list({ op: 'checkoff', notFound: ['eggs'] }) } })).toEqual({ kind: 'list-words', row: 'list' })
+  })
+  it('group remove / rename (issue #23): all changed → 👍; anything not found → words', () => {
+    expect(plan({ outcome: { list: list({ op: 'remove', removed: ['milk'] }) } })).toEqual({ kind: 'react', emoji: '👍', row: 'list' })
+    expect(plan({ outcome: { list: list({ op: 'remove', removed: ['milk'], notFound: ['eggs'] }) } })).toEqual({ kind: 'list-words', row: 'list' })
+    expect(plan({ outcome: { list: list({ op: 'remove', notFound: ['eggs'] }) } })).toEqual({ kind: 'list-words', row: 'list' })
+    const renamed = [{ from: 'mlik', to: 'milk', merged: false }]
+    expect(plan({ outcome: { list: list({ op: 'rename', renamed }) } })).toEqual({ kind: 'react', emoji: '👍', row: 'list' })
+    expect(plan({ outcome: { list: list({ op: 'rename', notFound: ['mlik'] }) } })).toEqual({ kind: 'list-words', row: 'list' })
+    // a check-off's count never stands in for a remove's
+    expect(plan({ outcome: { list: list({ op: 'remove', checkedOff: ['milk'] }) } })).toEqual({ kind: 'list-words', row: 'list' })
+    expect(plan({ lane: 'member_dm', outcome: { list: list({ op: 'remove', removed: ['milk'] }) } })).toMatchObject({ kind: 'list-words' })
   })
   it('a query (either lane) and every DM op → words', () => {
     expect(plan({ verdict: V({ intent: 'question', list: 'query' }), outcome: { list: list({ op: 'query' }) } })).toMatchObject({ kind: 'list-words' })

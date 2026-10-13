@@ -34,6 +34,14 @@ describe('classify (triage, spec §2)', () => {
 
   // C13: the old 'think' tier retrieved and answered exactly like 'quick' — it is gone from the schema,
   // so the router's "needs history" signal is the one tier that changes anything ('deep').
+  // Issue #23: "remove milk" / "change mlik to milk" route as their own list ops, and the prompt says so.
+  it('list routing includes remove and rename', async () => {
+    const { classifierVerdict } = await import('@/lib/ai/classify')
+    expect(classifierVerdict.shape.list.options).toEqual(['add', 'checkoff', 'remove', 'rename', 'query', 'none'])
+    expect(TRIAGE_SYSTEM).toMatch(/"remove" if something comes off it WITHOUT being bought/)
+    expect(TRIAGE_SYSTEM).toMatch(/"rename" if an item on it should be corrected/)
+  })
+
   it('tier is quick | deep only (C13)', async () => {
     const { classifierVerdict } = await import('@/lib/ai/classify')
     expect(classifierVerdict.shape.tier.options).toEqual(['quick', 'deep'])

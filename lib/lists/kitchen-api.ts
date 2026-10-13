@@ -5,7 +5,7 @@ import { members } from '@/db/schema'
 import { getHouseChatId } from '@/lib/identity/house'
 import { ensureRegistered } from '@/lib/memory/write'
 import { tokenMatches } from '@/lib/telegram/verify'
-import { addListItems, checkOffItems, currentList, type ListRow } from '@/lib/lists/store'
+import { addListItems, checkOffItems, currentList, removeItems, renameItem, type ListRow } from '@/lib/lists/store'
 import { requestShoppingRepost } from '@/lib/lists/board'
 
 // The kitchen shopping API (docs/spec/shopping-list.md §Kitchen API): the house kiosk (Baumy
@@ -59,16 +59,26 @@ const WriteBody = z.object({
 })
 type WriteBody = z.infer<typeof WriteBody>
 
-async function parseWrite(req: Request): Promise<WriteBody | null> {
+// A kiosk rename (issue #23): ONE item, what it reads now → what it should read.
+const RenameBody = z.object({
+  from: z.string().trim().min(1).max(200),
+  to: z.string().trim().min(1).max(200),
+  telegramUserId: WriteBody.shape.telegramUserId,
+})
+type RenameBody = z.infer<typeof RenameBody>
+
+async function parseBody<T>(req: Request, schema: z.ZodType<T, z.ZodTypeDef, unknown>): Promise<T | null> {
   let raw: unknown
   try {
     raw = await req.json()
   } catch {
     return null
   }
-  const parsed = WriteBody.safeParse(raw)
+  const parsed = schema.safeParse(raw)
   return parsed.success ? parsed.data : null
 }
+const parseWrite = (req: Request) => parseBody<WriteBody>(req, WriteBody)
+const BAD_WRITE = { ok: false, error: 'bad_request', message: 'Expected { items: string[1..30], telegramUserId? }.' }
 
 // v1 is one house (the members PK is global — see houseScopeForOrigin's MULTI-HOUSE SEAM), so a
 // mapped member is simply an ACTIVE roster row, the same rule loadRoster applies. Anything else → null.
@@ -93,7 +103,7 @@ export async function handleList(req: Request): Promise<Response> {
 export async function handleAdd(req: Request): Promise<Response> {
   return withKitchenHouse(req, async (db, scope) => {
     const body = await parseWrite(req)
-    if (!body) return json({ ok: false, error: 'bad_request', message: 'Expected { items: string[1..30], telegramUserId? }.' }, 400)
+    if (!body) return json(BAD_WRITE, 400)
     const by = await mapMember(db, body.telegramUserId)
     // The list row FKs the house chat. Registering it is idempotent — the same call the Telegram
     // lane makes — and matters when the scope is the BAUMY_HOUSE_CHAT_ID pin.
@@ -108,10 +118,35 @@ export async function handleAdd(req: Request): Promise<Response> {
 export async function handleCheckOff(req: Request): Promise<Response> {
   return withKitchenHouse(req, async (db, scope) => {
     const body = await parseWrite(req)
-    if (!body) return json({ ok: false, error: 'bad_request', message: 'Expected { items: string[1..30], telegramUserId? }.' }, 400)
+    if (!body) return json(BAD_WRITE, 400)
     const by = await mapMember(db, body.telegramUserId)
     const res = await checkOffItems(db, { groupId: scope, items: body.items, checkedBy: by })
     if (res.checkedOff.length > 0) await requestShoppingRepost(scope)
     return json({ ok: true, checkedOff: res.checkedOff, notFound: res.notFound, attributedTo: by, items: view(await currentList(db, scope)) })
+  })
+}
+
+// Remove items WITHOUT buying them (issue #23): soft (is_active=false), never a bought record.
+export async function handleRemove(req: Request): Promise<Response> {
+  return withKitchenHouse(req, async (db, scope) => {
+    const body = await parseWrite(req)
+    if (!body) return json(BAD_WRITE, 400)
+    const by = await mapMember(db, body.telegramUserId)
+    const res = await removeItems(db, { groupId: scope, items: body.items, removedBy: by })
+    if (res.removed.length > 0) await requestShoppingRepost(scope)
+    return json({ ok: true, removed: res.removed, notFound: res.notFound, attributedTo: by, items: view(await currentList(db, scope)) })
+  })
+}
+
+// Rename ONE open item (issue #23). `outcome`: renamed | merged (the new name was already open, so the
+// old row was removed) | unchanged | not_found (no open item, or more than one, matches `from`).
+export async function handleRename(req: Request): Promise<Response> {
+  return withKitchenHouse(req, async (db, scope) => {
+    const body = await parseBody<RenameBody>(req, RenameBody)
+    if (!body) return json({ ok: false, error: 'bad_request', message: 'Expected { from: string, to: string, telegramUserId? }.' }, 400)
+    const by = await mapMember(db, body.telegramUserId)
+    const res = await renameItem(db, { groupId: scope, from: body.from, to: body.to, renamedBy: by })
+    if (res.outcome === 'renamed' || res.outcome === 'merged') await requestShoppingRepost(scope)
+    return json({ ok: true, outcome: res.outcome, from: res.from, to: res.to, attributedTo: by, items: view(await currentList(db, scope)) })
   })
 }

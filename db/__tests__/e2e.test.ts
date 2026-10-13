@@ -13,7 +13,7 @@ import { findMemoryToForget, forgetMemory, redactValues } from '@/lib/memory/for
 import { appendInbound, recentTurns, scrubWindow, purgeWindow, linkProduced, withholdProducing, EXPIRED_WINDOW_TEXT } from '@/lib/turn/window'
 import { createReminder, claimReminder, markSent, releaseReminder, scheduleNextOccurrence, loadSeriesRow, repairRecurringSeries, orphanedEventReminders, reminderDestination } from '@/lib/reminders/store'
 import { lookupEdit, withdrawForEdit, settleEditedFacts } from '@/lib/turn/edit'
-import { addListItems, checkOffItems, currentList } from '@/lib/lists/store'
+import { addListItems, checkOffItems, currentList, removeItems, renameItem, isUniqueViolation } from '@/lib/lists/store'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { loadResponsePolicy, setGlobalEnabled, addMutedTopic, removeMutedTopic } from '@/lib/policy'
 import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/roster'
@@ -263,6 +263,32 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     const re = await addListItems(h.db, { groupId: GROUP, items: ['oat milk'], addedBy: null })
     expect(re.added).toEqual(['oat milk'])
     expect((await currentList(h.db, GROUP)).map((r) => r.item).sort()).toEqual(['bin bags', 'oat milk'])
+  })
+
+  it('shopping list: migration 0025 — remove (soft, not bought) and rename/merge on real Postgres (issue #23)', async () => {
+    const G = '-100e2eListEdit'
+    await ensureRegistered(h.db, G, null)
+    const cols = await h.pool.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_name = 'baumy_list_items' AND column_name IN ('removed_by','removed_at','renamed_by','renamed_at') ORDER BY 1",
+    )
+    expect(cols.rows.map((r: { column_name: string }) => r.column_name)).toEqual(['removed_at', 'removed_by', 'renamed_at', 'renamed_by'])
+
+    await addListItems(h.db, { groupId: G, items: ['milk', 'mlik', 'bred', 'tea'], addedBy: null })
+    expect(await renameItem(h.db, { groupId: G, from: 'bred', to: 'bread', renamedBy: null })).toEqual({ outcome: 'renamed', from: 'bred', to: 'bread' })
+    expect(await renameItem(h.db, { groupId: G, from: 'mlik', to: 'milk', renamedBy: null })).toEqual({ outcome: 'merged', from: 'mlik', to: 'milk' })
+    expect((await removeItems(h.db, { groupId: G, items: ['tea'], removedBy: null })).removed).toEqual(['tea'])
+    expect((await currentList(h.db, G)).map((r) => r.item).sort()).toEqual(['bread', 'milk'])
+    const gone = await h.pool.query("SELECT item, is_active, checked_at, removed_at FROM baumy_list_items WHERE group_id = $1 AND NOT is_active ORDER BY item", [G])
+    expect(gone.rows.map((r: { item: string }) => r.item)).toEqual(['mlik', 'tea'])
+    for (const r of gone.rows as { checked_at: Date | null; removed_at: Date | null }[]) {
+      expect(r.checked_at).toBeNull() // never a bought record
+      expect(r.removed_at).not.toBeNull()
+    }
+    // the race fallback: real Postgres's unique_violation on the partial index is recognised
+    const err = await h.pool
+      .query("UPDATE baumy_list_items SET item_normalized = 'milk' WHERE group_id = $1 AND item_normalized = 'bread'", [G])
+      .then(() => null, (e: unknown) => e)
+    expect(isUniqueViolation(err)).toBe(true)
   })
 
   it('kitchen API: concurrent adds of the same item leave ONE open row on real Postgres (the partial-unique index holds)', async () => {

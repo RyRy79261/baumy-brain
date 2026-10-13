@@ -7,13 +7,18 @@ import { degradeOnMalformed } from './errors'
 // House shopping-list op extraction (docs/spec/shopping-list.md). The cheap classifier FLAGS a
 // message as a list op (routing only); this pulls the concrete op + item names. The message is
 // untrusted DATA — the structured schema IS the firewall: a compromised model can at most return
-// an op enum + item strings, which deterministic code then disposes against the group-scoped table.
+// an op enum + item strings (and from → to pairs for a rename), which deterministic code then disposes
+// against the group-scoped table.
 export const listExtraction = z.object({
-  op: z.enum(['add', 'checkoff', 'query', 'none']),
+  op: z.enum(['add', 'checkoff', 'remove', 'rename', 'query', 'none']),
   // Loose ON PURPOSE: a single odd element (blank, over-long) must NOT reject the WHOLE op and
   // silently drop a valid add (best-effort). The store's dedupeInput is the precision gate — it
   // trims, drops blanks, clamps length, and caps count.
   items: z.array(z.string()),
+  // A rename ("change mlik to milk", issue #23): what is on the list now → what it should read. Only
+  // ever item TEXT — the store matches `from` to a row with the check-off rule (code disposes).
+  // Optional: an add / check-off / remove / query has none.
+  renames: z.array(z.object({ from: z.string(), to: z.string() })).optional(),
 })
 export type ListExtraction = z.infer<typeof listExtraction>
 

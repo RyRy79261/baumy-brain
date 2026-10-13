@@ -4,7 +4,7 @@ import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { listItems } from '@/db/schema'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
-import { addListItems, checkOffItems, currentList, normalizeItem, looseItemKey } from '@/lib/lists/store'
+import { addListItems, checkOffItems, currentList, normalizeItem, looseItemKey, removeItems, renameItem, isUniqueViolation } from '@/lib/lists/store'
 
 const A = '-100listA'
 const B = '-100listB'
@@ -127,5 +127,128 @@ describe('house shopping list — store (group-scoped, precision-first)', () => 
     expect(r.added.some((x) => x.length === 80)).toBe(true) // the over-long item was clamped, not rejected
     expect(r.added.length).toBeLessThanOrEqual(30) // runaway batch capped
     expect((await currentList(db, A)).length).toBeLessThanOrEqual(30)
+  })
+})
+
+// Issue #23: remove WITHOUT buying, and rename. Same group scope, same exact-then-unambiguous match.
+describe('house shopping list — remove and rename (issue #23)', () => {
+  const row = async (db: Awaited<ReturnType<typeof makeTestDb>>, groupId: string, n: string) =>
+    db.select().from(listItems).where(and(eq(listItems.groupId, groupId), eq(listItems.itemNormalized, n)))
+
+  it('remove is a SOFT remove — is_active=false, attributed, and never a bought record', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, A, null)
+    await upsertMember(db, A, '810', 'Ryan', 'member')
+    await addListItems(db, { groupId: A, items: ['milk', 'eggs', 'bin bags'], addedBy: null })
+    const res = await removeItems(db, { groupId: A, items: ['milk', 'the eggs', 'nutmeg'], removedBy: '810' })
+    expect(sorted(res.removed)).toEqual(['eggs', 'milk'])
+    expect(res.notFound).toEqual(['nutmeg'])
+    expect((await currentList(db, A)).map((r) => r.item)).toEqual(['bin bags'])
+    const [milk] = await row(db, A, 'milk')
+    expect(milk).toBeDefined() // still there — soft
+    expect(milk.isActive).toBe(false)
+    expect(milk.removedBy).toBe('810')
+    expect(milk.removedAt).not.toBeNull()
+    expect(milk.checkedAt).toBeNull() // NOT bought
+    expect(milk.checkedBy).toBeNull()
+    // a removed item can go back on as a fresh open row
+    expect((await addListItems(db, { groupId: A, items: ['milk'], addedBy: null })).added).toEqual(['milk'])
+  })
+
+  it('remove leaves an ambiguous loose match alone, and never touches another house', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, A, null)
+    await ensureRegistered(db, B, null)
+    await addListItems(db, { groupId: A, items: ['sponge', 'sponges', 'almond milk'], addedBy: null })
+    await addListItems(db, { groupId: B, items: ['cheese'], addedBy: null })
+    const res = await removeItems(db, { groupId: A, items: ['a sponge', 'milk', 'cheese'], removedBy: null })
+    expect(res.removed).toEqual([])
+    expect(sorted(res.notFound)).toEqual(['a sponge', 'cheese', 'milk'])
+    expect(sorted((await currentList(db, A)).map((r) => r.item))).toEqual(['almond milk', 'sponge', 'sponges'])
+    expect((await currentList(db, B)).map((r) => r.item)).toEqual(['cheese'])
+  })
+
+  it('rename keeps the row (id, added_by), changes item + its key, and is attributed', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, A, null)
+    await upsertMember(db, A, '810', 'Ryan', 'member')
+    await upsertMember(db, A, '820', 'Marco', 'member')
+    await addListItems(db, { groupId: A, items: ['mlik', 'eggs'], addedBy: '810' })
+    const [before] = await row(db, A, 'mlik')
+    expect(await renameItem(db, { groupId: A, from: 'mlik', to: 'Milk', renamedBy: '820' })).toEqual({ outcome: 'renamed', from: 'mlik', to: 'Milk' })
+    const [after] = await row(db, A, 'milk')
+    expect(after.id).toBe(before.id)
+    expect(after.item).toBe('Milk')
+    expect(after.addedBy).toBe('810')
+    expect(after.renamedBy).toBe('820')
+    expect(after.renamedAt).not.toBeNull()
+    expect(await row(db, A, 'mlik')).toHaveLength(0)
+    expect(sorted((await currentList(db, A)).map((r) => r.item))).toEqual(['Milk', 'eggs'])
+    // a display-only fix (same key) renames in place; the very same text changes nothing
+    expect(await renameItem(db, { groupId: A, from: 'milk', to: 'milk', renamedBy: null })).toEqual({ outcome: 'renamed', from: 'Milk', to: 'milk' })
+    expect(await renameItem(db, { groupId: A, from: 'milk', to: 'milk', renamedBy: null })).toEqual({ outcome: 'unchanged', from: 'milk', to: 'milk' })
+  })
+
+  it('rename onto a name that is already open MERGES: the old row is removed, never a second copy', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, A, null)
+    await upsertMember(db, A, '810', 'Ryan', 'member')
+    await addListItems(db, { groupId: A, items: ['milk', 'mlik'], addedBy: null })
+    const res = await renameItem(db, { groupId: A, from: 'mlik', to: 'MILK', renamedBy: '810' })
+    expect(res).toEqual({ outcome: 'merged', from: 'mlik', to: 'milk' })
+    expect((await currentList(db, A)).map((r) => r.item)).toEqual(['milk'])
+    const [old] = await row(db, A, 'mlik')
+    expect(old.isActive).toBe(false)
+    expect(old.removedBy).toBe('810')
+    expect(old.checkedAt).toBeNull() // a merge is not a purchase
+  })
+
+  it('rename changes nothing for a missing or ambiguous match, and stays inside the scope', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, A, null)
+    await ensureRegistered(db, B, null)
+    await addListItems(db, { groupId: A, items: ['sponge', 'sponges', 'egg'], addedBy: null })
+    await addListItems(db, { groupId: B, items: ['cheese'], addedBy: null })
+    expect(await renameItem(db, { groupId: A, from: 'a sponge', to: 'scourer', renamedBy: null })).toEqual({ outcome: 'not_found', from: 'a sponge', to: 'scourer' })
+    expect(await renameItem(db, { groupId: A, from: 'nutmeg', to: 'mace', renamedBy: null })).toMatchObject({ outcome: 'not_found' })
+    expect(await renameItem(db, { groupId: A, from: 'cheese', to: 'brie', renamedBy: null })).toMatchObject({ outcome: 'not_found' })
+    expect(await renameItem(db, { groupId: A, from: 'egg', to: '   ', renamedBy: null })).toMatchObject({ outcome: 'not_found' })
+    expect(sorted((await currentList(db, A)).map((r) => r.item))).toEqual(['egg', 'sponge', 'sponges'])
+    expect((await currentList(db, B)).map((r) => r.item)).toEqual(['cheese'])
+    // the unambiguous loose match does rename: "the eggs" → the one open "egg"
+    expect(await renameItem(db, { groupId: A, from: 'the eggs', to: 'free-range eggs', renamedBy: null })).toEqual({
+      outcome: 'renamed',
+      from: 'egg',
+      to: 'free-range eggs',
+    })
+  })
+
+  it('a checked-off or removed row is never renamed or removed again', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, A, null)
+    await addListItems(db, { groupId: A, items: ['milk', 'tea'], addedBy: null })
+    await checkOffItems(db, { groupId: A, items: ['milk'], checkedBy: null })
+    await removeItems(db, { groupId: A, items: ['tea'], removedBy: null })
+    expect(await renameItem(db, { groupId: A, from: 'milk', to: 'oat milk', renamedBy: null })).toMatchObject({ outcome: 'not_found' })
+    expect((await removeItems(db, { groupId: A, items: ['tea', 'milk'], removedBy: null })).removed).toEqual([])
+    const [milk] = await row(db, A, 'milk')
+    expect(milk.isActive).toBe(true) // still the bought record, untouched
+    expect(milk.checkedAt).not.toBeNull()
+  })
+
+  // renameItem's race fallback (a concurrent add of the new name wins the partial-unique index between
+  // its check and its write → merge) hinges on recognising the driver's unique_violation.
+  it('recognises the partial-unique violation a raced rename would hit', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, A, null)
+    await addListItems(db, { groupId: A, items: ['milk', 'mlik'], addedBy: null })
+    const err = await db
+      .update(listItems)
+      .set({ itemNormalized: 'milk' })
+      .where(eq(listItems.itemNormalized, 'mlik'))
+      .then(() => null, (e: unknown) => e)
+    expect(err).not.toBeNull()
+    expect(isUniqueViolation(err)).toBe(true)
+    expect(isUniqueViolation(new Error('boom'))).toBe(false)
   })
 })

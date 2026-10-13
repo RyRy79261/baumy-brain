@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { joinAnd, addAck, checkoffAck, renderList } from '@/lib/lists/format'
+import { joinAnd, addAck, checkoffAck, removeAck, renameAck, renderList } from '@/lib/lists/format'
 
 describe('list acks — deterministic, in Baumy voice', () => {
   it('joinAnd reads naturally at 0/1/2/3 items', () => {
@@ -59,6 +59,30 @@ describe('list acks — deterministic, in Baumy voice', () => {
       expect(s).toContain('• bin bags')
       expect(s).toContain('• coffee')
       expect(s).not.toContain('**') // Telegram plain text — never markdown
+    })
+  })
+
+  describe('removeAck (issue #23)', () => {
+    it('says what came off — never "bought" — and what is left', () => {
+      const s = removeAck(['milk'], [], ['eggs'])
+      expect(s).toBe('Took milk off the list. 1 left: eggs.')
+      expect(s).not.toMatch(/bought|checked/i)
+      expect(removeAck(['milk'], [], [])).toContain("The list's empty now")
+    })
+    it('names what was not on the list; nothing found → nothing taken off', () => {
+      expect(removeAck(['milk'], ['nutmeg'], [])).toContain('Couldn\'t find "nutmeg" on it though')
+      expect(removeAck([], ['nutmeg'], ['milk'])).toBe('Couldn\'t find "nutmeg" on the list — nothing taken off. 😼')
+    })
+  })
+
+  describe('renameAck (issue #23)', () => {
+    it('a rename, and a merge said as such', () => {
+      expect(renameAck([{ from: 'mlik', to: 'milk', merged: false }], [], ['milk'])).toBe('Changed "mlik" to "milk". 1 left: milk.')
+      expect(renameAck([{ from: 'mlik', to: 'milk', merged: true }], [], ['milk'])).toContain('"milk" was already on the list, so I took "mlik" off.')
+    })
+    it('not found → says so and that nothing changed', () => {
+      expect(renameAck([], ['mlik'], ['milk'])).toBe('Couldn\'t find "mlik" on the list — nothing changed. 😼')
+      expect(renameAck([{ from: 'bred', to: 'bread', merged: false }], ['mlik'], ['bread'])).toContain('Couldn\'t find "mlik" on the list though.')
     })
   })
 })
