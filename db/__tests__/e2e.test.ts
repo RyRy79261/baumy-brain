@@ -406,23 +406,32 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     }
   })
 
-  it('live list (issue #25): concurrent taps on one item serialise on the row lock — every tap flips once, none is lost (real Postgres)', async () => {
+  it('live list (issue #25): N concurrent "tick" taps on one item tick it ONCE — the rest are "already ticked" (real Postgres)', async () => {
     const LIVE = '-100e2eLive'
     await ensureRegistered(h.db, LIVE, null)
     await addListItems(h.db, { groupId: LIVE, items: ['ginger'], addedBy: null })
     const [{ id }] = await h.db.select({ id: listItems.id }).from(listItems).where(and(eq(listItems.groupId, LIVE), eq(listItems.item, 'ginger')))
-    // Five taps at once over the real pool (separate connections): Postgres re-evaluates each UPDATE's
-    // CASE on the row as the previous one left it, so they alternate. An odd number leaves it ticked.
-    const taps = await Promise.all([1, 2, 3, 4, 5].map(() => toggleListItem(h.db, { groupId: LIVE, itemId: id, by: null })))
+    // Five housemates tap the same ☐ at once, over the real pool (separate connections). Each UPDATE
+    // SETS the ticked state under a `checked_at IS NULL` guard: Postgres re-checks the guard on the row
+    // the first tap left, so exactly one changes it and the others find nothing to do.
+    const taps = await Promise.all([1, 2, 3, 4, 5].map(() => toggleListItem(h.db, { groupId: LIVE, itemId: id, by: null, want: 'tick' })))
     const outcomes = taps.map((t) => t.outcome)
-    expect(outcomes.filter((o) => o === 'ticked')).toHaveLength(3)
-    expect(outcomes.filter((o) => o === 'unticked')).toHaveLength(2)
+    expect(outcomes.filter((o) => o === 'ticked')).toHaveLength(1)
+    expect(outcomes.filter((o) => o === 'already_ticked')).toHaveLength(4)
+    expect((await liveListRows(h.db, LIVE)).map((r) => [r.item, r.done])).toEqual([['ginger', true]])
+    // …and five "untick" taps at once put it back once.
+    const back = await Promise.all([1, 2, 3, 4, 5].map(() => toggleListItem(h.db, { groupId: LIVE, itemId: id, by: null, want: 'untick' })))
+    expect(back.filter((t) => t.outcome === 'unticked')).toHaveLength(1)
+    expect(back.filter((t) => t.outcome === 'already_unticked')).toHaveLength(4)
+    // Without a readable keyboard (want null) a tap flips; concurrent flips still serialise (none lost).
+    const flips = await Promise.all([1, 2, 3].map(() => toggleListItem(h.db, { groupId: LIVE, itemId: id, by: null })))
+    expect(flips.map((t) => t.outcome).sort()).toEqual(['ticked', 'ticked', 'unticked'])
     expect((await liveListRows(h.db, LIVE)).map((r) => [r.item, r.done])).toEqual([['ginger', true]])
     // A tap scoped to another house never touches the row.
     expect((await toggleListItem(h.db, { groupId: GROUP, itemId: id, by: null })).outcome).toBe('gone')
     // Re-opening into an open re-added copy: the unique index refuses, the done row is cleared instead.
     await addListItems(h.db, { groupId: LIVE, items: ['ginger'], addedBy: null })
-    expect((await toggleListItem(h.db, { groupId: LIVE, itemId: id, by: null })).outcome).toBe('already_open')
+    expect((await toggleListItem(h.db, { groupId: LIVE, itemId: id, by: null, want: 'untick' })).outcome).toBe('readded')
     expect((await liveListRows(h.db, LIVE)).map((r) => [r.item, r.done])).toEqual([['ginger', false]])
     expect(await clearDoneItems(h.db, { groupId: LIVE })).toBe(0)
   })

@@ -21,7 +21,8 @@ vi.mock('@/lib/inngest/client', async (o) => {
 })
 
 const { runCallback } = await import('@/lib/inngest/functions/callback')
-const { STALE_LIST_TOAST } = await import('@/lib/lists/tap')
+const { STALE_LIST_TOAST, FAILED_TAP_TOAST } = await import('@/lib/lists/tap')
+const { answerFailedCallback } = await import('@/lib/inngest/functions/callback')
 
 const HOUSE = '-100tapHouse'
 const OTHER = '-100tapOther'
@@ -32,8 +33,21 @@ const LIVE_ID = 4242
 const step = { run: <T>(_id: string, fn: () => Promise<T>) => fn() }
 
 let seq = 0
-async function tap(fromId: number, data: string, opts: { chatId?: string; messageId?: number | null; step?: typeof step } = {}) {
-  const ev = { data: { callbackId: `cb${++seq}`, fromId, chatId: opts.chatId ?? HOUSE, messageId: opts.messageId === undefined ? LIVE_ID : opts.messageId, data } }
+async function tap(
+  fromId: number,
+  data: string,
+  opts: { chatId?: string; messageId?: number | null; step?: typeof step; want?: 'tick' | 'untick' | null; callbackId?: string } = {},
+) {
+  const ev = {
+    data: {
+      callbackId: opts.callbackId ?? `cb${++seq}`,
+      fromId,
+      chatId: opts.chatId ?? HOUSE,
+      messageId: opts.messageId === undefined ? LIVE_ID : opts.messageId,
+      data,
+      ...(opts.want !== undefined ? { want: opts.want } : {}),
+    },
+  }
   const { result, sent } = await captureOutbound(() => withSimulatedTime(new Date('2026-10-13T16:05:00Z'), () => runCallback(ev, opts.step ?? step)))
   return { result: result as Record<string, unknown>, sent }
 }
@@ -152,6 +166,76 @@ describe('a tap on an item (shop:chk:<id>)', () => {
     const edit = sent.find((m) => m.kind === 'edit')
     expect(edit?.meta).toBe(String(LIVE_ID))
     expect(edit?.keyboard?.flat().map((b) => b.text)).toEqual(['☐ milk', '☑ Ginger', '🧹 Clear done', '🔄 Refresh'])
+  })
+})
+
+describe('an item tap with `want` (the state the tapped button showed) is idempotent', () => {
+  it('two housemates tap the same ☐ → ticked ONCE; the second hears "already ticked", and the list still re-renders', async () => {
+    const ginger = await idOf(HOUSE, 'Ginger')
+    const a = await tap(RYAN, `shop:chk:${ginger}`, { want: 'tick' })
+    const b = await tap(CHLOE, `shop:chk:${ginger}`, { want: 'tick' })
+    expect([a.result, b.result]).toEqual([{ toggled: 'ticked' }, { toggled: 'already_ticked' }])
+    expect(toastOf(b.sent)).toBe('Ginger is already ticked')
+    expect(await doneOf(ginger)).toBe(true) // NOT flipped back
+    const [cfg] = await db().select({ by: houseConfig.shoppingUpdatedBy }).from(houseConfig)
+    expect(cfg.by).toBe(String(RYAN)) // the no-op tap did not restamp
+    expect(renders()).toHaveLength(2) // both re-render: the second tapper's stale ☐ is brought up to date
+    // ☑ tapped twice → back on the list once, then "already on the list"
+    expect((await tap(CHLOE, `shop:chk:${ginger}`, { want: 'untick' })).result).toEqual({ toggled: 'unticked' })
+    const again = await tap(RYAN, `shop:chk:${ginger}`, { want: 'untick' })
+    expect(toastOf(again.sent)).toBe('Ginger is already on the list')
+    expect(await doneOf(ginger)).toBe(false)
+  })
+
+  it('no readable keyboard (want null) falls back to a flip', async () => {
+    const ginger = await idOf(HOUSE, 'Ginger')
+    await tap(RYAN, `shop:chk:${ginger}`, { want: null })
+    await tap(RYAN, `shop:chk:${ginger}`, { want: null })
+    expect(await doneOf(ginger)).toBe(false)
+  })
+})
+
+describe('the toast', () => {
+  it('a tap on the right message id in ANOTHER chat id is stale (chat and message must both match)', async () => {
+    const ginger = await idOf(HOUSE, 'Ginger')
+    await db().update(houseConfig).set({ liveChatId: '-100tapLive' }) // the house migrated: both ids are the house…
+    const { result } = await tap(RYAN, `shop:chk:${ginger}`, { chatId: '-100tapLive' }) // …but the list is stored under HOUSE
+    expect(result).toEqual({ ignored: 'stale-message' })
+    expect(await doneOf(ginger)).toBe(false)
+    expect((await tap(RYAN, `shop:chk:${ginger}`)).result).toEqual({ toggled: 'ticked' }) // the stored chat works
+  })
+
+  it('an Inngest replay answers the callback ONCE (the toast is a memoized step)', async () => {
+    const ginger = await idOf(HOUSE, 'Ginger')
+    const memo = new Map<string, unknown>()
+    const memoStep = { run: async <T>(id: string, fn: () => Promise<T>): Promise<T> => (memo.has(id) ? (memo.get(id) as T) : (memo.set(id, await fn()), memo.get(id) as T)) }
+    const first = await tap(RYAN, `shop:chk:${ginger}`, { step: memoStep, callbackId: 'cb-replay' })
+    const replay = await tap(RYAN, `shop:chk:${ginger}`, { step: memoStep, callbackId: 'cb-replay' })
+    expect(first.sent.filter((m) => m.kind === 'callback-answer')).toHaveLength(1)
+    expect(replay.sent.filter((m) => m.kind === 'callback-answer')).toHaveLength(0)
+  })
+
+  it('a failure before any toast still answers the callback ("try again"), and rethrows so Inngest retries', async () => {
+    const ginger = await idOf(HOUSE, 'Ginger')
+    const failing = { run: async <T>(id: string, fn: () => Promise<T>): Promise<T> => (id === 'shop-toggle' ? Promise.reject(new Error('db down')) : fn()) }
+    const ev = { data: { callbackId: 'cb-fail', fromId: RYAN, chatId: HOUSE, messageId: LIVE_ID, data: `shop:chk:${ginger}` } }
+    const { sent, result } = await captureOutbound(() => runCallback(ev, failing).catch((e: unknown) => e))
+    expect(result).toBeInstanceOf(Error)
+    expect(sent.filter((m) => m.kind === 'callback-answer').map((m) => m.text)).toEqual([FAILED_TAP_TOAST])
+  })
+
+  it('a failure AFTER the toast does not answer twice', async () => {
+    const ginger = await idOf(HOUSE, 'Ginger')
+    const failing = { run: async <T>(id: string, fn: () => Promise<T>): Promise<T> => (id === 'shop-render' ? Promise.reject(new Error('down')) : fn()) }
+    const ev = { data: { callbackId: 'cb-late', fromId: RYAN, chatId: HOUSE, messageId: LIVE_ID, data: `shop:chk:${ginger}` } }
+    const { sent } = await captureOutbound(() => runCallback(ev, failing).catch(() => null))
+    expect(sent.filter((m) => m.kind === 'callback-answer').map((m) => m.text)).toEqual(['✓ Ginger – ticked by Ryan'])
+  })
+
+  it('every callback that finally fails is answered by onFailure (best-effort, never throws)', async () => {
+    const { sent } = await captureOutbound(() => answerFailedCallback('cb-dead'))
+    expect(sent.map((m) => [m.kind, m.chatId, m.text])).toEqual([['callback-answer', 'cb-dead', FAILED_TAP_TOAST]])
+    await expect(answerFailedCallback(undefined)).resolves.toBeUndefined()
   })
 })
 

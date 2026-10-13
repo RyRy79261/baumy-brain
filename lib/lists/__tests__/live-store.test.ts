@@ -62,7 +62,7 @@ describe('liveListRows — what the live list shows', () => {
   })
 })
 
-describe('toggleListItem — one tap, one atomic UPDATE keyed on id + house', () => {
+describe('toggleListItem without `want` (the keyboard could not be read) — one atomic flip keyed on id + house', () => {
   it('ticks an open item (with who), then unticks it', async () => {
     const db = await house()
     await addListItems(db, { groupId: A, items: ['Ginger'], addedBy: null })
@@ -117,7 +117,7 @@ describe('toggleListItem — one tap, one atomic UPDATE keyed on id + house', ()
       ['milk', false],
       ['milk', true],
     ])
-    expect(await toggleListItem(db, { groupId: A, itemId: first, by: RYAN })).toEqual({ outcome: 'already_open', item: 'milk' })
+    expect(await toggleListItem(db, { groupId: A, itemId: first, by: RYAN })).toEqual({ outcome: 'readded', item: 'milk' })
     const rows = await liveListRows(db, A)
     expect(rows.map((r) => [r.item, r.done])).toEqual([['milk', false]])
     expect(rows[0].id).not.toBe(first)
@@ -132,6 +132,46 @@ describe('toggleListItem — one tap, one atomic UPDATE keyed on id + house', ()
     const [row] = await db.select().from(listItems).where(eq(listItems.id, id))
     expect(row.checkedAt).toBeNull()
     expect(row.checkedBy).toBeNull()
+  })
+})
+
+describe('toggleListItem with `want` — sets the state the tapped button showed (idempotent)', () => {
+  it('tick twice → ticked once, then "already ticked"; untick twice → unticked once, then "already unticked"', async () => {
+    const db = await house()
+    await addListItems(db, { groupId: A, items: ['Ginger'], addedBy: null })
+    const id = await idOf(db, A, 'Ginger')
+    expect(await toggleListItem(db, { groupId: A, itemId: id, by: RYAN, want: 'tick' })).toEqual({ outcome: 'ticked', item: 'Ginger' })
+    const [first] = await db.select().from(listItems).where(eq(listItems.id, id))
+    expect(await toggleListItem(db, { groupId: A, itemId: id, by: '222', want: 'tick' })).toEqual({ outcome: 'already_ticked', item: 'Ginger' })
+    const [second] = await db.select().from(listItems).where(eq(listItems.id, id))
+    expect(second.checkedAt).toEqual(first.checkedAt) // the second tick changed nothing — not even who
+    expect(second.checkedBy).toBe(RYAN)
+    expect(await toggleListItem(db, { groupId: A, itemId: id, by: RYAN, want: 'untick' })).toEqual({ outcome: 'unticked', item: 'Ginger' })
+    expect(await toggleListItem(db, { groupId: A, itemId: id, by: RYAN, want: 'untick' })).toEqual({ outcome: 'already_unticked', item: 'Ginger' })
+    expect((await liveListRows(db, A)).map((r) => [r.item, r.done])).toEqual([['Ginger', false]])
+  })
+
+  it('two ticks at once → ticked ONCE (one "ticked", one "already ticked")', async () => {
+    const db = await house()
+    await addListItems(db, { groupId: A, items: ['milk'], addedBy: null })
+    const id = await idOf(db, A, 'milk')
+    const both = await Promise.all([1, 2].map(() => toggleListItem(db, { groupId: A, itemId: id, by: RYAN, want: 'tick' })))
+    expect(both.map((r) => r.outcome).sort()).toEqual(['already_ticked', 'ticked'])
+    expect((await liveListRows(db, A)).map((r) => r.done)).toEqual([true])
+  })
+
+  it('still scoped to the house, still "gone" for a cleared row, still clears the done copy on a re-add', async () => {
+    const db = await house()
+    await addListItems(db, { groupId: B, items: ['caviar'], addedBy: null })
+    const caviar = await idOf(db, B, 'caviar')
+    expect(await toggleListItem(db, { groupId: A, itemId: caviar, by: RYAN, want: 'tick' })).toEqual({ outcome: 'gone', item: null })
+    expect((await liveListRows(db, B)).map((r) => r.done)).toEqual([false])
+    await addListItems(db, { groupId: A, items: ['milk'], addedBy: null })
+    const milk = await idOf(db, A, 'milk')
+    await toggleListItem(db, { groupId: A, itemId: milk, by: RYAN, want: 'tick' })
+    await addListItems(db, { groupId: A, items: ['milk'], addedBy: null })
+    expect((await toggleListItem(db, { groupId: A, itemId: milk, by: RYAN, want: 'untick' })).outcome).toBe('readded')
+    expect((await toggleListItem(db, { groupId: A, itemId: milk, by: RYAN, want: 'untick' })).outcome).toBe('gone') // cleared now
   })
 })
 

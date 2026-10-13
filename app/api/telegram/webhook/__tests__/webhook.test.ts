@@ -97,6 +97,21 @@ describe('telegram webhook — the fast-ack spine', () => {
     expect(sent.data.data).toBe('confirm:grant:abc')
   })
 
+  it('a live-list item tap forwards what the tapped button showed (☐ → tick, ☑ → untick) from the delivered keyboard', async () => {
+    const id = '00000000-0000-4000-8000-000000000001'
+    const keyboard = { inline_keyboard: [[{ text: '☐ Ginger', callback_data: `shop:chk:${id}` }], [{ text: '☑ milk', callback_data: 'shop:chk:00000000-0000-4000-8000-000000000002' }]] }
+    const tapOn = (data: string, markup: unknown, update_id: number) => ({
+      update_id,
+      callback_query: { id: `cbq-${update_id}`, from: { id: 100 }, message: { message_id: 55, chat: { id: Number(HOUSE), type: 'supergroup' }, reply_markup: markup }, data },
+    })
+    await POST(req(tapOn(`shop:chk:${id}`, keyboard, 20)))
+    await POST(req(tapOn('shop:chk:00000000-0000-4000-8000-000000000002', keyboard, 21)))
+    await POST(req(tapOn(`shop:chk:${id}`, undefined, 22))) // an inaccessible message: no keyboard
+    await POST(req(tapOn('confirm:grant:abc', keyboard, 23)))
+    const wants = send.mock.calls.map((c) => (c[0] as { data: { want?: unknown } }).data.want)
+    expect(wants).toEqual(['tick', 'untick', null, null])
+  })
+
   it('routes a my_chat_member update (bot add/remove) to owner capture, keyed on update_id', async () => {
     const update = {
       update_id: 11,

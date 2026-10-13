@@ -97,6 +97,12 @@ describe('scenario: the live shopping list', () => {
         e(labels(ed[0])).toEqual(['☐ oat milk', '☐ bin bags', '☑ coffee', '🧹 Clear done', '🔄 Refresh'])
         e(last(r).filter((x) => x.kind === 'message')).toHaveLength(0)
       }),
+      // Marco's screen still showed ☐ coffee and he tapped it a moment after Ryan: it stays ticked.
+      tapList('Marco', 'coffee', { want: 'tick' }),
+      check('a second tap on the same ☐ is a no-op: "already ticked", still ticked, the list re-rendered', (r, e) => {
+        e(toast(r)).toBe('coffee is already ticked')
+        e(labels(last(r).find((x) => x.kind === 'edit'))).toContain('☑ coffee')
+      }),
       tapList('Marco', 'Clear done'),
       check('Clear done: the ticked item leaves the list', (r, e) => {
         e(toast(r)).toBe('🧹 Cleared 1 done item')

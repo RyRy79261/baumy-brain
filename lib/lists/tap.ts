@@ -14,8 +14,9 @@ import type { TurnStep } from '@/lib/turn/step'
 //   • the tapped message must be in the house chat AND be the stored live list — the house scope comes
 //     from config, never from the button, and an item id from another house's row matches nothing
 //     (toggleListItem keys on id + scope);
-//   • the change is one memoized step (an Inngest retry never toggles twice), then a short toast, then a
-//     render request (no debounce — the tapper wants to see the tick).
+//   • an item tap SETS the state its button showed asked for (☐ → tick, ☑ → untick — read by the webhook
+//     from the keyboard Telegram delivered), so a double tap is idempotent; the change is one memoized
+//     step, then a short toast (its own step), then a render request (no debounce).
 // Like every list write it auto-commits (capture tier, I5): there is no confirm step on a tick.
 
 export interface ShopTap {
@@ -24,6 +25,8 @@ export interface ShopTap {
   chatId: string
   messageId?: number | null
   data: string
+  /** What the tapped item button showed asked for (☐ → tick, ☑ → untick); null → flip. */
+  want?: 'tick' | 'untick' | null
 }
 
 export const STALE_LIST_TOAST = 'This list is no longer updated — use the pinned one.'
@@ -38,20 +41,40 @@ async function toast(callbackId: string, text?: string): Promise<void> {
   }
 }
 
+export const FAILED_TAP_TOAST = 'Something went wrong — try again.'
+
 export async function runShopTap(t: ShopTap, step: TurnStep, db: Database) {
+  // Every toast is its own memoized step, so an Inngest replay never answers the callback twice; and if
+  // anything below fails before the tapper got one, they get a failure toast instead of a spinner that
+  // never stops (the error still propagates, so Inngest retries).
+  let answered = false
+  const say = async (id: string, text?: string) => {
+    await step.run(id, () => toast(t.callbackId, text))
+    answered = true
+  }
+  try {
+    return await shopTap(t, step, db, say)
+  } catch (err) {
+    if (!answered) await toast(t.callbackId, FAILED_TAP_TOAST)
+    throw err
+  }
+}
+
+async function shopTap(t: ShopTap, step: TurnStep, db: Database, say: (id: string, text?: string) => Promise<void>) {
   const cb = parseShopCallback(t.data)
   if (!cb) {
-    await toast(t.callbackId)
+    await say('shop-toast')
     return { ignored: 'bad-data' as const }
   }
   const ids = await resolveHouseIds(db)
   if (!ids.scopeId || !ids.acceptIds.includes(t.chatId)) {
-    await toast(t.callbackId, 'Not authorized.')
+    await say('shop-toast', 'Not authorized.')
     return { ignored: 'other-chat' as const }
   }
+  // The tapped message must BE the stored live list: same chat AND same message id.
   const live = await loadLiveRef(db)
-  if (!live || t.messageId == null || live.messageId !== t.messageId) {
-    await toast(t.callbackId, STALE_LIST_TOAST)
+  if (!live || t.messageId == null || live.messageId !== t.messageId || live.chatId !== t.chatId) {
+    await say('shop-toast', STALE_LIST_TOAST)
     return { ignored: 'stale-message' as const }
   }
   const scope = ids.scopeId
@@ -61,29 +84,34 @@ export async function runShopTap(t: ShopTap, step: TurnStep, db: Database) {
   let render: RenderRequest
   let result: Record<string, unknown>
   if (cb.kind === 'chk') {
-    const res = (await step.run('shop-toggle', () => toggleListItem(db, { groupId: scope, itemId: cb.itemId, by: tapper }))) as ToggleResult
-    if (res.outcome !== 'gone') await step.run('shop-stamp', () => markShoppingUpdated(db, tapper))
-    await toast(t.callbackId, toggleToast(res.outcome, res.item, await name()))
+    const res = (await step.run('shop-toggle', () =>
+      toggleListItem(db, { groupId: scope, itemId: cb.itemId, by: tapper, want: t.want ?? null }),
+    )) as ToggleResult
+    const changed = res.outcome === 'ticked' || res.outcome === 'unticked' || res.outcome === 'readded'
+    if (changed) await step.run('shop-stamp', () => markShoppingUpdated(db, tapper))
+    const who = await name()
+    await say('shop-toast', toggleToast(res.outcome, res.item, who))
     render = { groupId: scope, reason: 'tap', focusItemId: cb.itemId }
     result = { toggled: res.outcome }
   } else if (cb.kind === 'clear') {
     const cleared = (await step.run('shop-clear', () => clearDoneItems(db, { groupId: scope }))) as number
     if (cleared > 0) await step.run('shop-stamp', () => markShoppingUpdated(db, tapper))
-    await toast(t.callbackId, clearToast(cleared))
+    await say('shop-toast', clearToast(cleared))
     render = { groupId: scope, reason: 'tap', page: 1 }
     result = { cleared }
   } else if (cb.kind === 'refresh') {
-    await toast(t.callbackId, 'Up to date.')
+    await say('shop-toast', 'Up to date.')
     render = { groupId: scope, reason: 'tap', page: 1 }
     result = { refreshed: true }
   } else {
-    await toast(t.callbackId)
+    await say('shop-toast')
     render = { groupId: scope, reason: 'tap', page: cb.page }
     result = { page: cb.page }
   }
 
-  // Render through the one serialised render function. If Inngest cannot be reached, render inline so
-  // the tapper still sees the change.
+  // Render through the one serialised render function — always, even when nothing changed (a stale
+  // keyboard is brought up to date). If Inngest cannot be reached, render inline so the tapper still
+  // sees it.
   const sent = (await step.run('shop-render', () => requestShoppingRender(render))) as boolean
   if (!sent) await runShoppingRender(step, () => db, render)
   return result

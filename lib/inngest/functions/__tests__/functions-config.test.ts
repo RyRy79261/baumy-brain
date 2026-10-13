@@ -30,4 +30,8 @@ describe('inngest function config', () => {
     expect(shoppingRender.opts.debounce).toBeUndefined()
     expect((shoppingRender.opts as { triggers?: unknown }).triggers).toEqual([{ event: SHOPPING_RENDER }])
   })
+  it('a callback that finally fails is still answered (onFailure — no endless button spinner)', async () => {
+    const { handleCallbackQuery } = await import('@/lib/inngest/functions/callback')
+    expect(typeof (handleCallbackQuery.opts as { onFailure?: unknown }).onFailure).toBe('function')
+  })
 })

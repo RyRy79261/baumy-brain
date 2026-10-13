@@ -7,6 +7,7 @@ import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { embedSync, setEmbedOverride } from '@/lib/ai/embed'
 import { setConsoleThread } from '@/lib/identity/house'
 import { SHOPPING_CHANGED, SHOPPING_RENDER, type RenderRequest } from '@/lib/lists/board'
+import { tapWant } from '@/lib/lists/live'
 import { inngest } from '@/lib/inngest/client'
 import { createSandbox, sendAs, tapAs, advanceBy, noteShoppingChanged, renderShoppingNow, type Sandbox, type SandboxPerson, type SendOptions, type TranscriptEntry } from '@/lib/sandbox/harness'
 import { setOlympicsTransport } from '@/lib/olympics/client'
@@ -330,7 +331,12 @@ export function tap(who: string, verb: 'confirm' | 'cancel' = 'confirm'): Step {
  * label matches `label` (a string = contains, or a RegExp), on that message — through the real callback
  * handler. `label` may also be raw `{ data }` callback_data (a crafted tap).
  */
-export function tapList(who: string, label: string | RegExp | { data: string }, opts: { messageId?: number } = {}): Step {
+export function tapList(
+  who: string,
+  label: string | RegExp | { data: string },
+  /** `want`: what the tapper's (possibly out-of-date) button showed — default: read from the current keyboard. */
+  opts: { messageId?: number; want?: 'tick' | 'untick' } = {},
+): Step {
   return {
     label: `${who} taps ${typeof label === 'object' && 'data' in label ? label.data : String(label)} on the live list`,
     async run(r) {
@@ -348,7 +354,9 @@ export function tapList(who: string, label: string | RegExp | { data: string }, 
           .find((b) => (typeof label === 'string' ? b.text.includes(label) : label.test(b.text)))?.callback_data
       if (!data) fail(`no button matching ${String(label)} on the live list`)
       const before = r.models.calls.length
-      const entries = await tapAs(r.sb, person.id, '', { data, chatId: live!.chatId, messageId: opts.messageId ?? live!.messageId })
+      // As the webhook does: what the tapped button SHOWED, read from the keyboard (☐ → tick, ☑ → untick).
+      const want = opts.want ?? tapWant({ inline_keyboard: shown.keyboard ?? [] }, data)
+      const entries = await tapAs(r.sb, person.id, '', { data, want, chatId: live!.chatId, messageId: opts.messageId ?? live!.messageId })
       r.turns.push({ kind: 'tap', who: person.name, text: data!, messageId: -1, dm: false, entries, calls: r.models.calls.slice(before) })
     },
   }

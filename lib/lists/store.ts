@@ -330,41 +330,57 @@ export async function liveListRows(db: Database, groupId: string, listName: stri
 
 /**
  * What a tap on an item did (`shop:chk:<id>`).
- * - `ticked`       — it was open; now it is done (checked_at / checked_by set).
- * - `unticked`     — it was done; now it is open again (checked_at / checked_by cleared).
- * - `already_open` — it was done, but the same item has been re-added since, so re-opening it would
- *                    make a second open copy (the partial-unique index): the done row was cleared
- *                    instead, and the open copy stays.
- * - `gone`         — no such row on THIS house's live list (removed, cleared, another house, a bad id).
+ * - `ticked`           — it was open; now it is done (checked_at / checked_by set).
+ * - `unticked`         — it was done; now it is open again (checked_at / checked_by cleared).
+ * - `already_ticked`   — a tick asked for (☐ tapped) but it was already done: nothing changed.
+ * - `already_unticked` — an untick asked for (☑ tapped) but it was already open: nothing changed.
+ * - `readded`          — it was done, but the same item has been re-added since, so re-opening it would
+ *                        make a second open copy (the partial-unique index): the done row was cleared
+ *                        instead, and the open copy stays.
+ * - `gone`             — no such row on THIS house's live list (removed, cleared, another house, a bad id).
  */
 export interface ToggleResult {
-  outcome: 'ticked' | 'unticked' | 'already_open' | 'gone'
+  outcome: 'ticked' | 'unticked' | 'already_ticked' | 'already_unticked' | 'readded' | 'gone'
   item: string | null
 }
 
-// Toggle ONE item by id — ONE atomic UPDATE keyed on the id AND the house scope (I4), so a tap can never
-// reach another house's row, and the flip is computed by Postgres from the row as it is when the row
-// lock is taken: two taps at once serialise on the lock, each flips the state it finds, and both report
-// what really happened (one ticks, the other unticks) — never a lost update, never a torn row. `by` is
-// the tapper's authenticated id.
+// Set ONE item's state by id — keyed on the id AND the house scope (I4), so a tap can never reach another
+// house's row. `want` is what the tapped button showed (☐ → tick, ☑ → untick; lib/lists/live.ts tapWant):
+// the UPDATE SETS that state outright, guarded by `checked_at IS NULL` (tick) / `IS NOT NULL` (untick), so
+// it is IDEMPOTENT — two people tapping the same ☐ at once tick it once; the second finds nothing to do
+// and reports `already_ticked`. Only when the tapped keyboard could not be read (`want` null) does it fall
+// back to a flip computed by Postgres under the row lock (each tap flips the state it finds). `by` is the
+// tapper's authenticated id.
 export async function toggleListItem(
   db: Database,
-  input: { groupId: string; itemId: string; by: string | null; listName?: string },
+  input: { groupId: string; itemId: string; by: string | null; want?: 'tick' | 'untick' | null; listName?: string },
 ): Promise<ToggleResult> {
   const listName = input.listName ?? DEFAULT_LIST
   const at = clockNow().toISOString()
   const where = and(eq(listItems.id, input.itemId), shownWhere(input.groupId, listName))
+  const want = input.want ?? null
   try {
+    const set =
+      want === 'tick'
+        ? { checkedAt: sql`${at}::timestamptz`, checkedBy: sql`${input.by}::text` }
+        : want === 'untick'
+          ? { checkedAt: sql`NULL`, checkedBy: sql`NULL` }
+          : {
+              checkedAt: sql`CASE WHEN ${listItems.checkedAt} IS NULL THEN ${at}::timestamptz ELSE NULL END`,
+              checkedBy: sql`CASE WHEN ${listItems.checkedAt} IS NULL THEN ${input.by}::text ELSE NULL END`,
+            }
+    const guard = want === 'tick' ? isNull(listItems.checkedAt) : want === 'untick' ? isNotNull(listItems.checkedAt) : undefined
     const [row] = await db
       .update(listItems)
-      .set({
-        checkedAt: sql`CASE WHEN ${listItems.checkedAt} IS NULL THEN ${at}::timestamptz ELSE NULL END`,
-        checkedBy: sql`CASE WHEN ${listItems.checkedAt} IS NULL THEN ${input.by}::text ELSE NULL END`,
-      })
-      .where(where)
+      .set(set as Record<string, unknown>)
+      .where(and(where, guard))
       .returning({ item: listItems.item, checkedAt: listItems.checkedAt })
-    if (!row) return { outcome: 'gone', item: null }
-    return { outcome: row.checkedAt != null ? 'ticked' : 'unticked', item: row.item }
+    if (row) return { outcome: row.checkedAt != null ? 'ticked' : 'unticked', item: row.item }
+    if (!want) return { outcome: 'gone', item: null }
+    // Nothing to do: the row is already in the asked state — or it is not on this house's list at all.
+    const [now] = await db.select({ item: listItems.item, checkedAt: listItems.checkedAt }).from(listItems).where(where)
+    if (!now) return { outcome: 'gone', item: null }
+    return { outcome: now.checkedAt != null ? 'already_ticked' : 'already_unticked', item: now.item }
   } catch (err) {
     if (!isUniqueViolation(err)) throw err
     // Re-opening collided with an open copy of the same item (re-added since it was ticked): the list
@@ -374,7 +390,7 @@ export async function toggleListItem(
       .set({ clearedAt: clockNow() })
       .where(and(where, isNotNull(listItems.checkedAt)))
       .returning({ item: listItems.item })
-    return row ? { outcome: 'already_open', item: row.item } : { outcome: 'gone', item: null }
+    return row ? { outcome: 'readded', item: row.item } : { outcome: 'gone', item: null }
   }
 }
 

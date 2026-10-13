@@ -50,6 +50,8 @@ type Events = {
       chatId: string
       messageId: number | null
       data: string
+      /** A live-list item tap: the state the tapped button showed asked for (lib/lists/live.ts tapWant). */
+      want?: 'tick' | 'untick' | null
     }
   }
   'reminder/arm.due': { data: { reminderId: string } }

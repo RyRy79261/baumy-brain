@@ -101,6 +101,31 @@ export function parseShopCallback(data: unknown): ShopCallback | null {
   return null
 }
 
+/** What the tapper asked for: the state shown on the button they tapped (☐ → tick, ☑ → untick). */
+export type TapWant = 'tick' | 'untick'
+
+// The intent of an item tap, read from the keyboard Telegram delivered WITH the callback_query
+// (`callback_query.message.reply_markup`): the button whose callback_data is the tapped data, and its
+// leading ☐ / ☑. That payload comes over the secret-verified webhook, so it is Telegram's own record
+// of the keyboard the tapper saw. Null when it cannot be read (an inaccessible message has no
+// reply_markup, or no button carries that data) — the caller then falls back to a plain flip.
+export function tapWant(replyMarkup: unknown, data: unknown): TapWant | null {
+  if (typeof data !== 'string' || !data.startsWith('shop:chk:')) return null
+  const rows = (replyMarkup as { inline_keyboard?: unknown } | null | undefined)?.inline_keyboard
+  if (!Array.isArray(rows)) return null
+  for (const row of rows) {
+    if (!Array.isArray(row)) continue
+    for (const b of row) {
+      const btn = b as { text?: unknown; callback_data?: unknown } | null
+      if (btn?.callback_data !== data || typeof btn.text !== 'string') continue
+      if (btn.text.startsWith(OPEN_MARK)) return 'tick'
+      if (btn.text.startsWith(DONE_MARK)) return 'untick'
+      return null
+    }
+  }
+  return null
+}
+
 // ── The message ──────────────────────────────────────────────────────────────────────────────────────
 
 export interface InlineButton {
@@ -173,14 +198,17 @@ export function renderLiveList(input: LiveListInput): LiveListView {
   return { text: lines.join('\n'), keyboard, page, pages }
 }
 
+export type ToggleOutcome = 'ticked' | 'unticked' | 'already_ticked' | 'already_unticked' | 'readded' | 'gone'
+
 // The answerCallbackQuery toast after a tap on an item ("✓ Ginger – ticked by Ryan"). Telegram caps a
 // toast at 200 characters; names are clipped well under that.
-export function toggleToast(outcome: 'ticked' | 'unticked' | 'already_open' | 'gone', item: string | null, by: string | null): string {
+export function toggleToast(outcome: ToggleOutcome, item: string | null, by: string | null): string {
   const name = item ? clip(boardItem(item), BUTTON_ITEM_MAX) : ''
   const who = by ? ` by ${clip(boardItem(by), NAME_MAX)}` : ''
   if (outcome === 'ticked') return `✓ ${name} – ticked${who}`
   if (outcome === 'unticked') return `↩ ${name} – back on the list${who}`
-  if (outcome === 'already_open') return `${name} is already on the list`
+  if (outcome === 'already_ticked') return `${name} is already ticked`
+  if (outcome === 'already_unticked' || outcome === 'readded') return `${name} is already on the list`
   return "That item isn't on the list any more."
 }
 

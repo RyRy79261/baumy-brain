@@ -7,6 +7,7 @@ import {
   clip,
   itemButton,
   toggleToast,
+  tapWant,
   clearToast,
   mockLiveList,
   formatUpdatedAt,
@@ -202,7 +203,9 @@ describe('toasts', () => {
   it('say what the tap did, and who', () => {
     expect(toggleToast('ticked', 'Ginger', 'Ryan')).toBe('✓ Ginger – ticked by Ryan')
     expect(toggleToast('unticked', 'Ginger', 'Ryan')).toBe('↩ Ginger – back on the list by Ryan')
-    expect(toggleToast('already_open', 'milk', 'Ryan')).toBe('milk is already on the list')
+    expect(toggleToast('already_ticked', 'milk', 'Ryan')).toBe('milk is already ticked')
+    expect(toggleToast('already_unticked', 'milk', 'Ryan')).toBe('milk is already on the list')
+    expect(toggleToast('readded', 'milk', 'Ryan')).toBe('milk is already on the list')
     expect(toggleToast('gone', null, 'Ryan')).toBe("That item isn't on the list any more.")
     expect(clearToast(0)).toBe('Nothing to clear.')
     expect(clearToast(1)).toBe('🧹 Cleared 1 done item')
@@ -225,5 +228,29 @@ describe('boardItem (shared with the old board)', () => {
     expect(boardItem(`milk${String.fromCharCode(0x202e)}evil${String.fromCharCode(7)}`)).toBe('milk evil')
     for (const cp of [0x2060, 0x2064, 0x061c, 0x00ad, 0xfeff]) expect(boardItem(`milk${String.fromCharCode(cp)}x`)).toBe('milk x')
     expect(boardItem('#éclairs')).toBe('＃éclairs')
+  })
+})
+
+describe('tapWant — what the tapped button showed, from the keyboard Telegram delivered', () => {
+  const view = renderLiveList({ rows: [row(1, 'Ginger'), row(2, 'oat milk', true)], updatedBy: null, updatedAt: null, tz: TZ })
+  const markup = { inline_keyboard: view.keyboard }
+
+  it('☐ → tick, ☑ → untick, matched on the exact callback_data', () => {
+    expect(tapWant(markup, `shop:chk:${uuid(1)}`)).toBe('tick')
+    expect(tapWant(markup, `shop:chk:${uuid(2)}`)).toBe('untick')
+  })
+
+  it('unknown when it cannot be read: no markup (an inaccessible message), no matching button, not an item tap, odd shapes', () => {
+    expect(tapWant(undefined, `shop:chk:${uuid(1)}`)).toBeNull()
+    expect(tapWant(null, `shop:chk:${uuid(1)}`)).toBeNull()
+    expect(tapWant({}, `shop:chk:${uuid(1)}`)).toBeNull()
+    expect(tapWant({ inline_keyboard: 'x' }, `shop:chk:${uuid(1)}`)).toBeNull()
+    expect(tapWant({ inline_keyboard: [null, 'row', [null, 5]] }, `shop:chk:${uuid(1)}`)).toBeNull()
+    expect(tapWant(markup, `shop:chk:${uuid(9)}`)).toBeNull() // no button carries it
+    expect(tapWant(markup, 'shop:clear')).toBeNull()
+    expect(tapWant(markup, 'c:abc')).toBeNull()
+    expect(tapWant(markup, undefined)).toBeNull()
+    // a button whose label starts with neither mark
+    expect(tapWant({ inline_keyboard: [[{ text: 'Ginger', callback_data: `shop:chk:${uuid(1)}` }]] }, `shop:chk:${uuid(1)}`)).toBeNull()
   })
 })

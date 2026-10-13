@@ -209,7 +209,7 @@ export async function tapAs(
   sb: Sandbox,
   who: string | number,
   actionId: string,
-  opts: { verb?: 'confirm' | 'cancel'; chatId?: string; messageId?: number; /** Raw callback_data (a live-list button), instead of a confirm card's. */ data?: string } = {},
+  opts: { verb?: 'confirm' | 'cancel'; chatId?: string; messageId?: number; /** Raw callback_data (a live-list button), instead of a confirm card's. */ data?: string; /** What the tapped live-list button showed (the webhook reads it from the keyboard). */ want?: 'tick' | 'untick' | null } = {},
 ): Promise<TranscriptEntry[]> {
   const person = findPerson(sb, who)
   const updateId = sb.seq++
@@ -219,6 +219,7 @@ export async function tapAs(
     chatId: opts.chatId ?? sb.houseChatId,
     messageId: opts.messageId ?? updateId,
     data: opts.data ?? `${opts.verb === 'cancel' ? 'x' : 'c'}:${actionId}`,
+    ...(opts.want !== undefined ? { want: opts.want } : {}),
   }
   const { sent } = await captureOutbound(async () => withSimulatedTime(sb.now, () => runCallback({ data }, inlineStep)))
   const entries = sent.map((m) => ({ ...m, cause: `${person.name}: tap ${opts.data ?? opts.verb ?? 'confirm'}` }))
