@@ -86,10 +86,13 @@ export async function addListItems(
   const open = new Set(openRows.map((r) => r.n))
 
   const already: string[] = []
-  const rows: { groupId: string; listName: string; item: string; itemNormalized: string; addedBy: string | null }[] = []
+  // created_at from the clock seam, not Postgres now(): the live list's Added mode ("Today" / "Earlier")
+  // reads it, and a sandbox runs at a simulated instant.
+  const at = clockNow()
+  const rows: { groupId: string; listName: string; item: string; itemNormalized: string; addedBy: string | null; createdAt: Date }[] = []
   for (const [norm, display] of wanted) {
     if (open.has(norm)) already.push(display)
-    else rows.push({ groupId: input.groupId, listName, item: display, itemNormalized: norm, addedBy: input.addedBy })
+    else rows.push({ groupId: input.groupId, listName, item: display, itemNormalized: norm, addedBy: input.addedBy, createdAt: at })
   }
 
   let added: string[] = []

@@ -36,8 +36,9 @@ const fixtures = {
           : { op: 'none' as const, items: [] },
 }
 
-const kioskAdd = (r: Run, items: string[]) =>
-  withSimulatedTime(r.sb.now, () => ADD(
+// `offsetMs`: requests a few ms apart (an item's place in the list is when it was added).
+const kioskAdd = (r: Run, items: string[], offsetMs = 0) =>
+  withSimulatedTime(new Date(r.sb.now.getTime() + offsetMs), () => ADD(
     new Request('http://local/api/kitchen/shopping/add', {
       method: 'POST',
       headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
@@ -71,10 +72,13 @@ describe('scenario: the live shopping list', () => {
       }),
 
       // A burst of changes from the group AND a DM (which writes through to the house list).
+      // A second apart: an item's place in the list is when it was added (created_at, from the clock seam).
       say('Marco', "we're out of oat milk"),
       expectReaction('✍'),
+      advance({ seconds: 1 }),
       say('Ryan', 'add coffee to the list', { dm: true }),
       expectWords({ contains: /coffee/, judge: 'Confirms coffee was added to the shopping list.' }),
+      advance({ seconds: 1 }),
       say('Chloe', "we're out of bin bags"),
       expectReaction('✍'),
       check('nothing edited yet — the debounce waits 5 seconds after the LAST change', (r, e) => e(edits(r)).toHaveLength(0)),
@@ -143,7 +147,7 @@ describe('scenario: the live shopping list', () => {
         e(lists(r)[0].threadId).toBeUndefined()
       }),
       check('the kiosk adds 13 items, one request each', async (r, e) => {
-        for (const item of THIRTEEN) e((await kioskAdd(r, [item])).status).toBe(200)
+        for (const [i, item] of THIRTEEN.entries()) e((await kioskAdd(r, [item], i)).status).toBe(200)
       }),
       check('13 change signals, no edit yet', (r, e) => {
         e(r.events.filter((x) => x.name === 'lists/shopping.changed')).toHaveLength(13)
