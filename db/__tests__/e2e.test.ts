@@ -46,7 +46,7 @@ vi.mock('@/lib/inngest/client', async (importOriginal) => {
 })
 const { runEventSurfacingScan } = await import('@/lib/inngest/functions/surfacing')
 const { runShoppingRender, swapStoredBoard, retireShoppingBoard } = await import('@/lib/lists/board')
-const { autoCategorizeItem, nearestSorted } = await import('@/lib/lists/categorize')
+const { autoCategorizeItem, nearestSorted, runCategorize, backfillCandidates } = await import('@/lib/lists/categorize')
 const embed = async (t: string) => embedSync(t)
 const GROUP = '-100e2e'
 
@@ -279,7 +279,7 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect(cols.rows.map((r: { column_name: string }) => r.column_name)).toEqual(['removed_at', 'removed_by', 'renamed_at', 'renamed_by'])
 
     await addListItems(h.db, { groupId: G, items: ['milk', 'mlik', 'bred', 'tea'], addedBy: null })
-    expect(await renameItem(h.db, { groupId: G, from: 'bred', to: 'bread', renamedBy: null })).toEqual({ outcome: 'renamed', from: 'bred', to: 'bread' })
+    expect(await renameItem(h.db, { groupId: G, from: 'bred', to: 'bread', renamedBy: null })).toEqual({ outcome: 'renamed', from: 'bred', to: 'bread', resortId: expect.any(String) })
     expect(await renameItem(h.db, { groupId: G, from: 'mlik', to: 'milk', renamedBy: null })).toEqual({ outcome: 'merged', from: 'mlik', to: 'milk' })
     expect((await removeItems(h.db, { groupId: G, items: ['tea'], removedBy: null })).removed).toEqual(['tea'])
     expect((await currentList(h.db, G)).map((r) => r.item).sort()).toEqual(['bread', 'milk'])
@@ -495,6 +495,16 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     await checkOffItems(h.db, { groupId: CAT, items: ['coffee beans'], checkedBy: null })
     const [beans2] = (await addListItems(h.db, { groupId: CAT, items: ['coffee beans'], addedBy: null })).addedIds
     expect(await autoCategorizeItem(h.db, { groupId: CAT, itemId: beans2 }, { embed, guess })).toMatchObject({ source: 'remembered', category: 'coffee' })
+
+    // review of PR #30 on real SQL: a rename's CASE reset of an automatic category, and the backfill query
+    const renamed = await renameItem(h.db, { groupId: CAT, from: 'Oat milk', to: 'oatly barista', renamedBy: null })
+    expect(renamed).toMatchObject({ outcome: 'renamed', resortId: again })
+    const [reset] = await h.db.select({ c: listItems.category, s: listItems.categorySource, at: listItems.categorizedAt }).from(listItems).where(eq(listItems.id, again))
+    expect(reset).toEqual({ c: null, s: null, at: null })
+    await h.pool.query("UPDATE baumy_list_items SET created_at = now() - interval '1 hour' WHERE id = $1", [again])
+    expect(await backfillCandidates(h.db, CAT)).toEqual([again])
+    expect(await runCategorize({ run: (_id, fn) => fn() }, () => h.db, { groupId: CAT, itemIds: [again] }, { embed, guess: async () => 'coffee' })).toMatchObject([{ outcome: 'categorized' }])
+    expect(await backfillCandidates(h.db, CAT)).toEqual([])
 
     // the order mode: idempotent set on the singleton row
     expect(await setShoppingSort(h.db, 'az')).toBe(true)
