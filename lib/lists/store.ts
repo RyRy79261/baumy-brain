@@ -232,6 +232,9 @@ export interface RenameResult {
   to: string
   /** Only for `ambiguous`: the open items `from` fits. */
   matches?: string[]
+  /** `renamed` only: the row, when its AUTOMATIC category was reset by the rename (issue #29) — the
+   *  caller asks for it to be sorted again (requestCategorize). A housemate's pick is kept. */
+  resortId?: string
 }
 
 // Postgres unique_violation — a concurrent add of the new name won the partial-unique index.
@@ -290,13 +293,30 @@ export async function renameItem(
     if (other) return merge()
   }
   try {
+    // A NEW name (not a case-only fix) drops an AUTOMATIC category (remembered / similar / guessed — it was
+    // worked out for the old name) so the row is sorted again; a housemate's pick (`picked`) stays.
+    const newName = toNorm !== normalizeItem(row.item)
+    const auto = sql`${listItems.categorySource} IS DISTINCT FROM 'picked'`
     const [renamed] = await db
       .update(listItems)
-      .set({ item: toDisplay, itemNormalized: toNorm, renamedBy: input.renamedBy, renamedAt: clockNow() })
+      .set({
+        item: toDisplay,
+        itemNormalized: toNorm,
+        renamedBy: input.renamedBy,
+        renamedAt: clockNow(),
+        ...(newName
+          ? {
+              category: sql`CASE WHEN ${auto} THEN NULL ELSE ${listItems.category} END`,
+              categorySource: sql`CASE WHEN ${auto} THEN NULL ELSE ${listItems.categorySource} END`,
+              categorizedAt: sql`CASE WHEN ${auto} THEN NULL ELSE ${listItems.categorizedAt} END`,
+            }
+          : {}),
+      } as Record<string, unknown>)
       .where(and(eq(listItems.id, row.id), openWhere(input.groupId, listName)))
-      .returning({ item: listItems.item })
+      .returning({ id: listItems.id, item: listItems.item, source: listItems.categorySource })
     // The row left the open list between the read and the write (ticked / removed concurrently).
-    return renamed ? { outcome: 'renamed', from: row.item, to: renamed.item } : { outcome: 'not_found', from: row.item, to: toDisplay }
+    if (!renamed) return { outcome: 'not_found', from: row.item, to: toDisplay }
+    return { outcome: 'renamed', from: row.item, to: renamed.item, ...(newName && renamed.source == null ? { resortId: renamed.id } : {}) }
   } catch (err) {
     // A concurrent add of `to` won the partial-unique index between the check and the write → merge.
     if (isUniqueViolation(err)) return merge()
@@ -449,6 +469,24 @@ export interface SetCategoryResult {
   matches?: string[]
 }
 
+// Which OPEN item a text names, matched like a check-off: exact normalized, then the ONE open item with
+// that loose key. `found` carries the row; `ambiguous` the items it could mean; `not_found` nothing.
+export async function findOpenItem(
+  db: Database,
+  input: { groupId: string; item: string; listName?: string },
+): Promise<{ outcome: 'found'; id: string; item: string; n: string } | { outcome: 'ambiguous'; matches: string[] } | { outcome: 'not_found' }> {
+  const listName = input.listName ?? DEFAULT_LIST
+  const norm = normalizeItem(input.item.trim().slice(0, MAX_ITEM_LEN))
+  if (!norm) return { outcome: 'not_found' }
+  const exact = await db
+    .select({ id: listItems.id, item: listItems.item, n: listItems.itemNormalized })
+    .from(listItems)
+    .where(and(openWhere(input.groupId, listName), eq(listItems.itemNormalized, norm)))
+  const hits = exact.length ? exact : ((await openByLooseKey(db, input.groupId, listName)).get(looseItemKey(input.item)) ?? []).map((h) => ({ ...h, n: normalizeItem(h.item) }))
+  if (hits.length > 1) return { outcome: 'ambiguous', matches: hits.map((h) => h.item) }
+  return hits[0] ? { outcome: 'found', ...hits[0] } : { outcome: 'not_found' }
+}
+
 // A housemate PICKS an item's category (the kiosk's category call, or "put coffee filters under coffee"
 // in Telegram). The row is named by `id` (a row still SHOWN on this house's live list — open, or ticked
 // and not cleared) or by `item` text (an OPEN item, matched like a check-off: exact normalized, then the
@@ -468,14 +506,10 @@ export async function setItemCategory(
       .from(listItems)
       .where(and(eq(listItems.id, input.id), shownWhere(input.groupId, listName)))
     hit = row ?? null
-  } else if (normalizeItem(asked)) {
-    const exact = await db
-      .select({ id: listItems.id, item: listItems.item, n: listItems.itemNormalized })
-      .from(listItems)
-      .where(and(openWhere(input.groupId, listName), eq(listItems.itemNormalized, normalizeItem(asked))))
-    const hits = exact.length ? exact : ((await openByLooseKey(db, input.groupId, listName)).get(looseItemKey(asked)) ?? []).map((h) => ({ ...h, n: normalizeItem(h.item) }))
-    if (hits.length > 1) return { outcome: 'ambiguous', item: asked, category: input.category, matches: hits.map((h) => h.item) }
-    hit = hits[0] ?? null
+  } else {
+    const found = await findOpenItem(db, { groupId: input.groupId, item: asked, listName })
+    if (found.outcome === 'ambiguous') return { outcome: 'ambiguous', item: asked, category: input.category, matches: found.matches }
+    hit = found.outcome === 'found' ? { id: found.id, item: found.item, n: found.n } : null
   }
   if (!hit) return { outcome: 'not_found', item: input.id ? null : asked, category: input.category }
 

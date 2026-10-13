@@ -115,8 +115,8 @@ export async function handleAdd(req: Request): Promise<Response> {
     const res = await addListItems(db, { groupId: scope, items: body.items, addedBy: by })
     // The list changed → stamp it and ask for the debounced live-list edit (best-effort; never fails the write).
     if (res.added.length > 0) await noteShoppingChange(db, scope, by)
-    // Sort the new items AFTER the add (issue #29): best-effort, never fails or delays the write — they
-    // come back as category null ("Not sorted") here and gain a category within seconds.
+    // Sort the new items AFTER the add (issue #29): best-effort — one awaited Inngest send (a few ms), never
+    // a failed write. They come back as category null ("Not sorted") here and gain a category within seconds.
     await requestCategorize(scope, res.addedIds)
     return json({ ok: true, added: res.added, already: res.already, attributedTo: by, items: view(await currentList(db, scope)) })
   })
@@ -155,6 +155,8 @@ export async function handleRename(req: Request): Promise<Response> {
     const by = await mapMember(db, body.telegramUserId)
     const res = await renameItem(db, { groupId: scope, from: body.from, to: body.to, renamedBy: by })
     if (res.outcome === 'renamed' || res.outcome === 'merged') await noteShoppingChange(db, scope, by)
+    // A new name drops an automatic category (issue #29): sort it again, after the write.
+    if (res.resortId) await requestCategorize(scope, [res.resortId])
     return json({
       ok: true,
       outcome: res.outcome,
@@ -192,7 +194,12 @@ export async function handleCategory(req: Request): Promise<Response> {
       )
     const by = await mapMember(db, body.telegramUserId)
     const res = await setItemCategory(db, { groupId: scope, id: body.id, item: body.id ? undefined : body.item, category: body.category, by })
-    if (res.outcome === 'set') await noteShoppingChange(db, scope, by)
+    if (res.outcome === 'set') {
+      await noteShoppingChange(db, scope, by)
+      // A picked item is a "similar" anchor for later adds only once its name has a vector: the
+      // categorize run embeds it (batched, best-effort) and leaves the pick alone.
+      if (res.id) await requestCategorize(scope, [res.id])
+    }
     return json({
       ok: true,
       outcome: res.outcome,

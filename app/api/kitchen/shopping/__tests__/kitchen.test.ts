@@ -506,3 +506,30 @@ describe('kitchen shopping API — categories (issue #29)', () => {
     expect(noteShoppingChange).not.toHaveBeenCalled()
   })
 })
+
+describe('kitchen shopping API — review fixes (PR #30)', () => {
+  it('a category pick asks the categorize run for the row (its name gets a vector; the pick is left alone)', async () => {
+    await house(db)
+    const [id] = (await addListItems(db, { groupId: HOUSE, items: ['coffee filters'], addedBy: null })).addedIds
+    await CATEGORY(req('/category', { body: { id, category: 'coffee' } }))
+    expect(requestCategorize).toHaveBeenCalledWith(HOUSE, [id])
+    requestCategorize.mockClear()
+    await CATEGORY(req('/category', { body: { item: 'nutmeg', category: 'pantry' } })) // a miss
+    expect(requestCategorize).not.toHaveBeenCalled()
+  })
+
+  it('a rename that drops an automatic category asks for the row to be sorted again; a picked one does not', async () => {
+    await house(db)
+    const [id] = (await addListItems(db, { groupId: HOUSE, items: ['mlik'], addedBy: null })).addedIds
+    await db.update(listItems).set({ category: 'pantry', categorySource: 'guessed' }).where(eq(listItems.id, id))
+    const res = (await (await RENAME(req('/rename', { body: { from: 'mlik', to: 'oat milk' } }))).json()) as { items: { category: string | null }[] }
+    expect(res.items[0].category).toBeNull()
+    expect(requestCategorize).toHaveBeenCalledWith(HOUSE, [id])
+    requestCategorize.mockClear()
+    await CATEGORY(req('/category', { body: { id, category: 'fresh' } }))
+    requestCategorize.mockClear()
+    await RENAME(req('/rename', { body: { from: 'oat milk', to: 'oatly' } }))
+    expect(requestCategorize).not.toHaveBeenCalled()
+    expect((await currentList(db, HOUSE))[0].category).toBe('fresh')
+  })
+})
