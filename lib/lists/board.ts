@@ -5,7 +5,7 @@ import { inngest } from '@/lib/inngest/client'
 import { resolveHouseIds } from '@/lib/identity/house'
 import { memberDisplayNames } from '@/lib/identity/roster'
 import { loadResponsePolicy } from '@/lib/policy'
-import { liveListRows, markShoppingUpdated } from '@/lib/lists/store'
+import { liveListRows, loadShoppingSort, markShoppingUpdated } from '@/lib/lists/store'
 import { renderLiveList, boardItem } from '@/lib/lists/live'
 import {
   deleteMessage,
@@ -219,6 +219,8 @@ async function buildView(d: Database, scopeId: string, req: RenderRequest): Prom
   const name = cfg?.by ? ((await memberDisplayNames(d)).get(cfg.by) ?? null) : null
   const view = renderLiveList({
     rows: await liveListRows(d, scopeId),
+    sort: await loadShoppingSort(d),
+    now: clockNow(),
     page: req.page,
     focusItemId: req.focusItemId ?? null,
     updatedBy: name,

@@ -2,13 +2,14 @@ import { type Database } from '@/db/client'
 import { resolveHouseIds } from '@/lib/identity/house'
 import { memberDisplayNames } from '@/lib/identity/roster'
 import { answerCallback } from '@/lib/telegram/client'
-import { clearDoneItems, markShoppingUpdated, toggleListItem, type ToggleResult } from '@/lib/lists/store'
-import { clearToast, parseShopCallback, toggleToast } from '@/lib/lists/live'
+import { clearDoneItems, markShoppingUpdated, setShoppingSort, toggleListItem, type ToggleResult } from '@/lib/lists/store'
+import { clearToast, parseShopCallback, sortToast, toggleToast } from '@/lib/lists/live'
 import { loadLiveRef, requestShoppingRender, runShoppingRender, type RenderRequest } from '@/lib/lists/board'
 import type { TurnStep } from '@/lib/turn/step'
 
 // A tap on the live shopping list (issue #25, docs/spec/shopping-list.md §Live list): `shop:chk:<id>`,
-// `shop:clear`, `shop:refresh`, `shop:page:<n>`. Reached from runCallback AFTER its roster check, so the
+// `shop:clear`, `shop:refresh`, `shop:page:<n>`, and (issue #29) `shop:noop` (a heading) and
+// `shop:sort:<mode>` (the order button). Reached from runCallback AFTER its roster check, so the
 // tapper is an ACTIVE member (Telegram-authenticated from.id). Everything else is code:
 //   • the data must parse EXACTLY (parseShopCallback) — anything else is answered and dropped;
 //   • the tapped message must be in the house chat AND be the stored live list — the house scope comes
@@ -66,6 +67,12 @@ async function shopTap(t: ShopTap, step: TurnStep, db: Database, say: (id: strin
     await say('shop-toast')
     return { ignored: 'bad-data' as const }
   }
+  // A heading (issue #29): nothing to do — answered silently so the button stops spinning, nothing read,
+  // nothing rendered.
+  if (cb.kind === 'noop') {
+    await say('shop-toast')
+    return { noop: true }
+  }
   const ids = await resolveHouseIds(db)
   if (!ids.scopeId || !ids.acceptIds.includes(t.chatId)) {
     await say('shop-toast', 'Not authorized.')
@@ -99,6 +106,13 @@ async function shopTap(t: ShopTap, step: TurnStep, db: Database, say: (id: strin
     await say('shop-toast', clearToast(cleared))
     render = { groupId: scope, reason: 'tap', page: 1 }
     result = { cleared }
+  } else if (cb.kind === 'sort') {
+    // The order button (issue #29) carries the TARGET mode, so a double tap (or two housemates at once)
+    // sets the same mode twice — never skips one. A house setting, not a list change: no "last updated".
+    const changed = (await step.run('shop-sort', () => setShoppingSort(db, cb.mode))) as boolean
+    await say('shop-toast', sortToast(cb.mode))
+    render = { groupId: scope, reason: 'tap', page: 1 }
+    result = { sort: cb.mode, changed }
   } else if (cb.kind === 'refresh') {
     await say('shop-toast', 'Up to date.')
     render = { groupId: scope, reason: 'tap', page: 1 }

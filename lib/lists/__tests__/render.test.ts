@@ -71,7 +71,7 @@ describe('an ordinary change: edit in place, never a new post', () => {
     const [chat, id, text, keyboard] = editLiveList.mock.calls[0] as [string, number, string, { text: string }[][]]
     expect([chat, id]).toEqual([HOUSE, 6000])
     expect(text).toBe('🛒 Shopping list\n1 to buy\nLast updated by Ryan, Tue 13 Oct, 18:05')
-    expect(keyboard.flat().map((b) => b.text)).toEqual(['☐ Ginger', '🧹 Clear done', '🔄 Refresh'])
+    expect(keyboard.flat().map((b) => b.text)).toEqual(['── Not sorted ──', '☐ Ginger', '🗂 Groups', '🧹 Clear done', '🔄 Refresh'])
     expect(sendLiveList).not.toHaveBeenCalled()
     expect(pinMessage).not.toHaveBeenCalled()
   })
@@ -188,7 +188,7 @@ describe('renders never send stale text (Inngest limits concurrent STEPS, not ru
     expect(editLiveList).toHaveBeenCalledTimes(2)
     expect(lastEditText()).toContain('3 to buy') // the LAST edit is the newest list, never A's old view
     const labels = (editLiveList.mock.calls.at(-1) as [string, number, string, { text: string }[][]])[3].flat().map((b) => b.text)
-    expect(labels).toEqual(['☐ milk', '☐ eggs', '☐ tea', '🧹 Clear done', '🔄 Refresh'])
+    expect(labels).toEqual(['── Not sorted ──', '☐ milk', '☐ eggs', '☐ tea', '🗂 Groups', '🧹 Clear done', '🔄 Refresh'])
   })
 
   it('a 429 retry rebuilds the text: the retried edit carries the list as it is THEN', async () => {
