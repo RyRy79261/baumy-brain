@@ -189,8 +189,11 @@ An add commits first, exactly as before, with `category` null. Then the writer (
 step `list-categorize`, the kitchen add after its write) sends `lists/shopping.categorize` with
 `{ groupId, itemIds }` — the ids of the rows that add inserted (`addListItems` returns `addedIds`).
 `shopping-categorize` (Inngest, concurrency 1 per house, retries 2; `lib/lists/categorize.ts`
-`runCategorize`, one memoized step per item) sorts each row that is still this house's, active, and
-has `category_source` NULL:
+`runCategorize`) first embeds every named row's item name that has no current-model vector yet, in ONE
+batched Voyage call (`categorize-embed`, best-effort — on failure each item falls back to its own call),
+then runs one memoized step per item. It sorts each row that is still this house's, active, has
+`category_source` NULL and has never been TRIED (`categorized_at` NULL — it is stamped on every outcome,
+sorted or not, so a row is auto-sorted at most once and a repeated event is a no-op):
 
 1. **remembered** — the house's pick for this exact item name (`baumy_list_categories`, keyed on
    `item_normalized`, the add/dedupe key).
@@ -217,9 +220,29 @@ The item's vector is embedded and stored whatever tier wins (once per name), so 
 be the next one's anchor. The write is compare-and-set (`… WHERE category_source IS NULL`), so a
 housemate's pick that lands first is never overwritten. Nothing here can block or fail the add: the
 event is best-effort (`requestCategorize` logs and returns false when Inngest is down), an embedder
-failure skips only tier 2, and a row every tier passes on stays Not sorted. When anything was sorted,
-the run sends the debounced change signal (`requestShoppingRefresh` — no "last updated by" stamp:
-nobody changed the list), so the live list re-renders with its groups.
+failure skips only tier 2, and a row every tier passes on stays Not sorted. **Each item is isolated**
+[CORRECTION 2026-10-13, review of PR #30]: a step that still fails after its retries (the model stayed
+down) is caught (Inngest's `StepError`), that item stays Not sorted (marked tried) and the rest of the
+batch goes on. When anything was sorted, the run sends the debounced change signal
+(`requestShoppingRefresh` — no "last updated by" stamp: nobody changed the list), so the live list
+re-renders with its groups; a failed item never holds that back.
+
+**Backfill** (2026-10-13, review of PR #30). Rows that were on the list before auto-sorting existed
+would otherwise stay one "Not sorted" block forever. Every live-list render (`runShoppingRender`), AFTER
+its edit (it never delays it), runs one more step, `live-backfill`: `backfillCandidates` finds this
+house's OPEN rows never tried (`category_source` and `categorized_at` NULL) older than 60 seconds
+(`BACKFILL_AFTER_MS` — younger ones still have their own event in flight), at most 30, oldest first, and
+sends them as a `lists/shopping.categorize` event. Why the render: every house renders its live list
+often (every change, tap and `/list`), so the first render after the deploy starts it with no command,
+no cron and no new column; the sorted batch's own re-render then brings the next 30. It is idempotent
+because a tried row never matches again (an unsortable row is marked tried, not retried forever), and
+best-effort (a failure is logged; the next render tries again). A house with no live list is backfilled
+only once it renders one (`/list`).
+
+**Rename** [CORRECTION 2026-10-13, review of PR #30]: a rename to a NEW name (not a case-only fix) drops
+an AUTOMATIC category (`remembered` / `similar` / `guessed`, or an untried row) — it was worked out for
+the old name — and the caller asks for that row to be sorted again (`RenameResult.resortId` →
+`requestCategorize`). A housemate's pick (`picked`) is kept. A merge leaves the kept row as it was.
 
 ### A housemate's pick (teaches the house)
 
@@ -230,7 +253,11 @@ that loose key; more than one → `ambiguous`, none → `not_found`, nothing cha
 `categorized_at`; then the house memory for that item name is upserted (`ON CONFLICT … DO UPDATE`), so
 a later add of the same item is `remembered`. A pick of null ("Not sorted") deletes the memory row.
 Group-scoped (an id from another house matches nothing). A pick changes the list, so it calls
-`noteShoppingChange` (stamp + debounced render).
+`noteShoppingChange` (stamp + debounced render). It then sends the row to `lists/shopping.categorize`
+[CORRECTION 2026-10-13, review of PR #30]: the run embeds its name (the batched step embeds every named
+row, sorted or not) and leaves the pick alone, so a picked item that never went through auto-sorting
+still becomes a "similar" anchor. Embedding there, not inside `setItemCategory`, keeps the kiosk request
+and the chat step free of a Voyage call; best-effort like every categorize request.
 
 - **Kiosk:** `POST /api/kitchen/shopping/category` (§Kitchen API).
 - **Telegram** (it fit the existing list-op pattern, so it is in): the `categorize` list op — "put
@@ -238,7 +265,12 @@ Group-scoped (an id from another house matches nothing). A pick changes the list
   flag, `listOpProposed` gate (quarantine and forwards can never sort; pause lane-scoped), extractor
   and memoized `list` step as every list op; at most 10 picks per message. The section word is matched
   by code (`pickedCategory`): a key in any case → that category, `unsorted` / `not sorted` / `none` →
-  null, anything else → reported as not a section, nothing changed. Acks (`categorizeAck`): group →
+  null, anything else → not a section. The ITEM is matched first [CORRECTION 2026-10-13, review of PR
+  #30]: a non-section for an item that is NOT on the list ("put the milk in the fridge", "put the bins
+  out") is not about the list at all — it is dropped silently, and when nothing else in the message was a
+  list pick the op is `none` (the message falls through, no reply). Only a non-section for an item that
+  IS on the list is reported ("snacks isn't a section…"). The triage and extractor prompts name those
+  counter-examples as list `none`. Acks (`categorizeAck`): group →
   👍 when everything named was sorted, otherwise words (what wasn't found, what was ambiguous, which
   sections exist); DM → words ("Put coffee filters under Coffee. I'll remember that next time.").
 

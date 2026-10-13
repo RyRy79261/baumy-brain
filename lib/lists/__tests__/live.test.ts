@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   renderLiveList,
   parseShopCallback,
@@ -353,6 +355,14 @@ describe('renderLiveList — order modes and headings (issue #29)', () => {
     const old = HOUSE_LIST.filter((r) => r.id === uuid(1) || r.id === uuid(2))
     expect(texts(render('added', old).keyboard).slice(0, -1)).toEqual(['── Earlier ──', '☐ oat milk', '☐ bin bags'])
     console.log(`\n[Added]\n${mockLiveList(view)}\n`)
+  })
+
+  it('the mockups in docs/spec/shopping-list.md and README.md are exactly what the renderer draws (they cannot drift)', () => {
+    const spec = readFileSync(join(process.cwd(), 'docs/spec/shopping-list.md'), 'utf8')
+    for (const m of ['groups', 'az', 'added'] as const) expect(spec).toContain(`\`\`\`\n${mockLiveList(render(m))}\n\`\`\``)
+    const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8')
+    const small = HOUSE_LIST.filter((r) => [1, 2, 3, 5, 9].some((n) => r.id === uuid(n)))
+    expect(readme).toContain(`\`\`\`\n${mockLiveList(render('groups', small))}\n\`\`\``)
   })
 
   it('the header is the same in every mode (counts, who, when)', () => {
