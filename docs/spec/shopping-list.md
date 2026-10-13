@@ -133,6 +133,95 @@ Invariants:
   an open item is a no-op (`already`, partial-unique index backstop); check-off is exact-normalized
   then the unambiguous loose key. Like the Telegram lane it auto-commits (capture tier, I5).
 
+## Shopping topic (2026-10-13, issue #21)
+
+The house can give the list its own forum topic. Baumy keeps the whole open list posted there, so
+anyone can open the topic and see what to buy.
+
+**Setting it.** A housemate sends `/shoppinghere` inside the topic (`/shoppingoff` turns it off). Code
+handles it with no model involved (`lib/turn/commands.ts`):
+
+- **Who:** an active roster member, any role, in the house lane, speaking in their own words. A
+  forwarded message, an anonymous-admin post, a bot post, a DM and a foreign group are all refused.
+  Refused means the command falls through to the house-group rule for unknown commands and is dropped
+  (I7). This is wider than `/notifyhere` and `/baumyhere`, which only the owner may run, because the
+  list belongs to the whole house.
+- **Where:** `/shoppinghere` must come from inside a topic. The thread id it stores is the message's
+  Telegram-authenticated `message_thread_id` (`house_config.shopping_thread_id`, migration 0024),
+  never text. In the General topic nothing is stored, and Baumy says to run it inside a topic.
+- `/shoppingoff` clears the topic and takes the last list message down. It deletes the message, or,
+  if Telegram refuses, edits it to `This list is no longer updated.` It also clears the stored message
+  id. Both commands are audited (`shopping.topic.set`) and confirmed in the chat where they were
+  sent. `/shoppinghere` also asks for a repost, so the list shows up in the new topic without waiting
+  for the next change.
+
+**Reposting.** Every change to the list asks for a repost: an add or check-off from Telegram
+(`runList`, and only when something was added or ticked) and a kitchen API add or check-off
+(`handleAdd` / `handleCheckOff`, on the same condition). These are all the writers of
+`baumy_list_items` today; a new one must call `requestShoppingRepost` too. The request is a
+`lists/shopping.changed` event sent to Inngest. The `shopping-repost` function is **debounced for 2
+minutes, keyed by the house** (`event.data.groupId`). It runs about 2 minutes after the LAST change,
+so a burst of adds becomes one post. A concurrency limit of 1 per house means two runs never race on
+the stored message id. The request is best-effort: if it fails, the list write still stands, and the
+next change brings the topic up to date.
+
+The run (`lib/lists/board.ts` `runShoppingRepost`):
+
+1. Reads the house config. With no shopping topic it does **nothing**. With the house paused
+   (`/pause`) it posts nothing either, like every other proactive post to the house group. Turning
+   Baumy back on, with `/resume` or the dashboard switch, asks for a repost
+   (`requestShoppingRepostForHouse`), so changes made while paused show up.
+2. Posts the whole open list as ONE message in the topic, to the house's live send id. It is **not
+   pinned**, because each pin adds a service line to the topic. If Telegram reports that the topic is
+   gone or closed (`message thread not found`, `TOPIC_CLOSED`, `TOPIC_DELETED`), the run does not
+   throw, so Inngest does not retry it. Instead it clears `shopping_thread_id`, audited as
+   `shopping.topic.cleared`, and stops. The clear is compare-and-set: it only clears the topic this
+   run tried to post in. Later changes then do nothing, instead of failing three times each. Any other
+   send error is thrown, and Inngest retries it.
+3. Swaps the new message's chat and id into `shopping_message_chat_id` / `shopping_message_id`, and
+   gets back the previous ones, in **one statement** (`swapStoredBoard`). The statement locks the row
+   with `FOR UPDATE`, so it reads and writes the row together. Inngest's concurrency limit applies to
+   steps, not whole runs, so two reposts can interleave. Even then, each run gets a different previous
+   post: the first gets the one before both runs, and the second gets the first run's post. Each run
+   retires exactly the one it got back, so no post is orphaned.
+4. Deletes that previous list message. Telegram refuses some deletes (for example, a message more than
+   48 hours old). In that case Baumy **edits** the old message to `⬇️ The list moved down.`, so there
+   are never two lists that both look current. If the edit fails too, it logs a warning and moves on.
+
+Each stage is its own Inngest step, so a retry never posts twice.
+
+**The message.** It is plain text, with no `parse_mode`, so item text can never become markup:
+
+```
+🛒 Shopping list (3)
+• milk
+• bin bags
+• oat milk
+```
+
+An empty list posts `The list is empty.` Items are untrusted text, both from chat and from the kiosk.
+Before an item is printed, it is collapsed to one line, so it can't fake a line of its own. These
+characters are stripped:
+
+- control characters;
+- bidi marks, overrides and isolates;
+- zero-width characters, the word joiner and the invisible operators (U+2060–U+2064);
+- the Arabic letter mark;
+- the soft hyphen;
+- the BOM.
+
+An `@` that starts a word, a `#` followed by any letter or digit, a `$` followed by a letter, and a `/`
+that starts a word are swapped for their look-alikes (`＠`, `＃`, `＄`, `∕`). Telegram therefore never turns an
+item into a mention that pings someone, a hashtag, a cashtag or a tappable `/command`. A list too long
+for one Telegram message (4096 characters) ends with `…and N more.`
+
+**Not in the conversation window.** The list post is Baumy's own send, but it is a status board, not
+conversation. Like the sign-in card, it skips the window (`sendShoppingBoard` in
+`lib/telegram/client.ts`). Each change would otherwise add a full copy of the list to the topic's
+window, and those copies would crowd real turns out of the 12 that the models read. A copy is also
+out of date after the next change. When someone asks "what's on the list?", Baumy reads the table
+itself, so the models never need the board.
+
 ## Deliberately deferred
 
 - **Multi-list** (`todo`, `guests`, …): `list_name` exists; wiring a second list is additive, no

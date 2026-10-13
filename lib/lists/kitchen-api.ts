@@ -6,6 +6,7 @@ import { getHouseChatId } from '@/lib/identity/house'
 import { ensureRegistered } from '@/lib/memory/write'
 import { tokenMatches } from '@/lib/telegram/verify'
 import { addListItems, checkOffItems, currentList, type ListRow } from '@/lib/lists/store'
+import { requestShoppingRepost } from '@/lib/lists/board'
 
 // The kitchen shopping API (docs/spec/shopping-list.md §Kitchen API): the house kiosk (Baumy
 // Olympics) reads and writes the SAME group-scoped list Telegram does, so there is one list.
@@ -98,6 +99,8 @@ export async function handleAdd(req: Request): Promise<Response> {
     // lane makes — and matters when the scope is the BAUMY_HOUSE_CHAT_ID pin.
     await ensureRegistered(db, scope, null)
     const res = await addListItems(db, { groupId: scope, items: body.items, addedBy: by })
+    // The list changed → the debounced shopping-topic repost (best-effort; never fails the write).
+    if (res.added.length > 0) await requestShoppingRepost(scope)
     return json({ ok: true, added: res.added, already: res.already, attributedTo: by, items: view(await currentList(db, scope)) })
   })
 }
@@ -108,6 +111,7 @@ export async function handleCheckOff(req: Request): Promise<Response> {
     if (!body) return json({ ok: false, error: 'bad_request', message: 'Expected { items: string[1..30], telegramUserId? }.' }, 400)
     const by = await mapMember(db, body.telegramUserId)
     const res = await checkOffItems(db, { groupId: scope, items: body.items, checkedBy: by })
+    if (res.checkedOff.length > 0) await requestShoppingRepost(scope)
     return json({ ok: true, checkedOff: res.checkedOff, notFound: res.notFound, attributedTo: by, items: view(await currentList(db, scope)) })
   })
 }

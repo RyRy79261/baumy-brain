@@ -13,11 +13,14 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 // real request's sends.
 
 export interface OutboundMessage {
-  kind: 'message' | 'confirm-card' | 'dm' | 'reaction' | 'edit' | 'callback-answer'
+  kind: 'message' | 'confirm-card' | 'dm' | 'reaction' | 'edit' | 'delete' | 'callback-answer'
   chatId: string
   text: string | null
-  /** Set for reactions ('👀', '✍', null = cleared) and for confirm cards (the action id). */
+  /** Set for reactions ('👀', '✍', null = cleared), for confirm cards (the action id), and for an edit or
+   *  a delete (the message id it targets). For a message: 'board' marks the unwindowed shopping list. */
   meta?: string | null
+  /** The forum topic a message was posted into, when the send names one (the shopping-list post). */
+  threadId?: number
   /** For a message / confirm card sent as a Telegram reply: the message_id it replies to (C11). */
   replyTo?: number
   /** For a message / confirm card: the synthetic Telegram message_id the sandbox gave it (a real send

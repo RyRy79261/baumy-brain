@@ -6,8 +6,9 @@ import { reminders } from '@/db/schema'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { embedSync, setEmbedOverride } from '@/lib/ai/embed'
 import { setConsoleThread } from '@/lib/identity/house'
+import { SHOPPING_CHANGED } from '@/lib/lists/board'
 import { inngest } from '@/lib/inngest/client'
-import { createSandbox, sendAs, tapAs, advanceBy, type Sandbox, type SandboxPerson, type SendOptions, type TranscriptEntry } from '@/lib/sandbox/harness'
+import { createSandbox, sendAs, tapAs, advanceBy, noteShoppingChanged, type Sandbox, type SandboxPerson, type SendOptions, type TranscriptEntry } from '@/lib/sandbox/harness'
 import { setOlympicsTransport } from '@/lib/olympics/client'
 import { FAKE_OLYMPICS_TOKEN, FAKE_OLYMPICS_URL, type FakeOlympics } from './olympics-fake'
 import { installFakeModels, installRecordingModels, type CallRole, type Fixtures, type ModelCall, type ModelRecorder } from './fake-model'
@@ -172,8 +173,13 @@ async function runScenario(spec: ScenarioSpec, mode: 'offline' | 'live'): Promis
   const events: Run['events'] = []
   const realSend = inngest.send
   const client = inngest as unknown as { send: (p: unknown) => Promise<{ ids: string[] }> }
+  // The one event the harness DOES act on: a shopping-list change arms the debounced topic repost.
+  let sbRef: Sandbox | null = null
   client.send = async (payload) => {
-    for (const e of [payload].flat() as { name: string; data: unknown }[]) events.push({ name: e.name, data: e.data })
+    for (const e of [payload].flat() as { name: string; data: unknown }[]) {
+      events.push({ name: e.name, data: e.data })
+      if (e.name === SHOPPING_CHANGED && sbRef) noteShoppingChanged(sbRef)
+    }
     return { ids: [] }
   }
   // Offline means OFFLINE: any code path that still reaches for the network fails loudly.
@@ -188,6 +194,7 @@ async function runScenario(spec: ScenarioSpec, mode: 'offline' | 'live'): Promis
     const startAt = DateTime.fromISO(spec.startAt.replace(' ', 'T'), { zone: tz })
     if (!startAt.isValid) throw new Error(`[scenarios] bad startAt: ${spec.startAt}`)
     const sb = await createSandbox({ db, startAt: startAt.toJSDate(), people, tz })
+    sbRef = sb
     if (spec.consoleTopic != null) await setConsoleThread(db, spec.consoleTopic)
     const r: Run = { sb, db, mode, models, spec: { ...spec, people }, turns: [], events, olympics }
     for (const [i, step] of spec.steps.entries()) {

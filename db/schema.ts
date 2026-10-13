@@ -150,6 +150,14 @@ export const houseConfig = pgTable(
     // commands are handy. Null → no such topic. It changes VERBOSITY, never trust: messages there are
     // still untrusted house text, so nothing privileged rides on it. Set by the owner's /baumyhere.
     consoleThreadId: bigint('console_thread_id', { mode: 'number' }),
+    // The forum topic the shopping list is posted into (docs/spec/shopping-list.md §Shopping topic).
+    // Null → no shopping topic, nothing is posted. Set by a member's /shoppinghere INSIDE the topic, so
+    // the value is a Telegram-authenticated message_thread_id, never message text.
+    shoppingThreadId: bigint('shopping_thread_id', { mode: 'number' }),
+    // The list message Baumy last posted there (chat + message id), so the next repost can delete it.
+    // Null → none posted yet. Written only by the repost job, from Telegram's own sendMessage result.
+    shoppingMessageChatId: text('shopping_message_chat_id'),
+    shoppingMessageId: bigint('shopping_message_id', { mode: 'number' }),
     houseTimezone: text('house_timezone').notNull().default('Europe/Berlin'),
     responsePolicy: jsonb('response_policy')
       .notNull()

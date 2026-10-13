@@ -169,6 +169,13 @@
       "when": 1790430937077,
       "tag": "0023_forwarded_by",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1791898039751,
+      "tag": "0024_thin_the_fury",
+      "breakpoints": true
     }
   ]
 }

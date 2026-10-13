@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { and, eq } from 'drizzle-orm'
 import { startPgHarness, dockerAvailable, type PgHarness } from './pg-harness'
-import { auditLog, entities, facts, memoryItems, reminders } from '@/db/schema'
+import { auditLog, entities, facts, houseConfig, memoryItems, reminders } from '@/db/schema'
 import { ensureRegistered, captureMemory } from '@/lib/memory/write'
 import { retrieve } from '@/lib/memory/retrieve'
 import { reconcileFact, reconcileFactDetailed, currentFactsForQuery, upcomingDatedFacts, eventGroupFacts, ensureSpeakerEntity } from '@/lib/memory/facts'
@@ -20,6 +20,8 @@ import { setDashboardAccess, upsertMember, loadRoster } from '@/lib/identity/ros
 import { embedSync } from '@/lib/ai/embed'
 import { withSimulatedTime } from '@/lib/core/clock'
 import { __setDbOverride } from '@/db/client'
+import { resolveHouseIds, setShoppingThread } from '@/lib/identity/house'
+import { captureOutbound } from '@/lib/telegram/outbox'
 import { POST as kitchenAdd } from '@/app/api/kitchen/shopping/add/route'
 import { GET as kitchenList } from '@/app/api/kitchen/shopping/route'
 
@@ -33,7 +35,13 @@ vi.mock('@/lib/ai/nudge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/ai/nudge')>()
   return { ...actual, writeHeadsUp: async (facts: { subject: string }[]) => `heads-up about ${facts[0]?.subject}` }
 })
+// The kitchen add asks Inngest for the shopping-topic repost — never sent from here.
+vi.mock('@/lib/lists/board', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/lists/board')>()
+  return { ...actual, requestShoppingRepost: async () => {} }
+})
 const { runEventSurfacingScan } = await import('@/lib/inngest/functions/surfacing')
+const { runShoppingRepost, swapStoredBoard, retireShoppingBoard } = await import('@/lib/lists/board')
 const embed = async (t: string) => embedSync(t)
 const GROUP = '-100e2e'
 
@@ -283,6 +291,46 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     } finally {
       __setDbOverride(null)
       vi.unstubAllEnvs()
+    }
+  })
+
+  it('shopping topic: migration 0024 — set the topic, post, store the post id, retire it on the next post (real SQL)', async () => {
+    const SHOP = '-100e2eShop'
+    await ensureRegistered(h.db, SHOP, null)
+    await h.db
+      .insert(houseConfig)
+      .values({ id: true, houseGroupChatId: SHOP })
+      .onConflictDoUpdate({ target: houseConfig.id, set: { houseGroupChatId: SHOP, liveChatId: null } })
+    __setDbOverride(h.db)
+    try {
+      await setShoppingThread(h.db, 9_007_199_254) // a large (bigint) thread id survives the round trip
+      expect((await resolveHouseIds(h.db)).shoppingThreadId).toBe(9_007_199_254)
+      await addListItems(h.db, { groupId: SHOP, items: ['milk'], addedBy: null })
+      const step = { run: <T>(_id: string, fn: () => Promise<T>) => fn() }
+      const first = await captureOutbound(() => runShoppingRepost(step, () => h.db, SHOP))
+      expect(first.result).toMatchObject({ status: 'posted', previous: 'none' })
+      const [cfg] = await h.db.select({ chat: houseConfig.shoppingMessageChatId, id: houseConfig.shoppingMessageId }).from(houseConfig)
+      expect(cfg).toEqual({ chat: SHOP, id: first.sent[0].messageId })
+      const second = await captureOutbound(() => runShoppingRepost(step, () => h.db, SHOP))
+      expect(second.result).toMatchObject({ status: 'posted', previous: 'deleted' })
+      expect(second.sent.find((m) => m.kind === 'delete')?.meta).toBe(String(first.sent[0].messageId))
+      // The atomic swap on real Postgres: concurrent swaps each get a DIFFERENT previous post (the row
+      // lock serialises them), so overlapping reposts never retire the same one twice.
+      const swaps = await Promise.all([1, 2, 3].map((n) => swapStoredBoard(h.db, { chatId: SHOP, messageId: 5000 + n })))
+      const before = second.sent.find((m) => m.kind === 'message')!.messageId!
+      const prevIds = swaps.map((p) => p?.messageId).sort()
+      const [now] = await h.db.select({ id: houseConfig.shoppingMessageId }).from(houseConfig)
+      // the three "previous" values are the old post plus two of the new ids; the third new id is stored
+      expect(new Set(prevIds).size).toBe(3)
+      expect([...prevIds, now.id].sort()).toEqual([before, 5001, 5002, 5003].sort())
+      // /shoppingoff: the stored post comes down and the id is cleared
+      expect((await captureOutbound(() => retireShoppingBoard(h.db))).result).toBe('deleted')
+      const [cleared] = await h.db.select({ id: houseConfig.shoppingMessageId }).from(houseConfig)
+      expect(cleared.id).toBeNull()
+      await setShoppingThread(h.db, null)
+      expect((await captureOutbound(() => runShoppingRepost(step, () => h.db, SHOP))).result).toEqual({ status: 'no-topic' })
+    } finally {
+      __setDbOverride(null)
     }
   })
 

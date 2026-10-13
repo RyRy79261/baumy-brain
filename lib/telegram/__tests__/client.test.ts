@@ -5,11 +5,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const setMessageReaction = vi.fn(async (..._a: unknown[]): Promise<true> => true)
 const getMe = vi.fn(async () => ({ id: 4242, username: 'Baumy_Bot', is_bot: true, first_name: 'Baumy' }))
 const sendMessage = vi.fn(async (..._a: unknown[]) => ({ message_id: 321 }))
+const deleteMessageApi = vi.fn(async (..._a: unknown[]): Promise<true> => true)
+const editMessageTextApi = vi.fn(async (..._a: unknown[]): Promise<unknown> => true)
 vi.mock('grammy', () => ({
   Api: class {
     setMessageReaction = (...a: unknown[]) => setMessageReaction(...a)
     getMe = () => getMe()
     sendMessage = (...a: unknown[]) => sendMessage(...a)
+    deleteMessage = (...a: unknown[]) => deleteMessageApi(...a)
+    editMessageText = (...a: unknown[]) => editMessageTextApi(...a)
   },
 }))
 
@@ -75,5 +79,59 @@ describe('the send seam feeds the conversation window (chat-understanding-v2 §5
       warn.mockRestore()
       __setDbOverride(null)
     }
+  })
+})
+
+// The shopping-list post (docs/spec/shopping-list.md §Shopping topic): plain text into the topic, its
+// message id returned for the next repost's delete, and NOT windowed (a status board, not conversation).
+describe('the shopping-list post, delete and edit', () => {
+  beforeEach(() => {
+    sendMessage.mockClear()
+    deleteMessageApi.mockReset()
+    editMessageTextApi.mockReset()
+  })
+
+  it('posts plain text (no parse_mode) into the topic and returns Telegram\'s message id — never touching the window', async () => {
+    const { __setDbOverride } = await import('@/db/client')
+    const touched = vi.fn()
+    __setDbOverride(new Proxy({}, { get: () => touched }) as never) // any window read/write would call this
+    try {
+      sendMessage.mockResolvedValueOnce({ message_id: 777 })
+      const { sendShoppingBoard } = await import('@/lib/telegram/client')
+      expect(await sendShoppingBoard('-100h', '🛒 Shopping list (1)\n• milk', 55)).toBe(777)
+      expect(sendMessage).toHaveBeenCalledTimes(1)
+      const [chat, text, opts] = sendMessage.mock.calls[0] as [string, string, Record<string, unknown>]
+      expect(chat).toBe('-100h')
+      expect(text).toBe('🛒 Shopping list (1)\n• milk')
+      expect(opts.message_thread_id).toBe(55)
+      expect(opts).not.toHaveProperty('parse_mode')
+      expect(touched).not.toHaveBeenCalled()
+    } finally {
+      __setDbOverride(null)
+    }
+  })
+
+  it('a refused delete is false + logged, never thrown (the caller falls back to an edit)', async () => {
+    deleteMessageApi.mockRejectedValue(new Error("Bad Request: message can't be deleted"))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { deleteMessage } = await import('@/lib/telegram/client')
+    expect(await deleteMessage('-100h', 5)).toBe(false)
+    expect(String(warn.mock.calls[0][1])).toContain("can't be deleted")
+    warn.mockRestore()
+    deleteMessageApi.mockResolvedValue(true)
+    expect(await deleteMessage('-100h', 5)).toBe(true)
+    expect(deleteMessageApi).toHaveBeenLastCalledWith('-100h', 5)
+  })
+
+  it('the edit fallback rewrites the old post; a refused edit is false + logged', async () => {
+    const { editShoppingBoard } = await import('@/lib/telegram/client')
+    editMessageTextApi.mockResolvedValue(true)
+    expect(await editShoppingBoard('-100h', 5, '⬇️ The list moved down.')).toBe(true)
+    expect(editMessageTextApi.mock.calls[0].slice(0, 3)).toEqual(['-100h', 5, '⬇️ The list moved down.'])
+    editMessageTextApi.mockRejectedValue(new Error('Bad Request: message to edit not found'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await editShoppingBoard('-100h', 5, '⬇️ The list moved down.')).toBe(false)
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
   })
 })

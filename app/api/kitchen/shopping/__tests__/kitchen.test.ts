@@ -12,6 +12,13 @@ import { GET } from '@/app/api/kitchen/shopping/route'
 import { POST as ADD } from '@/app/api/kitchen/shopping/add/route'
 import { POST as CHECKOFF } from '@/app/api/kitchen/shopping/checkoff/route'
 
+// The shopping-topic repost trigger (docs/spec/shopping-list.md §Shopping topic) — spied, never sent.
+const requestShoppingRepost = vi.fn(async (..._a: unknown[]) => {})
+vi.mock('@/lib/lists/board', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/lists/board')>()
+  return { ...actual, requestShoppingRepost: (...a: unknown[]) => requestShoppingRepost(...a) }
+})
+
 // The kitchen shopping API (lib/lists/kitchen-api.ts): Bearer-token wall, house scope from
 // getHouseChatId only, the store's dedupe, and member attribution only for a real active member.
 
@@ -45,6 +52,7 @@ beforeEach(async () => {
   vi.stubEnv('KITCHEN_API_TOKEN', TOKEN)
   vi.stubEnv('BAUMY_HOUSE_CHAT_ID', '')
   vi.spyOn(console, 'warn').mockImplementation(() => {})
+  requestShoppingRepost.mockClear()
 })
 afterEach(() => {
   __setDbOverride(null)
@@ -207,6 +215,34 @@ describe('kitchen shopping API — add and check off', () => {
       expect((await CHECKOFF(req('/checkoff', { body }))).status).toBe(400)
     }
     expect(await openItems(db, HOUSE)).toEqual([])
+  })
+})
+
+describe('kitchen shopping API — the shopping-topic repost (issue #21)', () => {
+  it('an add that put something on the list asks for the debounced repost, for the house scope', async () => {
+    await house(db)
+    expect((await ADD(req('/add', { body: { items: ['milk'] } }))).status).toBe(200)
+    expect(requestShoppingRepost).toHaveBeenCalledTimes(1)
+    expect(requestShoppingRepost).toHaveBeenCalledWith(HOUSE)
+  })
+
+  it('a check-off that ticked something asks for the repost', async () => {
+    await house(db)
+    await addListItems(db, { groupId: HOUSE, items: ['milk'], addedBy: null })
+    expect((await CHECKOFF(req('/checkoff', { body: { items: ['milk'] } }))).status).toBe(200)
+    expect(requestShoppingRepost).toHaveBeenCalledTimes(1)
+    expect(requestShoppingRepost).toHaveBeenCalledWith(HOUSE)
+  })
+
+  it('a write that changed nothing, a read, a refused or a malformed request asks for none', async () => {
+    await house(db)
+    await addListItems(db, { groupId: HOUSE, items: ['milk'], addedBy: null })
+    expect((await ADD(req('/add', { body: { items: ['milk'] } }))).status).toBe(200) // already open
+    expect((await CHECKOFF(req('/checkoff', { body: { items: ['caviar'] } }))).status).toBe(200) // not on it
+    expect((await GET(req(''))).status).toBe(200)
+    expect((await ADD(req('/add', { auth: 'Bearer nope', body: { items: ['eggs'] } }))).status).toBe(401)
+    expect((await ADD(req('/add', { body: { items: [] } }))).status).toBe(400)
+    expect(requestShoppingRepost).not.toHaveBeenCalled()
   })
 })
 

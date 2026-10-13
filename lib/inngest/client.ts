@@ -59,6 +59,9 @@ type Events = {
   // Group→supergroup migration (docs/spec/telegram.md D9): oldId/newId derived from the
   // migrate_to_chat_id / migrate_from_chat_id service message (authenticated transport fields).
   'telegram/chat_migrated': { data: { updateId: number; oldId: string; newId: string } }
+  // The shopping list changed (docs/spec/shopping-list.md §Shopping topic): groupId = the house SCOPE.
+  // Debounced per house by shopping-repost, which reposts the list in the shopping topic.
+  'lists/shopping.changed': { data: { groupId: string } }
 }
 
 // The inbound Telegram message payload — exported so the ingest handler can be invoked
