@@ -76,6 +76,10 @@ type Events = {
       place?: { chatId: string; threadId: number | null; move: boolean }
     }
   }
+  // Sort newly added shopping items into a category (issue #29, docs/spec/shopping-list.md §Categories):
+  // sent AFTER an add by runList and the kitchen API, with the ids of the rows that add inserted. Never
+  // blocks the add — a lost event leaves the items "Not sorted".
+  'lists/shopping.categorize': { data: { groupId: string; itemIds: string[] } }
 }
 
 // The inbound Telegram message payload — exported so the ingest handler can be invoked

@@ -7,6 +7,7 @@ import { deliverDueReminders, deliverReminderNow } from '@/lib/inngest/functions
 import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
 import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
 import { runShoppingRender, SHOPPING_DEBOUNCE_MS, SHOPPING_DEBOUNCE_TIMEOUT_MS, type RenderRequest } from '@/lib/lists/board'
+import { runCategorize } from '@/lib/lists/categorize'
 import { purgeWindow } from '@/lib/turn/window'
 import { runHygieneSweep } from '@/lib/memory/hygiene'
 import { proposeEntityMerges } from '@/lib/ai/dedupe'
@@ -117,6 +118,18 @@ export async function renderShoppingNow(sb: Sandbox, req: RenderRequest): Promis
   }
   const { sent } = await captureOutbound(async () => withSimulatedTime(sb.now, () => runShoppingRender(inlineStep, () => sb.db, req)))
   sb.transcript.push(...sent.map((m) => ({ ...m, cause: 'shopping-render' })))
+}
+
+// A `lists/shopping.categorize` event (issue #29): production's shopping-categorize runs it right after
+// the add; the sandbox runs it at once too — inside the capture of whatever sent it, when there is one —
+// so a scenario sees the item sorted (and its debounced re-render armed) in the same turn.
+export async function categorizeShoppingNow(sb: Sandbox, data: { groupId: string; itemIds: string[] }): Promise<void> {
+  if (isCapturing()) {
+    await runCategorize(inlineStep, () => sb.db, data)
+    return
+  }
+  const { sent } = await captureOutbound(async () => withSimulatedTime(sb.now, () => runCategorize(inlineStep, () => sb.db, data)))
+  sb.transcript.push(...sent.map((m) => ({ ...m, cause: 'shopping-categorize' })))
 }
 
 // A no-op Inngest step: runs each step body inline, in order. The real handler is written against

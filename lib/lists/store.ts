@@ -1,7 +1,8 @@
 import { and, asc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
-import { houseConfig, listItems, members } from '@/db/schema'
+import { houseConfig, listCategories, listItems, members } from '@/db/schema'
 import { now as clockNow } from '@/lib/core/clock'
+import { asCategory, DEFAULT_SORT, isSortMode, type Category, type SortMode } from '@/lib/lists/categories'
 
 // A house list is a first-class, group-scoped, stateful table (docs/spec/shopping-list.md) —
 // distinct from fuzzy fact-memory. Every read/write here is keyed on `groupId` (= the house
@@ -39,6 +40,8 @@ export interface ListRow {
   item: string
   addedBy: string | null
   createdAt: Date
+  /** Its shopping category (issue #29), or null = "Not sorted". */
+  category: Category | null
 }
 
 // Collapse a batch of raw item strings to unique {normalized → first-seen display}, dropping
@@ -62,10 +65,10 @@ function dedupeInput(items: string[]): Map<string, string> {
 export async function addListItems(
   db: Database,
   input: { groupId: string; items: string[]; addedBy: string | null; listName?: string },
-): Promise<{ added: string[]; already: string[] }> {
+): Promise<{ added: string[]; already: string[]; addedIds: string[] }> {
   const listName = input.listName ?? DEFAULT_LIST
   const wanted = dedupeInput(input.items)
-  if (wanted.size === 0) return { added: [], already: [] }
+  if (wanted.size === 0) return { added: [], already: [], addedIds: [] }
 
   const norms = [...wanted.keys()]
   const openRows = await db
@@ -90,6 +93,7 @@ export async function addListItems(
   }
 
   let added: string[] = []
+  let addedIds: string[] = []
   if (rows.length) {
     // onConflictDoNothing backstops a concurrent double-add against the partial-unique index;
     // RETURNING gives the rows ACTUALLY inserted, so the ack never over-counts a raced dup — and a
@@ -98,12 +102,14 @@ export async function addListItems(
       .insert(listItems)
       .values(rows)
       .onConflictDoNothing()
-      .returning({ item: listItems.item, n: listItems.itemNormalized })
+      .returning({ id: listItems.id, item: listItems.item, n: listItems.itemNormalized })
     added = inserted.map((r) => r.item)
+    // The new rows' ids — auto-sorting (lib/lists/categorize.ts) runs on exactly these, after the add.
+    addedIds = inserted.map((r) => r.id)
     const won = new Set(inserted.map((r) => r.n))
     for (const r of rows) if (!won.has(r.itemNormalized)) already.push(r.item)
   }
-  return { added, already }
+  return { added, already, addedIds }
 }
 
 // The two ways an open item LEAVES the list. Check-off = bought (checked_at / checked_by). Remove =
@@ -297,11 +303,12 @@ export async function renameItem(
 
 // The current OPEN list for a scope (unbought items), oldest first.
 export async function currentList(db: Database, groupId: string, listName: string = DEFAULT_LIST): Promise<ListRow[]> {
-  return db
-    .select({ id: listItems.id, item: listItems.item, addedBy: listItems.addedBy, createdAt: listItems.createdAt })
+  const rows = await db
+    .select({ id: listItems.id, item: listItems.item, addedBy: listItems.addedBy, createdAt: listItems.createdAt, category: listItems.category })
     .from(listItems)
     .where(openWhere(groupId, listName))
     .orderBy(asc(listItems.createdAt))
+  return rows.map((r) => ({ ...r, category: asCategory(r.category) }))
 }
 
 // ── The live list (issue #25, docs/spec/shopping-list.md §Live list) ─────────────────────────────────
@@ -313,6 +320,10 @@ export interface LiveRow {
   id: string
   item: string
   done: boolean
+  /** Its shopping category (issue #29), or null = "Not sorted". */
+  category?: Category | null
+  /** When it was added — the Added mode's "Today" / "Earlier". */
+  createdAt?: Date
 }
 
 // Every row still SHOWN on the live list (open + done-not-cleared), group-scoped (I4).
@@ -321,11 +332,11 @@ const shownWhere = (groupId: string, listName: string) =>
 
 export async function liveListRows(db: Database, groupId: string, listName: string = DEFAULT_LIST): Promise<LiveRow[]> {
   const rows = await db
-    .select({ id: listItems.id, item: listItems.item, checkedAt: listItems.checkedAt, createdAt: listItems.createdAt })
+    .select({ id: listItems.id, item: listItems.item, checkedAt: listItems.checkedAt, createdAt: listItems.createdAt, category: listItems.category })
     .from(listItems)
     .where(shownWhere(groupId, listName))
     .orderBy(sql`${listItems.checkedAt} IS NOT NULL`, asc(listItems.checkedAt), asc(listItems.createdAt), asc(listItems.id))
-  return rows.map((r) => ({ id: r.id, item: r.item, done: r.checkedAt != null }))
+  return rows.map((r) => ({ id: r.id, item: r.item, done: r.checkedAt != null, category: asCategory(r.category), createdAt: r.createdAt }))
 }
 
 /**
@@ -415,4 +426,110 @@ export async function markShoppingUpdated(db: Database, by: string | null): Prom
     .update(houseConfig)
     .set({ shoppingUpdatedBy: sql`${known}`, shoppingUpdatedAt: clockNow(), updatedAt: clockNow() })
     .where(sql`${houseConfig.id}`)
+}
+
+// ── Categories (issue #29, docs/spec/shopping-list.md §Categories) ─────────────────────────────────────
+
+/**
+ * What setting an item's category did.
+ * - `set`       — the row now has `category` (source `picked`), and the house remembers it for this item
+ *                 (a null category — "Not sorted" — forgets the remembered pick instead).
+ * - `not_found` — no item on THIS house's list matches: nothing changed (and nothing was remembered).
+ * - `ambiguous` — the text loosely fits more than one open item (`matches` names them): nothing changed.
+ */
+export interface SetCategoryResult {
+  outcome: 'set' | 'not_found' | 'ambiguous'
+  /** The item as it reads on the list (or the text asked for, when nothing matched; null for an id that matched nothing). */
+  item: string | null
+  category: Category | null
+  id?: string
+  matches?: string[]
+}
+
+// A housemate PICKS an item's category (the kiosk's category call, or "put coffee filters under coffee"
+// in Telegram). The row is named by `id` (a row still SHOWN on this house's live list — open, or ticked
+// and not cleared) or by `item` text (an OPEN item, matched like a check-off: exact normalized, then the
+// ONE open item with that loose key). Group-scoped (I4) — an id from another house matches nothing. The
+// row gets source `picked` (auto-sorting never overwrites it), and the house memory for that item name is
+// upserted, so a later add of the same item is `remembered`. `by` is an authenticated id or null.
+export async function setItemCategory(
+  db: Database,
+  input: { groupId: string; id?: string; item?: string; category: Category | null; by: string | null; listName?: string },
+): Promise<SetCategoryResult> {
+  const listName = input.listName ?? DEFAULT_LIST
+  const asked = (input.item ?? '').trim().slice(0, MAX_ITEM_LEN)
+  let hit: { id: string; item: string; n: string } | null = null
+  if (input.id) {
+    const [row] = await db
+      .select({ id: listItems.id, item: listItems.item, n: listItems.itemNormalized })
+      .from(listItems)
+      .where(and(eq(listItems.id, input.id), shownWhere(input.groupId, listName)))
+    hit = row ?? null
+  } else if (normalizeItem(asked)) {
+    const exact = await db
+      .select({ id: listItems.id, item: listItems.item, n: listItems.itemNormalized })
+      .from(listItems)
+      .where(and(openWhere(input.groupId, listName), eq(listItems.itemNormalized, normalizeItem(asked))))
+    const hits = exact.length ? exact : ((await openByLooseKey(db, input.groupId, listName)).get(looseItemKey(asked)) ?? []).map((h) => ({ ...h, n: normalizeItem(h.item) }))
+    if (hits.length > 1) return { outcome: 'ambiguous', item: asked, category: input.category, matches: hits.map((h) => h.item) }
+    hit = hits[0] ?? null
+  }
+  if (!hit) return { outcome: 'not_found', item: input.id ? null : asked, category: input.category }
+
+  const at = clockNow()
+  const [row] = await db
+    .update(listItems)
+    .set({ category: input.category, categorySource: 'picked', categorizedBy: input.by, categorizedAt: at })
+    .where(and(eq(listItems.id, hit.id), shownWhere(input.groupId, listName)))
+    .returning({ id: listItems.id, item: listItems.item })
+  if (!row) return { outcome: 'not_found', item: hit.item, category: input.category } // left the list meanwhile
+  await rememberCategory(db, { groupId: input.groupId, listName, itemNormalized: hit.n, category: input.category, by: input.by })
+  return { outcome: 'set', item: row.item, category: input.category, id: row.id }
+}
+
+// Teach the house memory: item name → category (upsert), or forget it for a null ("Not sorted") pick.
+export async function rememberCategory(
+  db: Database,
+  input: { groupId: string; listName?: string; itemNormalized: string; category: Category | null; by: string | null },
+): Promise<void> {
+  const listName = input.listName ?? DEFAULT_LIST
+  const key = and(eq(listCategories.groupId, input.groupId), eq(listCategories.listName, listName), eq(listCategories.itemNormalized, input.itemNormalized))
+  if (input.category == null) {
+    await db.delete(listCategories).where(key)
+    return
+  }
+  const at = clockNow()
+  await db
+    .insert(listCategories)
+    .values({ groupId: input.groupId, listName, itemNormalized: input.itemNormalized, category: input.category, pickedBy: input.by, updatedAt: at })
+    .onConflictDoUpdate({
+      target: [listCategories.groupId, listCategories.listName, listCategories.itemNormalized],
+      set: { category: input.category, pickedBy: input.by, updatedAt: at },
+    })
+}
+
+// The house's remembered pick for an item name (exact-normalized), or null.
+export async function rememberedCategory(db: Database, groupId: string, itemNormalized: string, listName: string = DEFAULT_LIST): Promise<Category | null> {
+  const [row] = await db
+    .select({ c: listCategories.category })
+    .from(listCategories)
+    .where(and(eq(listCategories.groupId, groupId), eq(listCategories.listName, listName), eq(listCategories.itemNormalized, itemNormalized)))
+  return asCategory(row?.c)
+}
+
+// ── The live list's order (issue #29): one mode for the whole house ────────────────────────────────
+
+export async function loadShoppingSort(db: Database): Promise<SortMode> {
+  const [cfg] = await db.select({ s: houseConfig.shoppingSort }).from(houseConfig).limit(1)
+  return isSortMode(cfg?.s) ? cfg.s : DEFAULT_SORT
+}
+
+// Set the house's order mode. Idempotent: setting the mode it already has changes nothing (false).
+export async function setShoppingSort(db: Database, mode: SortMode): Promise<boolean> {
+  const rows = await db
+    .update(houseConfig)
+    .set({ shoppingSort: mode, updatedAt: clockNow() })
+    .where(sql`${houseConfig.id} AND ${houseConfig.shoppingSort} <> ${mode}`)
+    .returning({ id: houseConfig.id })
+  return rows.length > 0
 }
