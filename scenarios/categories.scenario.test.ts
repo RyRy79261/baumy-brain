@@ -1,7 +1,7 @@
 import { describe } from 'vitest'
 import { and, eq } from 'drizzle-orm'
 import { listCategories, listItems } from '@/db/schema'
-import { scenario, say, advance, check, expectDb, expectReaction, expectWords, expectPrompt, expectNoPrompt, tapList, type Run } from './dsl'
+import { scenario, say, advance, check, expectDb, expectReaction, expectWords, expectPrompt, expectNoPrompt, expectSilent, tapList, type Run } from './dsl'
 import { statement, request, chatter } from './shapes'
 import { HOUSE } from './house'
 import type { TranscriptEntry } from '@/lib/sandbox/harness'
@@ -28,6 +28,10 @@ const fixtures = {
       ? statement({ worthRemembering: false, list: 'add' })
       : /^put .* under/.test(t)
         ? request({ asksBaumy: true, worthRemembering: false, list: 'categorize' })
+        : /^put the (milk|bins)/.test(t)
+          ? // Offline the triage MISROUTES these on purpose (the worst case the code must survive); live, the
+            // real classifier should say list "none" (its prompt names them as counter-examples).
+            statement({ worthRemembering: false, list: 'categorize' })
         : /^got /.test(t)
           ? statement({ worthRemembering: false, list: 'checkoff' })
           : chatter(),
@@ -40,6 +44,10 @@ const fixtures = {
           ? { op: 'categorize' as const, items: [], categories: [{ item: 'oat milk', category: 'coffee' }] }
           : /put pasta under snacks/.test(t)
             ? { op: 'categorize' as const, items: [], categories: [{ item: 'pasta', category: 'snacks' }] }
+            : /put the milk in the fridge/.test(t)
+              ? { op: 'categorize' as const, items: [], categories: [{ item: 'milk', category: 'fridge' }] }
+              : /put the bins out/.test(t)
+                ? { op: 'categorize' as const, items: [], categories: [{ item: 'bins', category: 'out' }] }
             : /got the oat milk/.test(t)
               ? { op: 'checkoff' as const, items: ['oat milk'] }
               : { op: 'none' as const, items: [] },
@@ -128,6 +136,34 @@ describe('scenario: shopping categories (issue #29)', () => {
       check('back to Groups', (r, e) => {
         e(toast(r)).toBe('Sorted: 🗂 Groups')
         e(labels(lastEdit(r))).toEqual(['── Pantry ──', '☐ pasta', '── Coffee ──', '☐ oat milk', '🗂 Groups', '🧹 Clear done', '🔄 Refresh'])
+      }),
+    ],
+  })
+
+  // Review of PR #30: "put X in/out …" is about the house, not the list. The item is matched first: when it
+  // is NOT on the list and the section is not one of the six, it is not a list op at all — silence.
+  scenario('"put the milk in the fridge" / "put the bins out" in the group never get a "not a section" reply', {
+    people: HOUSE,
+    startAt: '2026-10-13 18:00',
+    fixtures,
+    steps: [
+      say('Chloe', "we're out of pasta"),
+      expectReaction('✍'),
+      say('Marco', 'put the milk in the fridge'),
+      expectSilent(),
+      say('Ryan', 'put the bins out'),
+      expectSilent(),
+      // two signals: the add, and its auto-sort re-render — none from the two "put" messages
+      check('no list change was signalled by the "put" messages', (r, e) => e(r.events.filter((x) => x.name === 'lists/shopping.changed')).toHaveLength(2)),
+      expectDb(async (db, r) => {
+        const rows = await db.select().from(listItems).where(eq(listItems.groupId, r.sb.houseChatId))
+        return rows.length === 1 && rows[0].item === 'pasta' && rows[0].categorySource !== 'picked'
+      }, 'the list is just pasta, untouched'),
+      // present before absent: a non-section for an item that IS on the list is still answered
+      say('Ryan', 'put pasta under snacks', { dm: true }),
+      expectWords({
+        contains: /isn't a section/,
+        judge: 'Says "snacks" is not one of the shopping sections and lists the real ones. Must not say pasta was moved.',
       }),
     ],
   })
