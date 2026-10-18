@@ -159,8 +159,8 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
   has left (`lib/reminders/store.ts` `reminderDestination`). Personal reminders never appear in the
   group's `/reminders` or `/weekly` (`visibleReminders`), and a reminder request asked in a DM that set
   no HOUSE reminder is **not captured** into shared house memory either (no note, no facts — so no
-  `/weekly` event, recall or heads-up in the group; `privateDmReminder` in `ingest.ts`, which runs the
-  reminder step before capture). Digests / heads-ups → the house group only.
+  `/weekly` event, recall or heads-up in the group; `privateDmReminder` in `lib/turn/run.ts` `runTurn`,
+  which runs the reminder step before capture). Digests / heads-ups → the house group only.
   Both lanes' reminders still honour `/pause`. The LLM never picks a recipient.
 - **Supergroup migration (alias seam, `docs/spec/telegram.md` D9):** the house `chat_id` changes on a
   group→supergroup upgrade, but `house_group_chat_id` is ALSO the memory `group_id` — so it is the

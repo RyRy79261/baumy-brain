@@ -44,6 +44,10 @@ describe('turnGates — one action', () => {
   it('a question is never captured (I3), nor a question about a secret (I9)', () => {
     expect(gates({ verdict: QUESTION, text: "what's the wifi password?" }).capture).toBe(false)
     expect(gates({ verdict: QUESTION, directed: true }).decision).toBe('reply')
+    // I9 on its own: a capturable request phrased as a question about a secret is still not captured.
+    const ASK = V({ intent: 'request', worthRemembering: true })
+    expect(gates({ verdict: ASK, text: 'can you send the plumber the address?' }).capture).toBe(true)
+    expect(gates({ verdict: ASK, text: 'can you send me the wifi password?' }).capture).toBe(false)
   })
 
   it('a reminder needs a DIRECTED ask (A9); a directed one runs the reminder step', () => {
