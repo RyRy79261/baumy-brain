@@ -2,6 +2,7 @@ import { eq, sql } from 'drizzle-orm'
 import { createHttpDb, type Database } from '@/db/client'
 import { telegramChats, members, memoryItems, memoryEmbeddings, replies } from '@/db/schema'
 import { embed, EMBED_MODEL } from '@/lib/ai/embed'
+import { currentEmbedding, firsthandNote } from '@/lib/memory/current'
 import { scanSensitivity } from '@/lib/core/sensitivity'
 import { encryptSecret } from '@/lib/core/crypto'
 import { isRelayed, type Trust } from '@/lib/core/origin'
@@ -131,13 +132,10 @@ async function findDuplicate(db: Database, groupId: string, vector: number[], au
     SELECT mi.id AS id, 1 - (me.embedding <=> ${v}::vector) AS sim
     FROM baumy_memory_items mi
     JOIN baumy_memory_embeddings me ON me.memory_item_id = mi.id
-    WHERE mi.group_id = ${groupId}
-      AND mi.is_active = true
-      AND mi.is_secure = false
-      AND mi.trust_level NOT IN ('quarantined', 'forwarded')
+    WHERE ${firsthandNote('mi', groupId)}
       AND mi.authored_by IS NOT DISTINCT FROM ${authoredBy}
       AND mi.created_at >= ${since.toISOString()}
-      AND me.model = ${EMBED_MODEL}
+      AND ${currentEmbedding('me')}
     ORDER BY me.embedding <=> ${v}::vector
     LIMIT 1`)
   const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])

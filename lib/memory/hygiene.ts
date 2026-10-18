@@ -3,6 +3,7 @@ import { type Database } from '@/db/client'
 import { entities, facts, members, memoryItems } from '@/db/schema'
 import { liveFact } from '@/lib/memory/current'
 import { cardinalityOf, isStructuralEdge, normalizePredicate } from '@/lib/memory/predicates'
+import { mayOverride } from '@/lib/memory/trust'
 import { normalizeEntityName, possessiveParts } from '@/lib/memory/facts'
 import { PROFILE_PREDICATE } from '@/lib/memory/reflect'
 import { writeAudit } from '@/lib/audit'
@@ -33,9 +34,6 @@ const CONFLICT_TTL_DAYS = 14
 const PROPOSAL_MIN_SIM = 0.45 // below: not a look-alike; at/above MERGE_THRESHOLD (0.7) reconcile would have merged
 const PROPOSAL_MAX_SIM = 0.7
 const MAX_PROPOSALS = 10
-
-const TRUST_RANK: Record<string, number> = { system: 4, trusted: 3, untrusted: 2, forwarded: 1, quarantined: 1 }
-const rank = (t: string) => TRUST_RANK[t] ?? 0
 
 function rowsOf(res: unknown): Record<string, unknown>[] {
   return Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
@@ -274,11 +272,8 @@ async function resolveContradictions(db: Database, groupId: string, now: Date): 
         resolved++
         continue
       }
-      const may =
-        isStructuralEdge(winner) ||
-        rank(next.trustLevel) >= rank(winner.trustLevel) ||
-        (winner.trustLevel !== 'system' && next.authoredBy != null && (next.authoredBy === winner.authoredBy || owners.has(next.authoredBy)))
-      if (may) {
+      // The same gate reconcile applies on write (lib/memory/trust.ts); "owner" is the roster role now.
+      if (mayOverride({ ...next, authorIsOwner: next.authoredBy != null && owners.has(next.authoredBy) }, winner)) {
         resolved += await supersede(db, winner, next, now)
         winner = next
       } else {

@@ -3,13 +3,10 @@ import { handleTelegramMessage } from './ingest'
 import { handleCallbackQuery } from './callback'
 import { handleMyChatMember, handleChatMember } from './chat-member'
 import { handleChatMigrated } from './migration'
-import { reminderArm, reminderDeliver, reminderDigest } from './reminders'
+import { reminderArm, reminderDeliver } from './reminders'
 import { reembedSweep } from './reembed'
 import { reflectSweep } from './reflect'
-import { eventSurfacingScan } from './surfacing'
-import { consolidationSweep } from './consolidation'
-import { windowPurge } from './window'
-import { hygieneSweep } from './hygiene'
+import { cronFunctions } from './crons'
 import { shoppingCategorize, shoppingChanged, shoppingRender } from './shopping'
 
 // All registered Inngest functions.
@@ -21,13 +18,9 @@ export const functions: InngestFunction.Any[] = [
   handleChatMigrated,
   reminderArm,
   reminderDeliver,
-  reminderDigest,
   reembedSweep,
   reflectSweep,
-  eventSurfacingScan,
-  consolidationSweep,
-  windowPurge,
-  hygieneSweep,
+  ...cronFunctions,
   shoppingChanged,
   shoppingRender,
   shoppingCategorize,

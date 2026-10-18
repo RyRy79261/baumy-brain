@@ -3,14 +3,11 @@ import { type Database } from '@/db/client'
 import { type TelegramMessageData } from '@/lib/inngest/client'
 import { runIngest } from '@/lib/inngest/functions/ingest'
 import { runCallback } from '@/lib/inngest/functions/callback'
-import { deliverDueReminders, deliverReminderNow } from '@/lib/inngest/functions/reminders'
-import { runEventSurfacingScan } from '@/lib/inngest/functions/surfacing'
-import { runConsolidationSweep } from '@/lib/inngest/functions/consolidation'
+import { deliverReminderNow } from '@/lib/inngest/functions/reminders'
+import { CRON_JOBS, type CronJob } from '@/lib/inngest/functions/crons'
+import { SCHEDULE, firingsOf } from '@/lib/inngest/schedule'
 import { runShoppingRender, SHOPPING_DEBOUNCE_MS, SHOPPING_DEBOUNCE_TIMEOUT_MS, type RenderRequest } from '@/lib/lists/board'
 import { runCategorize } from '@/lib/lists/categorize'
-import { purgeWindow } from '@/lib/turn/window'
-import { runHygieneSweep } from '@/lib/memory/hygiene'
-import { proposeEntityMerges } from '@/lib/ai/dedupe'
 import { ensureRegistered } from '@/lib/memory/write'
 import { upsertMember } from '@/lib/identity/roster'
 import { and, asc, eq, gt, lte, ne, notInArray } from 'drizzle-orm'
@@ -285,85 +282,21 @@ function replyFields(sb: Sandbox, opts: SendOptions): Pick<TelegramMessageData, 
   return { replyToBot: false, replyToMessage: null }
 }
 
-// The scheduled work, as (local time → core) pairs. This is the Inngest cron table restated for a
-// clock we control; the schedules themselves live in createFunction and cannot be advanced from
-// app code, so a sandbox drives the cores instead. Order within a day matters: consolidation runs
-// the night before the morning scan, exactly as in production.
-interface Job {
-  id: string
-  /** Local hour+minute in the house timezone. */
-  hour: number
-  minute: number
-  run: (sb: Sandbox, at: Date) => Promise<void>
-}
-
-const JOBS: Job[] = [
-  {
-    // The conversation window's 48h purge (production runs it hourly; once a day is enough here, as
-    // every window read also filters by 48h). Driven at its own simulated instant like every job.
-    id: 'window-purge',
-    hour: 4,
-    minute: 17,
-    run: async (sb, at) => {
-      await purgeWindow(sb.db, at)
-    },
-  },
-  {
-    // Nightly graph hygiene (spec §7, F12) — its model proposal goes through the scenario's model.
-    id: 'hygiene',
-    hour: 3,
-    minute: 40,
-    run: async (sb, at) => {
-      await runHygieneSweep(sb.db, sb.houseChatId, at, { proposeMerges: proposeEntityMerges })
-    },
-  },
-  {
-    id: 'consolidation',
-    hour: 22,
-    minute: 30,
-    run: async (sb, at) => {
-      await runConsolidationSweep(sb.db, sb.houseChatId, at, sb.tz)
-    },
-  },
-  {
-    // 07:45, like production: just before the 08:00 digest, so a morning-of heads-up is due at 08:00.
-    id: 'surfacing-scan',
-    hour: 7,
-    minute: 45,
-    run: async (sb, at) => {
-      await runEventSurfacingScan(sb.db, sb.houseChatId, at, sb.tz)
-    },
-  },
-  {
-    id: 'digest-morning',
-    hour: 8,
-    minute: 0,
-    run: async (sb, at) => {
-      await deliverDueReminders(sb.db, at, sb.tz)
-    },
-  },
-  {
-    id: 'digest-evening',
-    hour: 20,
-    minute: 0,
-    run: async (sb, at) => {
-      await deliverDueReminders(sb.db, at, sb.tz)
-    },
-  },
-]
+// The scheduled work: production's cron table (lib/inngest/schedule.ts) played on a clock we control.
+// Inngest's schedules cannot be advanced from app code, so the sandbox runs the SAME jobs production's
+// cron functions run (CRON_JOBS — each owns its gates: no house, /pause, reminder_frequency) at every
+// firing of the SAME cron. Entries the sandbox skips say why in the table. Ties at one instant run in
+// table order.
+const SANDBOX_JOBS = SCHEDULE.filter((e) => e.sandbox === true).map((e) => {
+  const job: CronJob | undefined = (CRON_JOBS as Record<string, CronJob>)[e.id]
+  if (!job) throw new Error(`[sandbox] schedule entry ${e.id} has sandbox: true but no one-step job in CRON_JOBS`)
+  return { id: e.id, cron: e.cron, job }
+})
 
 // Every job firing strictly after `from` and at or before `to`, in chronological order.
-function firingsBetween(from: Date, to: Date, tz: string): { at: Date; job: Job }[] {
-  const out: { at: Date; job: Job }[] = []
-  const start = DateTime.fromJSDate(from).setZone(tz).startOf('day')
-  const end = DateTime.fromJSDate(to).setZone(tz).endOf('day')
-  for (let day = start; day <= end; day = day.plus({ days: 1 })) {
-    for (const job of JOBS) {
-      const at = day.set({ hour: job.hour, minute: job.minute, second: 0, millisecond: 0 }).toJSDate()
-      if (at.getTime() > from.getTime() && at.getTime() <= to.getTime()) out.push({ at, job })
-    }
-  }
-  return out.sort((a, b) => a.at.getTime() - b.at.getTime() || JOBS.indexOf(a.job) - JOBS.indexOf(b.job))
+function firingsBetween(from: Date, to: Date): { at: Date; id: string; job: CronJob }[] {
+  const out = SANDBOX_JOBS.flatMap((j, order) => firingsOf(j.cron, from, to).map((at) => ({ at, id: j.id, job: j.job, order })))
+  return out.sort((a, b) => a.at.getTime() - b.at.getTime() || a.order - b.order)
 }
 
 export interface AdvanceResult {
@@ -434,13 +367,13 @@ export async function advanceTo(sb: Sandbox, to: Date): Promise<AdvanceResult> {
     fired.push({ job: 'shopping-changed', at, said })
     sb.now = at
   }
-  for (const { at, job } of firingsBetween(from, to, sb.tz)) {
+  for (const { at, id, job } of firingsBetween(from, to)) {
     await deliverExplicitUntil(at)
     await renderUntil(at)
-    const { sent } = await captureOutbound(async () => withSimulatedTime(at, () => job.run(sb, at)))
-    const said = sent.map((m) => ({ ...m, cause: `cron:${job.id}` }))
+    const { sent } = await captureOutbound(async () => withSimulatedTime(at, () => job.run(sb.db, at, sb.tz)))
+    const said = sent.map((m) => ({ ...m, cause: `cron:${id}` }))
     sb.transcript.push(...said)
-    fired.push({ job: job.id, at, said })
+    fired.push({ job: id, at, said })
     sb.now = at
   }
   await deliverExplicitUntil(to)

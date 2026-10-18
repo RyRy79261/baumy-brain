@@ -1,7 +1,7 @@
 import { and, asc, eq, gt, gte, inArray, lt, lte, sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
 import { reminders, pendingActions } from '@/db/schema'
-import { orphanedEventReminders } from '@/lib/reminders/store'
+import { orphanedEventReminders, staleBefore } from '@/lib/reminders/store'
 import { TAPPABLE_ACTIONS } from '@/lib/confirm/store'
 import { upcomingDatedFacts, recentUndatedFacts } from '@/lib/memory/facts'
 
@@ -15,11 +15,6 @@ import { upcomingDatedFacts, recentUndatedFacts } from '@/lib/memory/facts'
 // Temporal has to infer pending timers by folding its event log; ours are rows with a
 // (status, fire_at) index, so this is a handful of cheap indexed reads.
 
-// Mirrors STALE_AFTER_HOURS in lib/inngest/functions/reminders.ts — the delivery grace window.
-// Duplicated as a read-only lens rather than imported, so the console can show the boundary
-// without pulling the Inngest client into a page render.
-const STALE_AFTER_HOURS = 24
-const staleBefore = (now: Date): Date => new Date(now.getTime() - STALE_AFTER_HOURS * 3_600_000)
 
 export interface PendingReminder {
   id: string

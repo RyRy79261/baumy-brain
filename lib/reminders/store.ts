@@ -4,6 +4,13 @@ import { members, reminders } from '@/db/schema'
 import { now as clockNow } from '@/lib/core/clock'
 import { nextOccurrence } from '@/lib/reminders/recurrence'
 
+// How late a reminder may be and still be worth sending. Past this it is history, not a reminder:
+// "let them in when they return tomorrow evening" delivered weeks later is noise, and the house
+// cannot tell it apart from something happening now. Anything older is cancelled, not delivered.
+// One digest slot of slack (a 20:00 miss still goes out at 08:00) plus room for a deploy gap.
+export const STALE_AFTER_HOURS = 24
+export const staleBefore = (now: Date): Date => new Date(now.getTime() - STALE_AFTER_HOURS * 3_600_000)
+
 export interface CreateReminderInput {
   groupId: string
   // Resolved in code, never LLM: the house scope (a house reminder — delivered to the CURRENT live house

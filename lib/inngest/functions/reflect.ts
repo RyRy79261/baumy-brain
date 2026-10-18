@@ -1,4 +1,5 @@
 import { inngest } from '@/lib/inngest/client'
+import { cronOf } from '@/lib/inngest/schedule'
 import { createHttpDb } from '@/db/client'
 import { getHouseChatId } from '@/lib/identity/house'
 import { reconcileFact } from '@/lib/memory/facts'
@@ -19,7 +20,7 @@ import { pickPeopleToReflect, gatherPersonMaterial, PROFILE_PREDICATE, MIN_FACTS
 // group message can overwrite it. Idempotent-ish: an unchanged person is not re-picked.
 export const reflectSweep = inngest.createFunction(
   { id: 'reflect-sweep', retries: 1 },
-  { cron: '0 */6 * * *' },
+  { cron: cronOf('reflect-sweep') },
   async ({ step }) => {
     const groupId = (await step.run('house', async () => getHouseChatId(createHttpDb()))) as string
     if (!groupId) return { skipped: 'no-house' as const }

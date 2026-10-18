@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { handleTelegramMessage } from '@/lib/inngest/functions/ingest'
-import { hygieneSweep } from '@/lib/inngest/functions/hygiene'
+import { SCHEDULE } from '@/lib/inngest/schedule'
+import { CRON_JOBS } from '@/lib/inngest/functions/crons'
 import { functions } from '@/lib/inngest/functions'
 import { shoppingChanged, shoppingRender } from '@/lib/inngest/functions/shopping'
 import { SHOPPING_CHANGED, SHOPPING_DEBOUNCE, SHOPPING_DEBOUNCE_MS, SHOPPING_DEBOUNCE_TIMEOUT, SHOPPING_DEBOUNCE_TIMEOUT_MS, SHOPPING_RENDER } from '@/lib/lists/board'
@@ -10,9 +11,20 @@ describe('inngest function config', () => {
   it('ingest runs one message at a time PER CHAT (F16: a correction is never superseded by the message it corrected)', () => {
     expect(handleTelegramMessage.opts.concurrency).toEqual([{ key: 'event.data.chatId', limit: 1 }])
   })
-  it('the nightly hygiene sweep is registered (F12)', () => {
-    expect(functions).toContain(hygieneSweep)
-    expect(hygieneSweep.opts.id).toBe('memory-hygiene')
+  it('every schedule entry is registered exactly once, with the table\'s cron and retries (incl. the F12 hygiene sweep)', () => {
+    for (const e of SCHEDULE) {
+      const fns = functions.filter((f) => f.opts.id === e.id)
+      expect(fns, e.id).toHaveLength(1)
+      expect((fns[0].opts as { triggers?: unknown }).triggers, e.id).toEqual([{ cron: e.cron }])
+      expect(fns[0].opts.retries, e.id).toBe('retries' in e ? e.retries : undefined)
+    }
+    const crons = functions.filter((f) => ((f.opts as { triggers?: { cron?: string }[] }).triggers ?? []).some((t) => t.cron))
+    expect(crons.map((f) => f.opts.id).sort()).toEqual(SCHEDULE.map((e) => e.id).sort()) // no cron outside the table
+    expect(SCHEDULE.map((e) => e.id)).toContain('memory-hygiene')
+  })
+  it('every entry the sandbox plays has a one-step job, and every one-step job is in the table', () => {
+    for (const e of SCHEDULE) if (e.sandbox === true) expect(CRON_JOBS, e.id).toHaveProperty(e.id)
+    for (const id of Object.keys(CRON_JOBS)) expect(SCHEDULE.map((e) => e.id)).toContain(id)
   })
   it('a list change is debounced 5 seconds PER HOUSE with a 30-second max wait, then hands over to the render (issue #25)', () => {
     expect(functions).toContain(shoppingChanged)

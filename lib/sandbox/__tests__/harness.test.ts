@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { reminders, memoryItems } from '@/db/schema'
 import { createReminder } from '@/lib/reminders/store'
+import { setGlobalEnabled, setReminderFrequency } from '@/lib/policy'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { embedSync } from '@/lib/ai/embed'
 import type { ClassifierVerdict } from '@/lib/ai/classify'
@@ -91,7 +92,7 @@ describe('sandbox — talk as anyone, move time, watch what happens', () => {
     // Move to the morning of the 7th: the 08:00 scan schedules the day-before nudge, and the same
     // morning's digest is too early for it (it fires at 08:00 on the 7th, i.e. the NEXT slot).
     const week = await advanceTo(sb, new Date('2026-07-07T12:00:00Z'))
-    expect(week.fired.map((f) => f.job)).toContain('surfacing-scan')
+    expect(week.fired.map((f) => f.job)).toContain('event-surfacing-scan')
 
     const scheduled = await sb.db.select().from(reminders).where(eq(reminders.groupId, sb.houseChatId))
     expect(scheduled.length).toBeGreaterThan(0)
@@ -241,6 +242,39 @@ describe('simulated time is scoped, not global', () => {
     // …and it does not leak out of the call tree.
     expect(isSimulated()).toBe(false)
     expect(now().getTime()).toBeGreaterThanOrEqual(real.getTime())
+  })
+})
+
+describe('sandbox — the cron jobs carry their own gates', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  // The sandbox runs the SAME cron jobs production does, gates included (lib/inngest/functions/crons.ts).
+  // It used to call the delivery cores directly, so a paused house still got its digest in a scenario.
+  // The reminders below are already due when the sandbox starts, so only the digest (the backstop) can
+  // deliver them — the sandbox's explicit path plays reminders that fall due DURING an advance.
+  it('a paused house gets no digest; after /resume the held reminder goes out at the next slot', async () => {
+    const sb = await freshSandbox('2026-07-01T17:59:00Z')
+    await createReminder(sb.db, { groupId: sb.houseChatId, deliverChatId: sb.houseChatId, content: 'bins go out', fireAt: new Date('2026-07-01T17:58:00Z'), createdBy: null })
+    await setGlobalEnabled(sb.db, false)
+    const paused = await advanceTo(sb, new Date('2026-07-01T19:00:00Z')) // through the 20:00 Berlin digest
+    expect(paused.fired.map((f) => f.job)).toContain('reminder-digest')
+    expect(paused.fired.flatMap((f) => f.said)).toEqual([])
+    const [held] = await sb.db.select().from(reminders).where(eq(reminders.groupId, sb.houseChatId))
+    expect(held.status).toBe('scheduled') // held, not dropped
+
+    await setGlobalEnabled(sb.db, true)
+    const resumed = await advanceTo(sb, new Date('2026-07-02T07:00:00Z')) // through the 08:00 digest
+    expect(resumed.fired.filter((f) => f.job === 'reminder-digest').flatMap((f) => spoken(f.said))).toEqual(['⏰ bins go out'])
+  })
+
+  it("reminder_frequency 'once': the 20:00 digest stays silent, the next 08:00 one delivers", async () => {
+    const sb = await freshSandbox('2026-07-01T17:59:00Z')
+    await setReminderFrequency(sb.db, 'once')
+    await createReminder(sb.db, { groupId: sb.houseChatId, deliverChatId: sb.houseChatId, content: 'bins go out', fireAt: new Date('2026-07-01T17:58:00Z'), createdBy: null })
+    const evening = await advanceTo(sb, new Date('2026-07-01T19:00:00Z'))
+    expect(evening.fired.flatMap((f) => f.said)).toEqual([])
+    const morning = await advanceTo(sb, new Date('2026-07-02T07:00:00Z'))
+    expect(morning.fired.filter((f) => f.job === 'reminder-digest').flatMap((f) => spoken(f.said))).toEqual(['⏰ bins go out'])
   })
 })
 

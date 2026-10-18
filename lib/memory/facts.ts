@@ -8,19 +8,10 @@ import { PROFILE_PREDICATE } from '@/lib/memory/reflect'
 import { now as clockNow } from '@/lib/core/clock'
 import { liveFact } from '@/lib/memory/current'
 import { DEFAULT_EVENT_HOURS } from '@/lib/core/when'
-import { cardinalityOf, isStructuralEdge, normalizePredicate, POSSESSOR_PREDICATE } from '@/lib/memory/predicates'
+import { cardinalityOf, normalizePredicate, POSSESSOR_PREDICATE } from '@/lib/memory/predicates'
+import { mayOverride } from '@/lib/memory/trust'
 import { cuedPredicates, lookupText, matchEntities, hasName, type EntityMatch, type LookupSpeaker } from '@/lib/memory/lookup'
 import { isRelayed, type Trust } from '@/lib/core/origin'
-
-// Trust ranking for contradiction resolution. A fact may only supersede an
-// existing one when its trust is >= the incumbent's (memory-core #39). This is
-// the memory-poisoning defense: pure recency-wins is the exact hole a planted
-// note exploits; trust-gating closes it. Two authenticated exceptions (spec §7, F5): the SAME author
-// may correct their own fact from any lane, and the owner may correct anything below 'system'.
-// Anything else that contradicts a more trusted fact is kept as a non-current CONFLICT row and
-// surfaced to the turn, so Baumy asks which is right instead of silently ignoring it.
-const TRUST_RANK: Record<string, number> = { system: 4, trusted: 3, untrusted: 2, forwarded: 1, quarantined: 1 }
-const rank = (t: string): number => TRUST_RANK[t] ?? 0
 
 // Entity resolution (memory Phase 3). WRITE side is precision-first: a wrong merge
 // permanently corrupts the graph (facts about Marta attaching to Marco), so we only
@@ -331,18 +322,6 @@ interface Incumbent {
   recordedAt: Date | null
 }
 
-// May this write close / supersede that live incumbent? (the trust gate, F5) The name-derived possessor
-// edge is `system` only because no housemate said it — a default, not a statement — so any stated owner
-// (relayed content never gets here) replaces it; otherwise untrusted group text would mint a row the
-// gate treats as unbeatable, and every real correction of who owns "marco's room" would be a conflict.
-function mayOverride(input: ReconcileInput, existing: Incumbent, predicate: string): boolean {
-  if (isStructuralEdge({ predicate, trustLevel: existing.trustLevel, authoredBy: existing.authoredBy })) return true
-  if (rank(input.trustLevel) >= rank(existing.trustLevel)) return true
-  if (existing.trustLevel === 'system') return false
-  if (input.authoredBy && existing.authoredBy && input.authoredBy === existing.authoredBy) return true
-  return input.authorIsOwner === true && input.authoredBy != null
-}
-
 // reconcileFact plus WHICH row it produced: the new current fact id for add/update, the untouched
 // incumbent for noop, null when rejected. The turn needs the ids of the facts THIS message wrote so
 // the reply can exclude them from its own grounding (C1), the resolved subject to tag the note (F15),
@@ -470,7 +449,7 @@ export async function reconcileFactDetailed(db: Database, input: ReconcileInput)
   // with that value → nothing to do.
   if (input.fact.removes) {
     if (!existing || !sameValue(existing)) return detail('noop', null)
-    if (!mayOverride(input, existing, predicate)) return storeConflict(existing, true)
+    if (!mayOverride(input, { ...existing, predicate })) return storeConflict(existing, true)
     await db.update(facts).set({ isCurrent: false, validTo: now, invalidatedAt: now }).where(eq(facts.id, existing.id))
     return detail('removed', existing.id)
   }
@@ -531,14 +510,14 @@ export async function reconcileFactDetailed(db: Database, input: ReconcileInput)
     // date for an already-dated live fact is a reschedule → it supersedes below, like any change (T6:
     // a repeat with a new date is never a noop that throws the date away).
     if (!existing.eventAt) {
-      if (!mayOverride(input, existing, predicate)) return storeConflict(existing)
+      if (!mayOverride(input, { ...existing, predicate })) return storeConflict(existing)
       await db.update(facts).set({ eventAt: incomingEvent, validTo: newValues.validTo }).where(eq(facts.id, existing.id))
       return detail('update', existing.id)
     }
   }
 
   // Contradiction: only a fact of >= trust (or the same author / the owner) may overwrite the incumbent.
-  if (!mayOverride(input, existing, predicate)) return storeConflict(existing)
+  if (!mayOverride(input, { ...existing, predicate })) return storeConflict(existing)
 
   // Supersede atomically-enough WITHOUT a transaction (the http driver has none): CLOSE the
   // incumbent FIRST, then insert the new current row. If the run dies between these two

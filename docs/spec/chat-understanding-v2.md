@@ -379,7 +379,7 @@ context only — it never writes facts and is never shown to anyone.
   one else has; "did I" = the sender). Retrieval: the lexical arm is `plainto_tsquery` with `&`→`|`,
   and only its top 10 hits bypass the cosine floor; an `authorId` adds the author's notes as a third
   RRF arm (same four filters).
-- Trust gate: `mayOverride` = rank ≥ incumbent, or (incumbent not `system` and) the same author, or the
+- Trust gate (`lib/memory/trust.ts`, shared by reconcile and the hygiene replay): `mayOverride` = rank ≥ incumbent, or (incumbent not `system` and) the same author, or the
   owner (`authorIsOwner` from `ctx.sender.role`). Otherwise the write is a CONFLICT: a non-current row
   with `conflicts_with_fact_id` = the incumbent (`object_json {removes:true}` for a refused removal), one
   per (incumbent, value). Capture reports `conflicts[]` ({fact, current: {object, by, saidAt}}); THIS TURN

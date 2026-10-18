@@ -16,6 +16,8 @@ import {
   repairRecurringSeries,
   reminderDestination,
   type ReminderDestination,
+  STALE_AFTER_HOURS,
+  staleBefore,
 } from '@/lib/reminders/store'
 import { headsUpAtDelivery } from '@/lib/inngest/functions/surfacing'
 import { sendToHouseResilient } from '@/lib/telegram/house-send'
@@ -24,16 +26,11 @@ import { getHouseChatId } from '@/lib/identity/house'
 import { loadResponsePolicy } from '@/lib/policy'
 import { houseTz } from '@/lib/env'
 import { now } from '@/lib/core/clock'
+import { cronOf } from '@/lib/inngest/schedule'
 
 const ARM_WINDOW_DAYS = 6 // Inngest Free caps a single sleep at 7 days
 type DueRow = Awaited<ReturnType<typeof dueScheduled>>[number]
 
-// How late a reminder may be and still be worth sending. Past this it is history, not a reminder:
-// "let them in when they return tomorrow evening" delivered weeks later is noise, and the house
-// cannot tell it apart from something happening now. Anything older is cancelled, not delivered.
-// One digest slot of slack (a 20:00 miss still goes out at 08:00) plus room for a deploy gap.
-export const STALE_AFTER_HOURS = 24
-const staleBefore = (now: Date): Date => new Date(now.getTime() - STALE_AFTER_HOURS * 3_600_000)
 
 // Delivery framing: an explicit "remind me" reminder posts as ⏰; a proactive event-surfacing
 // heads-up (anchor_kind='event_offset', docs/spec/event-surfacing.md) posts as 🗓️ so it reads as
@@ -54,7 +51,7 @@ async function sendReminder(db: ReturnType<typeof createHttpDb>, dest: ReminderD
 // entering the ≤6-day window. One cheap run/day — nowhere near the exec budget.
 export const reminderArm = inngest.createFunction(
   { id: 'reminder-arm' },
-  { cron: 'TZ=Europe/Berlin 5 0 * * *' },
+  { cron: cronOf('reminder-arm') },
   async ({ step }) => {
     const rows = await step.run('find-due', async () => {
       const db = createHttpDb()
@@ -271,27 +268,20 @@ export async function deliverDueReminders(
   return { sent, messages, expired }
 }
 
-// Digest (docs/spec/reminders.md) — REPLACES the old every-30-min poll. A batched heads-up at
-// WAKING-hour slots only (never 02:00–06:00): once/day = a morning batch, twice/day = morning +
-// evening (~12h apart), owner-settable via reminder_frequency. Delivers the batched event heads-ups
-// (event_offset, NOT armed for near-time) plus any explicit reminder the sleepUntil path missed —
-// so it's both the event-surfacing delivery AND the explicit-reminder backstop, at 1–2 wakes/day
-// instead of ~48. Honors /pause (proactive output).
-export const reminderDigest = inngest.createFunction(
-  { id: 'reminder-digest' },
-  { cron: 'TZ=Europe/Berlin 0 8,20 * * *' }, // 08:00 + 20:00 house tz; the 20:00 slot is gated on frequency
-  async ({ step }) => {
-    return step.run('digest', async () => {
-      const db = createHttpDb()
-      const houseChatId = await getHouseChatId(db)
-      if (!houseChatId) return { skipped: 'no-house' as const }
-      const policy = await loadResponsePolicy(db)
-      if (!policy.global_enabled) return { skipped: 'paused' as const } // proactive output honors /pause
-      // 'once' a day = the morning slot only; the 20:00 run no-ops.
-      const at = now()
-      const eveningSlot = DateTime.fromJSDate(at).setZone(houseTz()).hour >= 14
-      if (policy.reminder_frequency === 'once' && eveningSlot) return { skipped: 'once-morning-only' as const }
-      return deliverDueReminders(db, at, houseTz())
-    })
-  },
-)
+// The digest JOB (docs/spec/reminders.md): what the 08:00 / 20:00 cron runs — production (crons.ts) and
+// the sandbox alike, so the gates below are never skipped by whoever drives the clock. A batched
+// heads-up at WAKING-hour slots only: once/day = the morning batch, twice/day = morning + evening,
+// owner-settable via reminder_frequency. It is both the event-surfacing delivery AND the
+// explicit-reminder backstop. Honors /pause (proactive output): the rows stay scheduled.
+export async function runReminderDigest(
+  db: ReturnType<typeof createHttpDb>,
+  at: Date,
+  tz: string,
+): Promise<{ skipped: 'no-house' | 'paused' | 'once-morning-only' } | Awaited<ReturnType<typeof deliverDueReminders>>> {
+  if (!(await getHouseChatId(db))) return { skipped: 'no-house' }
+  const policy = await loadResponsePolicy(db)
+  if (!policy.global_enabled) return { skipped: 'paused' }
+  // 'once' a day = the morning slot only; the 20:00 run no-ops.
+  if (policy.reminder_frequency === 'once' && DateTime.fromJSDate(at).setZone(tz).hour >= 14) return { skipped: 'once-morning-only' }
+  return deliverDueReminders(db, at, tz)
+}
