@@ -6,6 +6,7 @@ import { houseTz } from '@/lib/env'
 import { now as clockNow } from '@/lib/core/clock'
 import { formatEventWindow } from '@/lib/core/calendar'
 import { upcomingDatedFacts } from '@/lib/memory/facts'
+import { recallableNote } from '@/lib/memory/current'
 import { memberDisplayNames } from '@/lib/identity/roster'
 import { describeRecurrence } from '@/lib/reminders/recurrence'
 import { houseDelivered } from '@/lib/reminders/store'
@@ -42,10 +43,8 @@ export async function gatherWeekly(db: Database, groupId: string, now: Date = cl
     .from(memoryItems)
     .where(
       and(
-        eq(memoryItems.groupId, groupId),
-        eq(memoryItems.isActive, true),
+        recallableNote('baumy_memory_items', groupId),
         eq(memoryItems.isSecure, false),
-        ne(memoryItems.trustLevel, 'quarantined'),
         inArray(memoryItems.memoryType, NEWS_KINDS),
         gte(memoryItems.createdAt, since),
         lte(memoryItems.createdAt, now),

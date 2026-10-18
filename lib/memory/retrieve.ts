@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { createHttpDb, type Database } from '@/db/client'
-import { embed, embedMany, EMBED_MODEL } from '@/lib/ai/embed'
+import { embed, embedMany } from '@/lib/ai/embed'
+import { currentEmbedding, recallableNote } from '@/lib/memory/current'
 import { now as clockNow } from '@/lib/core/clock'
 
 // Retrieval (task-graph M3). HYBRID recall (Phase 2) fused with MULTI-PROBE query
@@ -84,10 +85,8 @@ async function runHybrid(
              1 - (me.embedding <=> ${v}::vector) AS sim
       FROM baumy_memory_embeddings me
       JOIN baumy_memory_items mi ON mi.id = me.memory_item_id
-      WHERE mi.group_id = ${groupId}
-        AND mi.is_active = true
-        AND mi.trust_level <> 'quarantined'
-        AND me.model = ${EMBED_MODEL}
+      WHERE ${recallableNote('mi', groupId)}
+        AND ${currentEmbedding('me')}
       ORDER BY me.embedding <=> ${v}::vector
       LIMIT ${CANDIDATES}
     ),
@@ -95,9 +94,7 @@ async function runHybrid(
       SELECT mi.id AS id,
              row_number() OVER (ORDER BY ts_rank_cd(mi.content_tsv, q.tsq) DESC) AS rank
       FROM baumy_memory_items mi, q
-      WHERE mi.group_id = ${groupId}
-        AND mi.is_active = true
-        AND mi.trust_level <> 'quarantined'
+      WHERE ${recallableNote('mi', groupId)}
         AND mi.content_tsv @@ q.tsq
       ORDER BY ts_rank_cd(mi.content_tsv, q.tsq) DESC
       LIMIT ${CANDIDATES}
@@ -110,10 +107,8 @@ async function runHybrid(
       JOIN baumy_memory_items mi ON mi.id = me.memory_item_id
       WHERE ${authorId}::text IS NOT NULL
         AND mi.authored_by = ${authorId}
-        AND mi.group_id = ${groupId}
-        AND mi.is_active = true
-        AND mi.trust_level <> 'quarantined'
-        AND me.model = ${EMBED_MODEL}
+        AND ${recallableNote('mi', groupId)}
+        AND ${currentEmbedding('me')}
       ORDER BY me.embedding <=> ${v}::vector
       LIMIT ${CANDIDATES}
     ),

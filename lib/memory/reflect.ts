@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { type Database } from '@/db/client'
-import { liveFact } from '@/lib/memory/current'
+import { firsthandNote, liveFact } from '@/lib/memory/current'
 import { now as clockNow } from '@/lib/core/clock'
 import type { ReflectFact, ReflectNote } from '@/lib/ai/reflect'
 
@@ -88,8 +88,7 @@ export async function gatherPersonMaterial(
     SELECT mi.content, m.display_name AS by
     FROM baumy_memory_items mi
     LEFT JOIN baumy_members m ON mi.authored_by = m.telegram_user_id
-    WHERE mi.group_id = ${groupId} AND mi.about_entity_id = ${personId}
-      AND mi.is_active AND NOT mi.is_secure AND mi.trust_level NOT IN ('quarantined', 'forwarded')
+    WHERE ${firsthandNote('mi', groupId)} AND mi.about_entity_id = ${personId}
     ORDER BY mi.salience DESC, mi.created_at DESC
     LIMIT 20`)
   const notes: ReflectNote[] = rowsOf(noteRes).map((r) => ({

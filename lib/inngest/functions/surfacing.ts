@@ -1,15 +1,12 @@
 import { DateTime } from 'luxon'
-import { inngest } from '@/lib/inngest/client'
-import { createHttpDb, type Database } from '@/db/client'
+import { type Database } from '@/db/client'
 import { getHouseChatId } from '@/lib/identity/house'
 import { loadResponsePolicy } from '@/lib/policy'
-import { houseTz } from '@/lib/env'
 import { upcomingDatedFacts, eventGroupFacts, type DatedFact } from '@/lib/memory/facts'
 import { memberDisplayNames } from '@/lib/identity/roster'
 import { createReminder, remindersForEventFacts } from '@/lib/reminders/store'
 import { computeNudgeStages, groupEvents, leadAt, nudgeStageOf, whenLabel } from '@/lib/surfacing/nudge'
 import { writeHeadsUp, type HeadsUpFact } from '@/lib/ai/nudge'
-import { now as clockNow } from '@/lib/core/clock'
 
 // Cover the ~7-day-ahead stage with a day of margin.
 const HORIZON_DAYS = 8
@@ -113,21 +110,11 @@ export async function headsUpAtDelivery(
 // (a week before, the evening before, the morning of — each a digest slot). It only CREATES the reminders; the proven
 // arm → claim → send → mark-sent machinery delivers them exactly-once. De-duped per (event,
 // stage), so a re-scan never double-schedules; secret facts are excluded; /pause silences it.
-export const eventSurfacingScan = inngest.createFunction(
-  { id: 'event-surfacing-scan' },
-  // Daily 07:45 house tz — just BEFORE the 08:00 digest, so an event learned overnight still gets its
-  // morning-of nudge at 08:00 (a scan AT 08:00 raced the digest and dropped it — T11).
-  { cron: 'TZ=Europe/Berlin 45 7 * * *' },
-  async ({ step }) => {
-    return step.run('scan', async () => {
-      const db = createHttpDb()
-      const houseChatId = await getHouseChatId(db)
-      if (!houseChatId) return { created: 0, reason: 'no-house' as const }
-      // Pause silences PROACTIVE output — the same gate that stops the ingest reminder step
-      // creating reminders while paused (and holds explicit ones at delivery — deliverReminderNow).
-      const policy = await loadResponsePolicy(db)
-      if (!policy.global_enabled) return { created: 0, reason: 'paused' as const }
-      return runEventSurfacingScan(db, houseChatId, clockNow(), houseTz())
-    })
-  },
-)
+export async function runSurfacingJob(db: Database, at: Date, tz: string, house?: string) {
+  const houseChatId = house ?? (await getHouseChatId(db))
+  if (!houseChatId) return { created: 0, reason: 'no-house' as const }
+  // Pause silences PROACTIVE output — the same gate that stops the ingest reminder step creating
+  // reminders while paused (and holds explicit ones at delivery — deliverReminderNow).
+  if (!(await loadResponsePolicy(db)).global_enabled) return { created: 0, reason: 'paused' as const }
+  return runEventSurfacingScan(db, houseChatId, at, tz)
+}

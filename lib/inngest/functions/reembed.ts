@@ -1,5 +1,6 @@
 import { and, eq, notExists, sql } from 'drizzle-orm'
 import { inngest } from '@/lib/inngest/client'
+import { cronOf } from '@/lib/inngest/schedule'
 import { createHttpDb } from '@/db/client'
 import { memoryItems, memoryEmbeddings } from '@/db/schema'
 import { embed, EMBED_MODEL } from '@/lib/ai/embed'
@@ -15,7 +16,7 @@ export const reembedSweep = inngest.createFunction(
   // for nothing, which (with the sweeper) kept the endpoint from ever scaling to zero — the bulk of
   // a ~100 CU-hour/month bill. After an embedder swap, bump this or invoke the function on-demand
   // to drain the backfill faster (50 rows/run).
-  { cron: '0 4 * * *' },
+  { cron: cronOf('reembed-sweep') },
   async ({ step }) => {
     const reembedded = await step.run('reembed', async () => {
       const db = createHttpDb()

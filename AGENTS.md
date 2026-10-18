@@ -228,7 +228,7 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
 - **Dashboard authz is live:** re-checked against the DB on every request
   (`lib/auth/require-admin.ts`) — never cached in the cookie.
 - **Trust-gated facts:** a fact may supersede (or close) an incumbent only if its trust ≥ the
-  incumbent's (`lib/memory/facts.ts` `mayOverride`) — the memory-poisoning defense. Two authenticated
+  incumbent's (`lib/memory/trust.ts` `mayOverride` — the ONE gate, used by reconcile AND the hygiene replay) — the memory-poisoning defense. Two authenticated
   exceptions (spec §7, F5): the **same author** may correct their own fact from any lane, and the
   **owner** (roster role) may correct anything below `system`; identity comes from the turn, never text.
   Any other lower-trust contradiction is stored as a **non-current conflict row**
@@ -385,7 +385,8 @@ crown jewels. The pipeline:
   tier** adds query **expansion/HyDE** (`expand.ts` → `retrieveExpanded`, cross-probe RRF) and a
   Haiku **re-rank** (`rerank.ts`) — both best-effort, degrading to plain hybrid on any error.
 - Every retrieval arm (semantic *and* lexical) is **group-scoped, active-only, quarantined-
-  excluded, current-embedding-model-only** — preserve all four in any query you add. (`forwarded`
+  excluded, current-embedding-model-only** — preserve all four in any query you add (`lib/memory/current.ts`
+  `recallableNote` + `currentEmbedding`; `firsthandNote` also drops forwarded + secret notes). (`forwarded`
   notes pass the quarantine filter by design and come back with `trustLevel`/`forwardedBy`, so the
   reply labels them; they have no author, so the author arm never returns them.)
 - **Reflect** (`reflect.ts` + `functions/reflect.ts`): a slow **sleep-time cron** (every 6h)
@@ -454,7 +455,7 @@ crown jewels. The pipeline:
 - Add a test for every security-relevant change (the poisoning/authz/exactly-once paths).
 - **Scenarios** (`scenarios/`, `scenarios/README.md`, spec §9): declarative multi-turn house
   conversations through the REAL pipeline (sandbox harness: PGlite, real ingest, crons at simulated
-  instants, captured sends, `tap()` for the confirm-tap wall) with a scripted model injected via the
+  instants — the SAME jobs + cron table as production (`lib/inngest/schedule.ts`, `lib/inngest/functions/crons.ts`), each job owning its own /pause + frequency gates, captured sends, `tap()` for the confirm-tap wall) with a scripted model injected via the
   test-only `setModelOverride` seam (`lib/ai/registry.ts`) and `setEmbedOverride` (`lib/ai/embed.ts`).
   They assert routing, reactions, rows, reminders and **what the model was told** (`expectPrompt`).
   Offline (default, part of `pnpm test`) is deterministic: fetch is trapped, `inngest.send` captured, and
