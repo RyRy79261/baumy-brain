@@ -26,7 +26,7 @@ const fixtures = {
 
 /** Everything Baumy posted during `advance` steps (reminder deliveries), in any chat. */
 const delivered = (r: Run, re: RegExp) =>
-  r.turns.flatMap((t) => (t.kind === 'advance' ? t.entries : [])).filter((x) => (x.kind === 'message' || x.kind === 'dm') && re.test(x.text ?? ''))
+  r.turns.flatMap((t) => (t.kind === 'advance' ? t.entries : [])).filter((x) => x.kind === 'message' && re.test(x.text ?? ''))
 const cardsIn = (r: Run) => r.turns.at(-1)!.entries.filter((x) => x.kind === 'confirm-card')
 const thisTurn = (prompt: string) => prompt.match(/THIS TURN: (.*)/)?.[1] ?? ''
 

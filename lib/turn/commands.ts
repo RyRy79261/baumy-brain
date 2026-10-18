@@ -1,5 +1,5 @@
 import { createHttpDb } from '@/db/client'
-import { isRelayed, type Origin } from '@/lib/core/origin'
+import { isRelayed, type ChatDestination, type Origin } from '@/lib/core/origin'
 import type { FullRoster } from '@/lib/identity/roster'
 import { memberDisplayNames } from '@/lib/identity/roster'
 import { enrichIssue, formatIssueBody } from '@/lib/ai/issue-enrich'
@@ -20,7 +20,8 @@ import { requestShoppingRender, retireShoppingBoard, runShoppingRender, type Ren
 import { handleCommand } from '@/lib/identity/commands'
 import { writeAudit } from '@/lib/audit'
 import { houseTz } from '@/lib/env'
-import { sendToHouse, sendConfirmCard, reactToMessage } from '@/lib/telegram/client'
+import { reactToMessage } from '@/lib/telegram/client'
+import { send, sendConfirm } from '@/lib/telegram/send'
 import type { TurnStep } from './step'
 
 // Slash commands — deterministic, no classify/LLM routing. Run after lane resolution (so nothing
@@ -36,15 +37,15 @@ export interface CommandEnv {
   messageId: number
   messageThreadId: number | null
   houseScope: string
-  /** A worded house send that echoes the inbound forum topic (DM: no thread). */
-  sayHouse: (body: string) => Promise<void>
-  houseThreadId: number | undefined
+  /** Where a command's answer goes (addressingFor's `reply`): this chat, in the inbound forum topic. */
+  reply: ChatDestination
 }
 
 export type CommandDecision = 'report' | 'report-view' | 'notify-config' | 'console-config' | 'shopping-config' | 'shopping-list' | 'command' | 'unknown-command'
 
 export async function runCommands(step: TurnStep, env: CommandEnv): Promise<CommandDecision | null> {
-  const { rawText, origin, roster, fromId, chatId, messageId, messageThreadId, houseScope, sayHouse, houseThreadId } = env
+  const { rawText, origin, roster, fromId, chatId, messageId, messageThreadId, houseScope, reply } = env
+  const say = (body: string) => send(reply, body)
 
   // Bug/feature report (/bug, /feature) → enrich into a clean GitHub issue and file it on a confirm
   // tap. Explicit slash command, works in the house group OR a member DM, from an authenticated house
@@ -55,24 +56,25 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
     await step.run('report', async () => {
       const db = createHttpDb()
       if (!issuesConfigured()) {
-        await sayHouse("I'd file that, but issue reporting isn't wired up yet — the house owner needs to add a GitHub token. 🐈‍⬛")
+        await say("I'd file that, but issue reporting isn't wired up yet — the house owner needs to add a GitHub token. 🐈‍⬛")
         return
       }
       if (!report.body) {
         const eg = report.hint === 'feature' ? '/feature a dark mode for the dashboard' : '/bug the reminder fired twice'
-        await sayHouse(`Tell me what to file, like:\n${eg}`)
+        await say(`Tell me what to file, like:\n${eg}`)
         return
       }
       const reporter = (await memberDisplayNames(db)).get(String(fromId)) ?? 'a housemate'
       const enriched = await enrichIssue(report.body, report.hint)
+      // The house SCOPE, never the inbound chat (a /bug in a DM files for the house, like every action).
       const pid = await createPendingAction(db, {
-        groupId: chatId,
+        groupId: houseScope,
         actionType: 'github.issue',
         payload: { title: enriched.title, body: formatIssueBody(enriched, reporter), labels: labelsFor(enriched.type), type: enriched.type },
         requestedBy: String(fromId),
       })
       const kind = enriched.type === 'feature' ? '✨ Feature' : '🐛 Bug'
-      await sendConfirmCard(chatId, `${kind}: ${enriched.title}\n\n${enriched.summary}\n\nFile this as a GitHub issue?`, pid, houseThreadId)
+      await sendConfirm(reply, `${kind}: ${enriched.title}\n\n${enriched.summary}\n\nFile this as a GitHub issue?`, pid)
     })
     return 'report'
   }
@@ -85,7 +87,7 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
       const db = createHttpDb()
       await reactToMessage(chatId, messageId, '👀') // seen — putting it together
       // READ scope is always the house (houseScope); in a member DM, chatId is the private chat,
-      // which holds nothing. Reply to chatId.
+      // which holds nothing. The answer goes to `reply` (this chat).
       try {
         const md =
           reportView === 'guests'
@@ -96,7 +98,7 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
               : reportView === 'recent'
                 ? await recentLearningsReport(db, houseScope)
                 : await weeklyReport(db, houseScope)
-        await sayHouse(md)
+        await say(md)
       } finally {
         // A transient model error rethrows (I2) so the step retries — never strand the 👀.
         await reactToMessage(chatId, messageId, null)
@@ -117,17 +119,17 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
       if (notify === 'off') {
         await setReminderThread(db, null)
         await writeAudit(db, 'reminder.topic.set', String(fromId), null, { threadId: null })
-        await sendToHouse(chatId, 'Reminders will post to the General topic from now on. 🐈', { threadId: messageThreadId ?? undefined })
+        await say('Reminders will post to the General topic from now on. 🐈')
         return
       }
       if (messageThreadId == null) {
         // Run in General (no topic thread) → nothing to pin. Tell them where to run it.
-        await sendToHouse(chatId, 'Run /notifyhere INSIDE the topic you want reminders in — this looks like the General topic. 😼')
+        await say('Run /notifyhere INSIDE the topic you want reminders in — this looks like the General topic. 😼')
         return
       }
       await setReminderThread(db, messageThreadId)
       await writeAudit(db, 'reminder.topic.set', String(fromId), null, { threadId: messageThreadId })
-      await sendToHouse(chatId, '📌 Got it — reminders and event heads-ups will post in this topic from now on.', { threadId: messageThreadId })
+      await say('📌 Got it — reminders and event heads-ups will post in this topic from now on.')
     })
     return 'notify-config'
   }
@@ -142,19 +144,17 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
       if (console_ === 'off') {
         await setConsoleThread(db, null)
         await writeAudit(db, 'console.topic.set', String(fromId), null, { threadId: null })
-        await sendToHouse(chatId, "Ask-Baumy mode off — I'll go back to only piping up when addressed. 🐈", { threadId: messageThreadId ?? undefined })
+        await say("Ask-Baumy mode off — I'll go back to only piping up when addressed. 🐈")
         return
       }
       if (messageThreadId == null) {
-        await sendToHouse(chatId, 'Run /baumyhere INSIDE the topic you want to chat with me in — this looks like the General topic. 😼')
+        await say('Run /baumyhere INSIDE the topic you want to chat with me in — this looks like the General topic. 😼')
         return
       }
       await setConsoleThread(db, messageThreadId)
       await writeAudit(db, 'console.topic.set', String(fromId), null, { threadId: messageThreadId })
-      await sendToHouse(
-        chatId,
+      await say(
         "🐈‍⬛ This is our channel now — ask me anything here (no need to @ me). Try 'what's coming up?', '/reminders', '/recent', or 'what do you know about the kitchen?'",
-        { threadId: messageThreadId },
       )
     })
     return 'console-config'
@@ -179,13 +179,13 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
         // The live list comes down too: its id is cleared, it is unpinned and deleted (or marked "no
         // longer updated", buttons gone).
         await retireShoppingBoard(db)
-        await sendToHouse(chatId, "Okay — I'll stop updating the shopping list. 🐈", { threadId: messageThreadId ?? undefined })
+        await say("Okay — I'll stop updating the shopping list. 🐈")
       })
       return 'shopping-config'
     }
     if (shopping === 'here' && messageThreadId == null) {
       await step.run('shopping-config', () =>
-        sendToHouse(chatId, 'Run /shoppinghere INSIDE the topic you want the shopping list in — this looks like the General topic. Use /list to show it here. 😼'),
+        say('Run /shoppinghere INSIDE the topic you want the shopping list in — this looks like the General topic. Use /list to show it here. 😼'),
       )
       return 'shopping-config'
     }
@@ -194,7 +194,7 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
       await step.run('shopping-config', async () => {
         const db = createHttpDb()
         await writeAudit(db, 'shopping.topic.set', String(fromId), null, { threadId: messageThreadId })
-        await sendToHouse(chatId, "🛒 Got it — the shopping list lives in this topic now. I'll keep it pinned and up to date.", { threadId: messageThreadId ?? undefined })
+        await say("🛒 Got it — the shopping list lives in this topic now. I'll keep it pinned and up to date.")
       })
     }
     // Post / re-render through the one serialised render function (it stores the message and its topic).
@@ -213,7 +213,7 @@ export async function runCommands(step: TurnStep, env: CommandEnv): Promise<Comm
   // first, so it is never used — the sender is told to make a fresh one and DM it. Members only.
   if (origin.lane === 'house' && fromId != null && roster.isMember(fromId) && /^\/link(?:@\w+)?(?:\s|$)/i.test(rawText.trim())) {
     await step.run('link-in-group', () =>
-      sayHouse("Don't post link codes in the group — anyone could use it. Make a fresh code in Olympics → Settings and DM it to me as /link <code>. 🔗"),
+      say("Don't post link codes in the group — anyone could use it. Make a fresh code in Olympics → Settings and DM it to me as /link <code>. 🔗"),
     )
     return 'command'
   }

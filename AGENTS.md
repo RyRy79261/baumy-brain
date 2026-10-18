@@ -85,9 +85,10 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
   or the ask-Baumy topic (except a reply to another housemate there).
 - **DM queries (`member_dm` lane, `docs/spec/dm-queries-and-house-scoping.md`):** a member can
   DM Baumy to **read** house memory (answered privately) and **write** facts through to shared
-  house memory at `trusted`. The **scope** a message reads/writes is `houseScopeForOrigin(origin,
-  houseChatId)` — derived from the authenticated lane, NEVER the inbound `chatId` — while the
-  reply **destination** stays `origin.chatId`. Keep scope/destination/identity distinct. DM
+  house memory at `trusted`. Scope, destination and identity are produced ONCE by
+  `addressingFor` (`lib/core/origin.ts`): the **scope** a message reads/writes (derived from the
+  authenticated lane, NEVER the inbound `chatId`), the reply **destination** (`reply` — the inbound
+  chat, or null when the two-target belt fails) and the author / forwarder. Keep them distinct. DM
   answers **bypass `/pause`** (lane-scoped: house + reminders still honor it).
 - **Shopping list (`docs/spec/shopping-list.md`, `lib/lists/*`, `baumy_list_items`):** rides the
   same scope seam — a member DMs "buy milk" / "got the milk" / "what's on the list?" and it writes
@@ -144,13 +145,17 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
 - **LLM errors (I2):** only a *malformed object* degrades to a safe default
   (`lib/ai/errors.ts` `isMalformedObjectError`); a transient provider error (429/529/timeout)
   **rethrows** so the Inngest step retries — never swallow it into a memoized degraded value.
-- **Fixed send destination:** `sendToHouse` targets a **code-resolved** chat id only. Replies
+- **Fixed send destination:** every worded send goes through ONE door, `lib/telegram/send.ts`
+  `send(dest, …)` / `sendConfirm`, with a **code-resolved** destination: `chat` (addressingFor's
+  `reply`), `house` (proactive) or `member` (one ACTIVE housemate's own DM — anyone else is refused).
+  `postMessage` in `client.ts` is the transport exit (sandbox capture + window append) — never call it
+  from feature code. Replies
   are a **two-target allow-list** — the house group, or the authenticated DM sender's own chat
   (`origin.chatId`). Reminders are the same two targets (spec D2, phase 5): a **house** reminder
-  (`deliver_chat_id = group_id`) → the current live house id via `sendToHouseResilient`; a
+  (`deliver_chat_id = group_id`) → the current live house id via `send({ to: 'house' })`; a
   **personal reminder set in a member DM** (`forWhom` speaker, or a literal "remind me" / a DM ask
   with no `forWhom`) → `deliver_chat_id = created_by` = that authenticated DM chat, delivered with a
-  plain `sendToHouse` to it — never through the house path, retired (never re-routed) if its creator
+  `send({ to: 'member' })` to it — never through the house path, retired (never re-routed) if its creator
   has left (`lib/reminders/store.ts` `reminderDestination`). Personal reminders never appear in the
   group's `/reminders` or `/weekly` (`visibleReminders`), and a reminder request asked in a DM that set
   no HOUSE reminder is **not captured** into shared house memory either (no note, no facts — so no
@@ -162,7 +167,7 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
   stable **scope** and is NEVER rewritten. `house_config.live_chat_id` holds the current transport id;
   `resolveHouseIds` → `{scopeId, sendId, acceptIds}` (lane accepts the alias set, sends use `sendId`,
   memory stays on `scopeId`). It self-heals inbound (`convergeMigration`, bound to a known-house id —
-  no hijack) + outbound (`sendToHouseResilient` 400-retry); `scripts/heal-house.ts` is the manual kick.
+  no hijack) + outbound (`send({ to: 'house' })` 400-retry); `scripts/heal-house.ts` is the manual kick.
 - **Reminder topic ("notification channel"):** `house_config.reminder_thread_id` routes reminders into
   a forum topic via `message_thread_id`; set by the owner's `/notifyhere` (capture-tier auto-commit,
   house lane, audited — value from the authenticated `message_thread_id`, never text). Read receipts are
@@ -296,7 +301,7 @@ The design contract is `docs/spec/chat-understanding-v2.md` (fully implemented; 
    MODE → `MESSAGE from <name>`. Grounding (`grounding.ts`) **excludes this turn's own note and facts**
    (C1). The model never third-persons the sender and never claims an action THIS TURN doesn't report
    (A3). Words go out as a Telegram **reply** to the triggering message (C11), through the `claimReply`
-   / `releaseReply` exactly-once belt; Sonnet→Opus self-escalation and the malformed-object text
+   / `releaseReply` exactly-once belt (`lib/telegram/send.ts`); Sonnet→Opus self-escalation and the malformed-object text
    fallback are kept.
 
 - **Clarify is answerable:** a reminder with no / unreadable / past time stores a short-lived draft

@@ -27,8 +27,8 @@ const rem = (whenText: string, content: string): { reminders: Rem[] } => ({ remi
 const extractListMock = vi.fn(async (..._a: unknown[]) => ({ op: 'none', items: [] as string[] }))
 const extractForgetMock = vi.fn(async (..._a: unknown[]) => ({ isForget: false, values: [] as string[], subject: '', attribute: '', permanent: false }))
 const answerMock = vi.fn(async (_ctx: TurnContext, _mode: string, _g: GroundingItem[]) => ({ text: 'words', answered: true, usedTier: 'reply' }))
-const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
-const sendConfirmCard = vi.fn(async (..._a: unknown[]) => {})
+const postMessage = vi.fn(async (..._a: unknown[]) => {})
+const postConfirmCard = vi.fn(async (..._a: unknown[]) => {})
 const reactToMessage = vi.fn(async (..._a: unknown[]) => {})
 const chatMemberMock = vi.fn(async (..._a: unknown[]): Promise<{ status: string; isMember: boolean } | null> => null)
 
@@ -51,8 +51,8 @@ vi.mock('@/lib/inngest/client', async (o) => {
   return { ...actual, inngest: { ...actual.inngest, send: async () => ({ ids: [] }), createFunction: actual.inngest.createFunction.bind(actual.inngest) } }
 })
 vi.mock('@/lib/telegram/client', () => ({
-  sendToHouse: (...a: unknown[]) => sendToHouse(...a),
-  sendConfirmCard: (...a: unknown[]) => sendConfirmCard(...a),
+  postMessage: (...a: unknown[]) => postMessage(...a),
+  postConfirmCard: (...a: unknown[]) => postConfirmCard(...a),
   reactToMessage: (...a: unknown[]) => reactToMessage(...a),
   getBotUsername: async () => 'baumy_bot',
   getBotId: async () => 7001,
@@ -119,7 +119,7 @@ beforeEach(async () => {
   await dbh.db.insert(houseConfig).values({ id: true, houseGroupChatId: HOUSE }).onConflictDoNothing()
   await upsertMember(dbh.db, HOUSE, String(CHLOE), 'Chloe', 'owner')
   await upsertMember(dbh.db, HOUSE, String(MARCO), 'Marco', 'member')
-  for (const m of [classifyMock, extractFactsMock, extractReminderMock, extractListMock, extractForgetMock, answerMock, sendToHouse, sendConfirmCard, reactToMessage]) m.mockClear()
+  for (const m of [classifyMock, extractFactsMock, extractReminderMock, extractListMock, extractForgetMock, answerMock, postMessage, postConfirmCard, reactToMessage]) m.mockClear()
   classifyMock.mockResolvedValue(V())
   extractFactsMock.mockResolvedValue({ facts: [] })
   extractReminderMock.mockResolvedValue({ reminders: [] })
@@ -143,7 +143,7 @@ describe('the Chloe bug (C1–C4, K2)', () => {
     expect(ctx.outcome.captured?.learned).toEqual([expect.objectContaining({ subject: 'zosia', object: "chloe's room" })])
     expect(grounding).toEqual([]) // the message never grounds its own reply
     // words go out as a Telegram reply to the statement (C11)
-    expect(sendToHouse).toHaveBeenCalledWith(HOUSE, 'words', expect.objectContaining({ replyToMessageId: 100 + uid }))
+    expect(postMessage).toHaveBeenCalledWith(HOUSE, 'words', expect.objectContaining({ replyToMessageId: 100 + uid }))
   })
 
   it('K2: "did you catch that?" restating it later is still an ack — the earlier fact grounds it, the restatement does not', async () => {
@@ -188,7 +188,7 @@ describe('K3 / K5 — DMs', () => {
     classifyMock.mockResolvedValue(V({ intent: 'statement', worthRemembering: true }))
     await run(ev({ chatId: String(CHLOE), chatType: 'private', text: 'the boiler service is on tuesday' }))
     expect(lastAnswer().mode).toBe('ack')
-    expect(sendToHouse.mock.calls[0][0]).toBe(String(CHLOE))
+    expect(postMessage.mock.calls[0][0]).toBe(String(CHLOE))
   })
   it('K5: a DM question still gets an answer when triage returned a malformed object', async () => {
     classifyMock.mockResolvedValue(SAFE_VERDICT)
@@ -255,7 +255,7 @@ describe('reminders — the outcome drives confirm / clarify (A2, A3, A9)', () =
     expect(extractReminderMock).not.toHaveBeenCalled()
     expect(await dbh.db.select().from(reminders)).toHaveLength(0)
     expect(res.planRow).toBe('reminder-undirected')
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
     expect(reactToMessage).not.toHaveBeenCalled()
   })
 
@@ -264,7 +264,7 @@ describe('reminders — the outcome drives confirm / clarify (A2, A3, A9)', () =
     await run(ev({ chatId: String(CHLOE), chatType: 'private', text: 'remind me friday 8pm to take the bins out' }))
     expect(await dbh.db.select().from(reminders)).toHaveLength(1)
     expect(lastAnswer().mode).toBe('confirm')
-    expect(sendToHouse.mock.calls[0][0]).toBe(String(CHLOE))
+    expect(postMessage.mock.calls[0][0]).toBe(String(CHLOE))
   })
 })
 
@@ -492,8 +492,8 @@ describe('forget — proposal only, then the card', () => {
     classifyMock.mockResolvedValue(V({ intent: 'forget' }))
     extractForgetMock.mockResolvedValue({ isForget: true, values: ['0176 5554433'], subject: '', attribute: '', permanent: false })
     await run(ev({ text: 'baumy forget my number 0176 5554433' }))
-    expect(sendConfirmCard).toHaveBeenCalledTimes(1)
-    expect(sendConfirmCard.mock.calls[0][4]).toBe(100 + uid) // reply_parameters → the request
+    expect(postConfirmCard).toHaveBeenCalledTimes(1)
+    expect(postConfirmCard.mock.calls[0][4]).toBe(100 + uid) // reply_parameters → the request
     expect(await dbh.db.select().from(pendingActions)).toHaveLength(1)
     expect(await dbh.db.select().from(memoryItems)).toHaveLength(0) // a forget request is never captured
     expect(answerMock).not.toHaveBeenCalled()
@@ -507,7 +507,7 @@ describe('forget — proposal only, then the card', () => {
     await run(ev({ chatId: String(CHLOE), chatType: 'private', text: 'forget my number 0176 5554433' }))
     const [pa] = await dbh.db.select().from(pendingActions)
     expect(pa.groupId).toBe(HOUSE)
-    expect(sendConfirmCard.mock.calls[0][0]).toBe(String(CHLOE)) // the card goes to the DM
+    expect(postConfirmCard.mock.calls[0][0]).toBe(String(CHLOE)) // the card goes to the DM
   })
   it('a forget from the migrated supergroup (live id ≠ scope) stores the scope', async () => {
     const LIVE = '-100turnlive'
@@ -518,13 +518,13 @@ describe('forget — proposal only, then the card', () => {
     await run(ev({ chatId: LIVE, text: 'baumy forget my number 0176 5554433' }))
     const [pa] = await dbh.db.select().from(pendingActions)
     expect(pa.groupId).toBe(HOUSE)
-    expect(sendConfirmCard.mock.calls[0][0]).toBe(LIVE)
+    expect(postConfirmCard.mock.calls[0][0]).toBe(LIVE)
   })
   it('nothing to forget → the deterministic line, no pending action', async () => {
     classifyMock.mockResolvedValue(V({ intent: 'forget' }))
     extractForgetMock.mockResolvedValue({ isForget: true, values: ['nonexistent thing'], subject: '', attribute: '', permanent: false })
     await run(ev({ text: 'baumy forget the nonexistent thing' }))
-    expect(String(sendToHouse.mock.calls[0][1])).toContain('nothing to forget')
+    expect(String(postMessage.mock.calls[0][1])).toContain('nothing to forget')
     expect(await dbh.db.select().from(pendingActions)).toHaveLength(0)
   })
   it('paused house: no proposal is even created', async () => {
@@ -533,7 +533,7 @@ describe('forget — proposal only, then the card', () => {
     extractForgetMock.mockResolvedValue({ isForget: true, values: ['x'], subject: '', attribute: '', permanent: false })
     await run(ev({ text: 'baumy forget x' }))
     expect(extractForgetMock).not.toHaveBeenCalled()
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
   })
 })
 
@@ -549,14 +549,14 @@ describe('exactly-once — the claim-and-release belt survives the refactor', ()
       },
     }
     classifyMock.mockResolvedValue(V({ intent: 'question', asksBaumy: true }))
-    sendToHouse.mockRejectedValueOnce(new Error('telegram 502'))
+    postMessage.mockRejectedValueOnce(new Error('telegram 502'))
     const e = ev({ text: '@baumy_bot when is bin day?' })
     await expect(run(e, memoStep)).rejects.toThrow('telegram 502')
     expect(reactions().at(-1)).toBeNull() // the stranded 👀 was cleared
     await run(e, memoStep) // Inngest retry: the claim was released, so it re-claims and sends
-    expect(sendToHouse).toHaveBeenCalledTimes(2)
+    expect(postMessage).toHaveBeenCalledTimes(2)
     await run({ data: { ...e.data } }, step) // a duplicate delivery with a fresh (non-memoized) step
-    expect(sendToHouse).toHaveBeenCalledTimes(2) // claimReply refuses the second send
+    expect(postMessage).toHaveBeenCalledTimes(2) // claimReply refuses the second send
   })
 })
 
@@ -612,7 +612,7 @@ describe('the conversation window (phase 2, spec §5 — C5)', () => {
     classifyMock.mockResolvedValue(V({ intent: 'forget', confidence: 0.3 }))
     const res = await run(ev({ text: 'forget my number 0176 5550123' }))
     expect(res.decision).not.toBe('forget')
-    expect(sendConfirmCard).not.toHaveBeenCalled()
+    expect(postConfirmCard).not.toHaveBeenCalled()
     const [r] = await windowRows()
     expect(r.textRedacted).toBe('[asked Baumy to forget something — withheld]')
   })
@@ -626,7 +626,7 @@ describe('the conversation window (phase 2, spec §5 — C5)', () => {
     expect(inbound.textRedacted).toBe('[a message containing the wifi password — withheld]')
     expect(lastAnswer().ctx.outcome.captured?.secure).toBe('the wifi password')
     // Baumy's words are windowed at the send seam — the executor hands it the placeholder.
-    const sent = sendToHouse.mock.calls.at(-1)!
+    const sent = postMessage.mock.calls.at(-1)!
     expect(sent[1]).toBe('Noted — wifi is hunter2')
     expect((sent[2] as { windowText?: string }).windowText).toBe("[Baumy's reply about the wifi password — withheld]")
   })
@@ -661,11 +661,11 @@ describe('phase 5 — intake & actions', () => {
     extractReminderMock.mockResolvedValue({ reminders: [{ content: 'bins out', fireAt: '2026-10-02T09:00' }] })
     const first = ev({ text: '@baumy_bot remind us friday 9am bins out' })
     await run(first)
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
+    expect(postMessage).toHaveBeenCalledTimes(1)
     extractReminderMock.mockResolvedValue({ reminders: [{ content: 'bins out', fireAt: '2026-10-03T09:00' }] })
     const res = await run({ data: { ...first.data, updateId: first.data.updateId + 500, isEdit: true, text: '@baumy_bot remind us saturday 9am bins out' } })
     expect(res).toMatchObject({ planRow: 'edit-reminder', reminderSet: true })
-    expect(sendToHouse).toHaveBeenCalledTimes(1) // no second reply
+    expect(postMessage).toHaveBeenCalledTimes(1) // no second reply
     expect(reactions().at(-1)).toBe('👍')
     const rows = await reminderRows()
     expect(rows.map((r) => [r.status, r.fireAt.toISOString()]).sort()).toEqual([
@@ -683,7 +683,7 @@ describe('phase 5 — intake & actions', () => {
     await run(q)
     await run({ data: { ...q.data, updateId: q.data.updateId + 500, isEdit: true, text: "@baumy_bot what's the bin day?" } })
     expect(answerMock).toHaveBeenCalledTimes(1)
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
+    expect(postMessage).toHaveBeenCalledTimes(1)
     const cmd = ev({ text: '/weekly' })
     expect(await run({ data: { ...cmd.data, isEdit: true } })).toMatchObject({ decision: 'drop', reason: 'edited-command' })
   })
@@ -749,7 +749,7 @@ describe('phase 5 — intake & actions', () => {
     const res = await run(ev({ chatId: '905', chatType: 'private', fromId: 905, fromFirstName: 'Nina', text: 'what is the bin day?' }))
     expect(res).toMatchObject({ plan: 'words:answer' })
     expect(chatMemberMock).toHaveBeenCalledWith(HOUSE, 905)
-    expect(sendToHouse.mock.calls.at(-1)?.[0]).toBe('905')
+    expect(postMessage.mock.calls.at(-1)?.[0]).toBe('905')
 
     chatMemberMock.mockResolvedValueOnce({ status: 'left', isMember: false })
     expect(await run(ev({ chatId: '906', chatType: 'private', fromId: 906, text: 'hi baumy' }))).toMatchObject({ decision: 'drop', reason: 'out-of-scope' })

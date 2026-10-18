@@ -36,9 +36,10 @@ async function toWindow(s: BaumySend): Promise<void> {
   }
 }
 
-// Fixed-destination send (architecture D9): the caller resolves the destination
-// (house config / stored deliver_chat_id / task group_id) — never the LLM.
-export async function sendToHouse(
+// The transport exit for a worded message: sandbox capture, the Bot API call, the window append. The
+// DESTINATION is decided by lib/telegram/send.ts (send / sendConfirm) — call that, not this, from
+// feature code (fixed-destination invariant, architecture D9).
+export async function postMessage(
   chatId: string,
   text: string,
   opts?: { silent?: boolean; threadId?: number; replyToMessageId?: number; windowText?: string },
@@ -66,8 +67,8 @@ export async function sendToHouse(
 }
 
 // Inline-keyboard confirm card (security B4). The tap — a callback_query from a
-// member's authenticated from.id — is the injection wall for a privileged action.
-export async function sendConfirmCard(
+// member's authenticated from.id — is the injection wall for a privileged action. Sent via send.ts sendConfirm.
+export async function postConfirmCard(
   chatId: string,
   text: string,
   actionId: string,
@@ -210,13 +211,6 @@ export async function editShoppingBoard(chatId: string, messageId: number, text:
     console.warn(`[baumy/telegram] edit of ${chatId}/${messageId} refused:`, err instanceof Error ? err.message : err)
     return false
   }
-}
-
-// DM reply — permitted ONLY for the auth/login response path to the originating
-// member (architecture D9). Never for house content.
-export async function sendDmLoginResponse(chatId: number | string, text: string): Promise<void> {
-  if (record({ kind: 'dm', chatId: String(chatId), text }, now())) return
-  await api().sendMessage(chatId, text, NO_PREVIEW)
 }
 
 // Ack a callback_query (dismisses the button spinner; optional toast text).

@@ -38,7 +38,7 @@ message text.
 ```ts
 interface TurnContext {
   updateId: number; messageId: number; chatId: string          // destination
-  houseScope: string                                          // memory scope (houseScopeForOrigin)
+  houseScope: string                                          // memory scope (addressingFor)
   lane: 'house' | 'member_dm'
   sender: { id: number; name: string; firstName: string; role: 'owner' | 'member' }
   trust: Trust                                                 // from origin

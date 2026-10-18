@@ -19,7 +19,7 @@ import type { TelegramMessageData } from '@/lib/inngest/client'
 const dbh: { db: any } = { db: null }
 const classifyMock = vi.fn<(t: string) => Promise<ClassifierVerdict>>()
 const extractMock = vi.fn<(t: string) => Promise<{ op: string; items: string[] }>>()
-const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
+const postMessage = vi.fn(async (..._a: unknown[]) => {})
 const reactToMessage = vi.fn(async (..._a: unknown[]) => {})
 const deleteMessageMock = vi.fn(async (..._a: unknown[]) => true)
 // The reply path (used only by the ask-Baumy conversational tests) — mocked so it never touches the
@@ -41,12 +41,11 @@ vi.mock('@/lib/ai/list-extract', async (importOriginal) => {
   return { ...actual, extractListOp: (t: string) => extractMock(t) }
 })
 vi.mock('@/lib/telegram/client', () => ({
-  sendToHouse: (...a: unknown[]) => sendToHouse(...a),
+  postMessage: (...a: unknown[]) => postMessage(...a),
   reactToMessage: (...a: unknown[]) => reactToMessage(...a),
   getBotUsername: async () => 'baumybot',
   getBotId: async () => null,
-  sendConfirmCard: async () => {},
-  sendDmLoginResponse: async () => {},
+  postConfirmCard: async () => {},
   deleteMessage: (...a: unknown[]) => deleteMessageMock(...a),
   unpinMessage: (...a: unknown[]) => unpinMessageMock(...a),
   editShoppingBoard: async () => true,
@@ -131,7 +130,7 @@ describe('ingest handler — shopping list end-to-end (real routing, mocked LLM/
     await upsertMember(dbh.db, HOUSE, String(MEMBER), 'Ryan', 'member') // roster knows the member
     classifyMock.mockReset()
     extractMock.mockReset()
-    sendToHouse.mockClear()
+    postMessage.mockClear()
     reactToMessage.mockClear()
     noteShoppingChange.mockClear()
   })
@@ -161,7 +160,7 @@ describe('ingest handler — shopping list end-to-end (real routing, mocked LLM/
     classifyMock.mockResolvedValue(verdict({ list: 'query', intent: 'question', asksBaumy: true, confidence: 0.9 }))
     extractMock.mockResolvedValue({ op: 'query', items: [] })
     await runIngest(event({ text: "what's on the list?" }), step)
-    expect(sendToHouse).toHaveBeenCalledTimes(3) // all three ran (and answered)
+    expect(postMessage).toHaveBeenCalledTimes(3) // all three ran (and answered)
     expect(noteShoppingChange).not.toHaveBeenCalled()
   })
 
@@ -177,9 +176,9 @@ describe('ingest handler — shopping list end-to-end (real routing, mocked LLM/
     expect(row.item).toBe('milk')
     expect(row.addedBy).toBe(String(MEMBER))
     // confirmed privately to the DM chat, never the group; no group-noise reaction
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
-    expect(sendToHouse.mock.calls[0][0]).toBe(DM)
-    expect(String(sendToHouse.mock.calls[0][1])).toContain('Added milk')
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(postMessage.mock.calls[0][0]).toBe(DM)
+    expect(String(postMessage.mock.calls[0][1])).toContain('Added milk')
     expect(reactToMessage).not.toHaveBeenCalled()
   })
 
@@ -193,8 +192,8 @@ describe('ingest handler — shopping list end-to-end (real routing, mocked LLM/
     // extractor even runs. The DM forward only gets the deterministic "read it" ack, never a list reply.
     expect(await openItems()).toEqual([])
     expect(extractMock).not.toHaveBeenCalled()
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
-    expect(String(sendToHouse.mock.calls[0][1])).not.toMatch(/milk|list/i)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(String(postMessage.mock.calls[0][1])).not.toMatch(/milk|list/i)
   })
 
   it('a member DM "what\'s on the list?" renders the current list and does NOT double-reply', async () => {
@@ -207,8 +206,8 @@ describe('ingest handler — shopping list end-to-end (real routing, mocked LLM/
     const res = await runIngest(event({ text: "what's on the list?" }), step)
 
     expect(res.decision).toBe('list')
-    expect(sendToHouse).toHaveBeenCalledTimes(1) // NOT two (list render + generic reply)
-    const sent = String(sendToHouse.mock.calls[0][1])
+    expect(postMessage).toHaveBeenCalledTimes(1) // NOT two (list render + generic reply)
+    const sent = String(postMessage.mock.calls[0][1])
     expect(sent).toContain('Shopping list')
     expect(sent).toContain('milk')
     expect(sent).toContain('eggs')
@@ -227,7 +226,7 @@ describe('ingest handler — /notifyhere reminders-topic capture (owner-gated, h
     await upsertMember(dbh.db, HOUSE, String(MEMBER), 'Ryan', 'member')
     classifyMock.mockReset()
     extractMock.mockReset()
-    sendToHouse.mockClear()
+    postMessage.mockClear()
     reactToMessage.mockClear()
   })
 
@@ -238,9 +237,9 @@ describe('ingest handler — /notifyhere reminders-topic capture (owner-gated, h
     const res = await runIngest(houseCmd({ text: '/notifyhere', messageThreadId: 55 }), step)
     expect(res.decision).toBe('notify-config')
     expect((await resolveHouseIds(dbh.db)).reminderThreadId).toBe(55)
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
-    expect(sendToHouse.mock.calls[0][0]).toBe(HOUSE)
-    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: 55 })
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(postMessage.mock.calls[0][0]).toBe(HOUSE)
+    expect(postMessage.mock.calls[0][2]).toMatchObject({ threadId: 55 })
   })
 
   it('/notifyoff resets to the General topic', async () => {
@@ -261,7 +260,7 @@ describe('ingest handler — /notifyhere reminders-topic capture (owner-gated, h
     const res = await runIngest(houseCmd({ text: '/notifyhere', messageThreadId: null }), step)
     expect(res.decision).toBe('notify-config')
     expect((await resolveHouseIds(dbh.db)).reminderThreadId).toBeNull()
-    expect(String(sendToHouse.mock.calls[0][1])).toContain('INSIDE the topic')
+    expect(String(postMessage.mock.calls[0][1])).toContain('INSIDE the topic')
   })
 })
 
@@ -279,7 +278,7 @@ describe('ingest handler — /list, /shoppinghere, /shoppingoff (member-gated, h
     classifyMock.mockReset()
     classifyMock.mockResolvedValue(verdict({})) // chatter, if a refused command ever reached the turn
     extractMock.mockReset()
-    sendToHouse.mockClear()
+    postMessage.mockClear()
     reactToMessage.mockClear()
     requestShoppingRender.mockClear()
     deleteMessageMock.mockClear()
@@ -294,10 +293,10 @@ describe('ingest handler — /list, /shoppinghere, /shoppingoff (member-gated, h
   it('a member (not only the owner) /shoppinghere inside a topic: confirms there, audits, and asks for the list to MOVE here', async () => {
     const res = await runIngest(houseCmd({ text: '/shoppinghere', messageThreadId: 66 }), step)
     expect(res.decision).toBe('shopping-config')
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
-    expect(sendToHouse.mock.calls[0][0]).toBe(HOUSE)
-    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: 66 })
-    expect(String(sendToHouse.mock.calls[0][1])).toMatch(/shopping list/i)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(postMessage.mock.calls[0][0]).toBe(HOUSE)
+    expect(postMessage.mock.calls[0][2]).toMatchObject({ threadId: 66 })
+    expect(String(postMessage.mock.calls[0][1])).toMatch(/shopping list/i)
     expect(requestShoppingRender.mock.calls).toEqual([[render(66, true)]])
     const audit = await dbh.db.select().from(auditLog).where(eq(auditLog.action, 'shopping.topic.set'))
     expect(audit).toHaveLength(1)
@@ -314,7 +313,7 @@ describe('ingest handler — /list, /shoppinghere, /shoppingoff (member-gated, h
     expect((await runIngest(houseCmd({ text: '/list', messageThreadId: 66 }), step)).decision).toBe('shopping-list')
     expect((await runIngest(houseCmd({ text: '/list@baumybot', messageThreadId: null }), step)).decision).toBe('shopping-list')
     expect(requestShoppingRender.mock.calls).toEqual([[render(66, false)], [render(null, false)]])
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
   })
 
   it('/listen or /links are not /list', async () => {
@@ -354,7 +353,7 @@ describe('ingest handler — /list, /shoppinghere, /shoppingoff (member-gated, h
     expect(res.decision).toBe('shopping-config')
     expect(await thread()).toBeNull()
     expect(requestShoppingRender).not.toHaveBeenCalled()
-    expect(String(sendToHouse.mock.calls[0][1])).toContain('INSIDE the topic')
+    expect(String(postMessage.mock.calls[0][1])).toContain('INSIDE the topic')
     expect(requestShoppingRender).not.toHaveBeenCalled()
   })
 
@@ -363,7 +362,7 @@ describe('ingest handler — /list, /shoppinghere, /shoppingoff (member-gated, h
     expect(res.decision).not.toBe('shopping-config')
     expect(await thread()).toBeNull()
     expect(requestShoppingRender).not.toHaveBeenCalled()
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
   })
 
   it('an anonymous-admin post (no authenticated member) never sets it', async () => {
@@ -405,7 +404,7 @@ describe('ingest handler — forum-topic reply threading', () => {
     await upsertMember(dbh.db, HOUSE, String(MEMBER), 'Ryan', 'member')
     classifyMock.mockReset()
     extractMock.mockReset()
-    sendToHouse.mockClear()
+    postMessage.mockClear()
     reactToMessage.mockClear()
   })
 
@@ -415,16 +414,16 @@ describe('ingest handler — forum-topic reply threading', () => {
       step,
     )
     expect(res.decision).toBe('report')
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
-    expect(sendToHouse.mock.calls[0][0]).toBe(HOUSE)
-    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: 77 })
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(postMessage.mock.calls[0][0]).toBe(HOUSE)
+    expect(postMessage.mock.calls[0][2]).toMatchObject({ threadId: 77 })
   })
 
   it('a DM reply carries no topic thread', async () => {
     const res = await runIngest(event({ chatId: DM, chatType: 'private', fromId: MEMBER, text: '/bug the sink leaks' }), step)
     expect(res.decision).toBe('report')
-    expect(sendToHouse.mock.calls[0][0]).toBe(DM)
-    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: undefined })
+    expect(postMessage.mock.calls[0][0]).toBe(DM)
+    expect(postMessage.mock.calls[0][2]).toMatchObject({ threadId: undefined })
   })
 })
 
@@ -441,7 +440,7 @@ describe('ingest handler — ask-Baumy topic (/baumyhere + fully conversational)
     await upsertMember(dbh.db, HOUSE, String(MEMBER), 'Ryan', 'member')
     classifyMock.mockReset()
     extractMock.mockReset()
-    sendToHouse.mockClear()
+    postMessage.mockClear()
     reactToMessage.mockClear()
     answerMock.mockClear()
     retrieveMock.mockClear()
@@ -455,7 +454,7 @@ describe('ingest handler — ask-Baumy topic (/baumyhere + fully conversational)
     )
     expect(res.decision).toBe('console-config')
     expect((await resolveHouseIds(dbh.db)).consoleThreadId).toBe(CONSOLE_THREAD)
-    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: CONSOLE_THREAD })
+    expect(postMessage.mock.calls[0][2]).toMatchObject({ threadId: CONSOLE_THREAD })
   })
 
   it('a NON-owner /baumyhere can NOT change it (owner-gated)', async () => {
@@ -479,9 +478,9 @@ describe('ingest handler — ask-Baumy topic (/baumyhere + fully conversational)
     )
     expect(answerMock).toHaveBeenCalledTimes(1) // fully conversational
     expect(answerMock.mock.calls[0][1]).toBe('ack')
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
+    expect(postMessage).toHaveBeenCalledTimes(1)
     // the ack lands in the topic, as a Telegram reply to the statement (C11)
-    expect(sendToHouse.mock.calls[0][2]).toMatchObject({ threadId: CONSOLE_THREAD, replyToMessageId: uid })
+    expect(postMessage.mock.calls[0][2]).toMatchObject({ threadId: CONSOLE_THREAD, replyToMessageId: uid })
   })
 
   it('stays QUIET on the same statement in a different topic (not the console)', async () => {

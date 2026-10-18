@@ -9,8 +9,8 @@ import type { HeadsUpFact } from '@/lib/ai/nudge'
 import { withSimulatedTime } from '@/lib/core/clock'
 import { setGlobalEnabled } from '@/lib/policy'
 
-const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
-vi.mock('@/lib/telegram/client', () => ({ sendToHouse: (...a: unknown[]) => sendToHouse(...a) }))
+const postMessage = vi.fn(async (..._a: unknown[]) => {})
+vi.mock('@/lib/telegram/client', () => ({ postMessage: (...a: unknown[]) => postMessage(...a) }))
 // The heads-up line is written by the model AT DELIVERY (T11) — mocked: it echoes the facts + the lead
 // it was given, so the tests see exactly which lead delivery computed.
 const writeHeadsUp = vi.fn(async (f: HeadsUpFact[], lead: string, when: string): Promise<string | null> => `${f[0].subject} ${f[0].object} — ${lead} (${when})`)
@@ -28,7 +28,7 @@ const minsAgo = (m: number) => new Date(Date.now() - m * 60_000)
 
 describe('reminder digest — batched, exactly-once delivery', () => {
   beforeEach(() => {
-    sendToHouse.mockClear()
+    postMessage.mockClear()
     writeHeadsUp.mockClear()
   })
 
@@ -55,8 +55,8 @@ describe('reminder digest — batched, exactly-once delivery', () => {
 
     const res = await withSimulatedTime(now, () => deliverDueReminders(db, now, TZ))
     expect(res).toEqual({ sent: 2, messages: 1, expired: 0 }) // two reminders → ONE message
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
-    const body = String(sendToHouse.mock.calls[0][1])
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const body = String(postMessage.mock.calls[0][1])
     expect(body).toBe('⏰ call the landlord\n🗓️ bins tonight — tonight (Sat 26 Sep, 21:00)') // explicit → ⏰; heads-up → 🗓️, written for NOW
     const rows = await db.select().from(reminders).where(eq(reminders.groupId, GROUP))
     expect(rows.every((r) => r.status === 'sent')).toBe(true)
@@ -67,9 +67,9 @@ describe('reminder digest — batched, exactly-once delivery', () => {
     await ensureRegistered(db, GROUP, null)
     await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'x', fireAt: minsAgo(5), createdBy: null })
     await deliverDueReminders(db, new Date())
-    sendToHouse.mockClear()
+    postMessage.mockClear()
     expect((await deliverDueReminders(db, new Date())).sent).toBe(0)
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
   })
 
   it('does not deliver a future reminder', async () => {
@@ -77,7 +77,7 @@ describe('reminder digest — batched, exactly-once delivery', () => {
     await ensureRegistered(db, GROUP, null)
     await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'later', fireAt: new Date(Date.now() + 3_600_000), createdBy: null })
     expect((await deliverDueReminders(db, new Date())).sent).toBe(0)
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
   })
 
   it('RETIRES a long-past reminder instead of flushing it into the group', async () => {
@@ -96,7 +96,7 @@ describe('reminder digest — batched, exactly-once delivery', () => {
 
     const res = await deliverDueReminders(db, new Date())
     expect(res).toEqual({ sent: 1, messages: 1, expired: 1 })
-    expect(String(sendToHouse.mock.calls[0][1])).not.toContain('let them in') // never delivered
+    expect(String(postMessage.mock.calls[0][1])).not.toContain('let them in') // never delivered
     const rows = await db.select().from(reminders).where(eq(reminders.groupId, GROUP))
     expect(rows.find((r) => r.content.startsWith('let them in'))!.status).toBe('cancelled') // audited, not deleted
   })
@@ -112,7 +112,7 @@ describe('reminder digest — batched, exactly-once delivery', () => {
     const db = await makeTestDb()
     await ensureRegistered(db, GROUP, null)
     await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'y', fireAt: minsAgo(5), createdBy: null })
-    sendToHouse.mockRejectedValueOnce(new Error('telegram down'))
+    postMessage.mockRejectedValueOnce(new Error('telegram down'))
     await expect(deliverDueReminders(db, new Date())).rejects.toThrow()
     const [row] = await db.select().from(reminders).where(eq(reminders.groupId, GROUP))
     expect(row.status).toBe('scheduled') // released → will retry next slot
@@ -123,7 +123,7 @@ describe('reminder digest — batched, exactly-once delivery', () => {
 
 describe('event heads-ups are written at DELIVERY, with the real lead (T11)', () => {
   beforeEach(() => {
-    sendToHouse.mockClear()
+    postMessage.mockClear()
     writeHeadsUp.mockClear()
   })
   const party = async (db: Awaited<ReturnType<typeof makeTestDb>>) => {
@@ -148,7 +148,7 @@ describe('event heads-ups are written at DELIVERY, with the real lead (T11)', ()
 
     const res = await deliverDueReminders(db, new Date('2026-10-03T06:00:00Z'), TZ) // Sat 08:00
     expect(res.sent).toBe(1)
-    const body = String(sendToHouse.mock.calls[0][1])
+    const body = String(postMessage.mock.calls[0][1])
     expect(body).toBe('🗓️ marco Sat 3 Oct 22:00 — tonight (Sat 3 Oct, 22:00)')
     expect(body).not.toContain('tomorrow')
     const rows = await db.select().from(reminders).where(eq(reminders.groupId, GROUP))
@@ -163,7 +163,7 @@ describe('event heads-ups are written at DELIVERY, with the real lead (T11)', ()
     await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'party!', fireAt: new Date('2026-10-03T19:00:00Z'), anchorKind: 'event_offset', eventFactId: factId, createdBy: null })
     const res = await deliverDueReminders(db, new Date('2026-10-03T20:30:00Z'), TZ) // 22:30 — it started
     expect(res.sent).toBe(0)
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
     expect(writeHeadsUp).not.toHaveBeenCalled()
   })
 
@@ -175,13 +175,13 @@ describe('event heads-ups are written at DELIVERY, with the real lead (T11)', ()
     await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'call the landlord', fireAt: new Date('2026-10-02T17:30:00Z'), createdBy: null })
     writeHeadsUp.mockRejectedValueOnce(new Error('Overloaded'))
     await expect(deliverDueReminders(db, new Date('2026-10-02T18:00:00Z'), TZ)).rejects.toThrow('Overloaded') // rethrown → Inngest retries
-    expect(sendToHouse).toHaveBeenCalledTimes(1)
-    expect(String(sendToHouse.mock.calls[0][1])).toBe('⏰ call the landlord')
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(String(postMessage.mock.calls[0][1])).toBe('⏰ call the landlord')
     const rows = await db.select().from(reminders).where(eq(reminders.groupId, GROUP))
     expect(Object.fromEntries(rows.map((r) => [r.content, r.status]))).toEqual({ 'call the landlord': 'sent', party: 'scheduled' })
     // The retry writes the heads-up; the explicit one is not posted again.
     expect((await deliverDueReminders(db, new Date('2026-10-02T18:00:00Z'), TZ)).sent).toBe(1)
-    expect(String(sendToHouse.mock.calls[1][1])).toMatch(/^🗓️ marco/)
+    expect(String(postMessage.mock.calls[1][1])).toMatch(/^🗓️ marco/)
   })
 
   it('a transient model error releases the batch (retried next slot, never lost)', async () => {
@@ -198,7 +198,7 @@ describe('event heads-ups are written at DELIVERY, with the real lead (T11)', ()
 })
 
 describe('recurring reminders — delivery schedules the next occurrence, exactly once (A6, D3)', () => {
-  beforeEach(() => sendToHouse.mockClear())
+  beforeEach(() => postMessage.mockClear())
   const weekly = (db: Awaited<ReturnType<typeof makeTestDb>>, fireAt: Date) =>
     createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'bins out', fireAt, createdBy: null, recurrence: 'FREQ=WEEKLY;BYDAY=FR' })
   const all = (db: Awaited<ReturnType<typeof makeTestDb>>) => db.select().from(reminders).where(eq(reminders.groupId, GROUP))
@@ -238,7 +238,7 @@ describe('recurring reminders — delivery schedules the next occurrence, exactl
     expect(await deliverReminderNow(db, daily, new Date('2026-10-02T18:00:00Z'), TZ)).toEqual({ status: 'paused' })
     // The daily re-arm fires it again while still paused: still nothing.
     expect(await deliverReminderNow(db, daily, new Date('2026-10-03T06:00:00Z'), TZ)).toEqual({ status: 'paused' })
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
     let rows = await all(db)
     expect(rows).toHaveLength(1) // the series did not grow through the kill switch
     expect(rows[0].status).toBe('scheduled') // held, not lost
@@ -246,7 +246,7 @@ describe('recurring reminders — delivery schedules the next occurrence, exactl
     await setGlobalEnabled(db, true)
     const res = await deliverDueReminders(db, new Date('2026-10-09T06:00:00Z'), TZ)
     expect(res).toMatchObject({ sent: 0, expired: 1 })
-    expect(sendToHouse).not.toHaveBeenCalled() // a week-old "water the plants" is not posted as news
+    expect(postMessage).not.toHaveBeenCalled() // a week-old "water the plants" is not posted as news
     rows = await all(db)
     expect(rows.find((r) => r.previousReminderId === daily)).toMatchObject({ status: 'scheduled', fireAt: new Date('2026-10-09T18:00:00Z') })
   })
@@ -257,7 +257,7 @@ describe('recurring reminders — delivery schedules the next occurrence, exactl
     const id = await createReminder(db, { groupId: GROUP, deliverChatId: GROUP, content: 'call the landlord', fireAt: new Date('2026-10-02T16:00:00Z'), createdBy: null })
     await setGlobalEnabled(db, false)
     expect((await deliverReminderNow(db, id, new Date('2026-10-02T16:00:00Z'), TZ)).status).toBe('paused')
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
     await setGlobalEnabled(db, true)
     expect((await deliverDueReminders(db, new Date('2026-10-02T18:00:00Z'), TZ)).sent).toBe(1)
   })
@@ -268,7 +268,7 @@ describe('recurring reminders — delivery schedules the next occurrence, exactl
     const id = await weekly(db, new Date('2026-10-02T18:00:00Z'))
     const res = await deliverDueReminders(db, new Date('2026-10-05T06:00:00Z'), TZ) // Monday: 2.5 days late
     expect(res).toMatchObject({ sent: 0, expired: 1 })
-    expect(sendToHouse).not.toHaveBeenCalled() // old news never posted
+    expect(postMessage).not.toHaveBeenCalled() // old news never posted
     const rows = await all(db)
     expect(rows.find((r) => r.id === id)!.status).toBe('cancelled')
     expect(rows.find((r) => r.previousReminderId === id)!.fireAt.toISOString()).toBe('2026-10-09T18:00:00.000Z')

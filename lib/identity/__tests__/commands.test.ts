@@ -3,15 +3,15 @@ import { eq } from 'drizzle-orm'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { ensureRegistered } from '@/lib/memory/write'
 import { houseConfig, members } from '@/db/schema'
-import { upsertMember } from '@/lib/identity/roster'
+import { upsertMember, setDashboardAccess } from '@/lib/identity/roster'
 import { loadResponsePolicy } from '@/lib/policy'
 
 // Telegram sends are mocked; the DB is a real in-memory PGlite injected into the
 // command handler (no live model/API/network).
 const sendDm = vi.fn(async () => {})
 vi.mock('@/lib/telegram/client', () => ({
-  sendDmLoginResponse: (...a: unknown[]) => sendDm(...(a as [])),
-  sendConfirmCard: vi.fn(async () => {}),
+  postMessage: (...a: unknown[]) => sendDm(...(a as [])),
+  postConfirmCard: vi.fn(async () => {}),
 }))
 
 // Inngest is never reached: the live-list change signal is captured here.
@@ -169,5 +169,33 @@ describe('handleCommand — /resume brings the live shopping list up to date (is
     expect(inngestSend).toHaveBeenCalledTimes(1)
     expect(inngestSend.mock.calls[0][0]).toEqual({ name: 'lists/shopping.changed', data: { groupId: GROUP } })
     vi.unstubAllEnvs()
+  })
+})
+
+// DM command answers are ordinary Baumy sends now (lib/telegram/send.ts): they reach the conversation
+// window like every other send — except the one-time sign-in link, which must not linger there.
+describe('handleCommand — answers go through the send door', () => {
+  it('a /dashboard link is sent to the DM but withheld from the conversation window', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 100)
+    await setDashboardAccess(db, '100', true)
+    sendDm.mockClear()
+    await handleCommand(dmOrigin(100, '100'), '/dashboard', db)
+    const [chatId, body, opts] = sendDm.mock.calls[0] as unknown as [string, string, { windowText?: string }]
+    expect(chatId).toBe('100')
+    expect(body).toContain('/api/auth/login?token=')
+    expect(opts.windowText).toBeDefined()
+    expect(opts.windowText).not.toContain('token')
+  })
+
+  it('an ordinary answer (/pause refused) keeps its text for the window', async () => {
+    const db = await makeTestDb()
+    await ensureRegistered(db, GROUP, 200)
+    sendDm.mockClear()
+    await handleCommand(dmOrigin(200, '200'), '/pause', db)
+    const [chatId, body, opts] = sendDm.mock.calls[0] as unknown as [string, string, { windowText?: string }]
+    expect(chatId).toBe('200')
+    expect(body).toContain('Only the house owner')
+    expect(opts.windowText).toBeUndefined()
   })
 })

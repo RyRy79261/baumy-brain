@@ -169,7 +169,7 @@ describe('sandbox — talk as anyone, move time, watch what happens', () => {
   })
 
   it('never touches the real Telegram API — capture is enforced in the transport', async () => {
-    // If the sink were not installed, sendToHouse would try to construct a grammY Api and throw on
+    // If the sink were not installed, postMessage would try to construct a grammY Api and throw on
     // the missing token. Getting a transcript back at all is the proof.
     delete process.env.TELEGRAM_BOT_TOKEN
     const sb = await freshSandbox('2026-07-01T09:00:00Z')

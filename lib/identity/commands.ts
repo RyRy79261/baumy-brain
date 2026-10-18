@@ -4,7 +4,7 @@ import { loadRoster, setDmChatId } from '@/lib/identity/roster'
 import { issueLoginToken } from '@/lib/auth/tokens'
 import { setGlobalEnabled } from '@/lib/policy'
 import { requestShoppingRefreshForHouse } from '@/lib/lists/board'
-import { sendDmLoginResponse } from '@/lib/telegram/client'
+import { send, type SendOpts } from '@/lib/telegram/send'
 import { START_MESSAGE } from '@/lib/ai/prompts'
 import type { Origin } from '@/lib/core/origin'
 import { callOlympicsAction } from '@/lib/olympics/client'
@@ -15,6 +15,9 @@ import { NOT_CONNECTED, UNAVAILABLE } from '@/lib/olympics/intents'
 // `messageId` (the command's Telegram message) keys the /link Idempotency-Key, so a retried step
 // replays Olympics' stored answer instead of claiming the one-time code a second time.
 export async function handleCommand(origin: Origin, text: string, db: Database = createHttpDb(), opts: { messageId?: number } = {}): Promise<void> {
+  // The answer goes back to the member's own DM (this lane's only destination) and, like every Baumy
+  // send, into the conversation window — except what must not linger there (a sign-in link).
+  const reply = (body: string, o?: SendOpts) => send({ to: 'chat', chatId: origin.chatId, threadId: null }, body, o, db)
   const parts = text.trim().split(/\s+/)
   // Strip a "@botusername" suffix so "/dashboard@baumy_bot" === "/dashboard".
   const cmd = (parts[0] ?? '').split('@')[0].toLowerCase()
@@ -29,10 +32,10 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
     // runs only in the member-DM lane, and a /start in the group is ignored (I7).
     const deepLink = START_LINK.exec(parts[1] ?? '')
     if (deepLink && origin.fromId != null) {
-      await sendDmLoginResponse(origin.chatId, await linkTelegram(String(origin.fromId), deepLink[1], linkKey(origin, opts)))
+      await reply(await linkTelegram(String(origin.fromId), deepLink[1], linkKey(origin, opts)))
       return
     }
-    await sendDmLoginResponse(origin.chatId, START_MESSAGE)
+    await reply(START_MESSAGE)
     return
   }
 
@@ -40,15 +43,14 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
     if (origin.fromId == null) return
     const roster = await loadRoster(db)
     if (!roster.canAccessDashboard(origin.fromId)) {
-      await sendDmLoginResponse(origin.chatId, "You don't have dashboard access yet — ask the house owner to grant it.")
+      await reply("You don't have dashboard access yet — ask the house owner to grant it.")
       return
     }
     const raw = await issueLoginToken(db, String(origin.fromId))
     const base = process.env.BAUMY_PUBLIC_URL ?? ''
-    await sendDmLoginResponse(
-      origin.chatId,
-      `Here's your one-time dashboard link (expires in 5 minutes):\n${base}/api/auth/login?token=${raw}`,
-    )
+    await reply(`Here's your one-time dashboard link (expires in 5 minutes):\n${base}/api/auth/login?token=${raw}`, {
+      windowText: "[Baumy sent a one-time dashboard link — withheld]",
+    })
     return
   }
 
@@ -60,7 +62,7 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
   if (cmd === '/pause' || cmd === '/resume') {
     const roster = await loadRoster(db)
     if (origin.fromId == null || !roster.isOwner(origin.fromId)) {
-      await sendDmLoginResponse(origin.chatId, 'Only the house owner can pause or resume Baumy.')
+      await reply('Only the house owner can pause or resume Baumy.')
       return
     }
     // Kill-switch: applied immediately (a "go quiet" control should not itself
@@ -70,8 +72,7 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
     await setGlobalEnabled(db, enable, { actor: String(origin.fromId), action: enable ? 'policy.resume' : 'policy.pause' })
     // Changes made while paused were never shown on the live shopping list — bring it up to date.
     if (enable) await requestShoppingRefreshForHouse(db)
-    await sendDmLoginResponse(
-      origin.chatId,
+    await reply(
       enable ? '▶️ Baumy resumed — replies and reminders are back on.' : '⏸️ Baumy paused — it will stay quiet (still captures memory) until /resume.',
     )
     return
@@ -79,11 +80,11 @@ export async function handleCommand(origin: Origin, text: string, db: Database =
 
   if (cmd === '/link') {
     if (origin.fromId == null) return
-    await sendDmLoginResponse(origin.chatId, await linkTelegram(String(origin.fromId), parts[1] ?? '', linkKey(origin, opts)))
+    await reply(await linkTelegram(String(origin.fromId), parts[1] ?? '', linkKey(origin, opts)))
     return
   }
 
-  await sendDmLoginResponse(origin.chatId, 'Unknown command.')
+  await reply('Unknown command.')
 }
 
 // ── /link <code> — Baumy Olympics member linking (docs/spec/olympics.md) ─────────────────────────

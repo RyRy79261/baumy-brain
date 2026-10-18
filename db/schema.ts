@@ -82,7 +82,7 @@ export const messages = pgTable(
   'baumy_messages',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    // The house SCOPE (houseScopeForOrigin) — a DM row carries the house scope too; reads also key
+    // The house SCOPE (addressingFor) — a DM row carries the house scope too; reads also key
     // on chat_id, so a DM never shows up in the group's window (or another member's DM).
     groupId: text('group_id')
       .notNull()
@@ -364,7 +364,7 @@ export const scheduledTasks = pgTable(
 // "graduation rule" (memory-core.md #10): a shopping list needs current-state + uniqueness +
 // mutation (add / check off / query), which fuzzy fact-memory can't give — so it earns a real
 // table. Group-scoped like every house-data table; a member DM writes THROUGH to the house list
-// (scope = houseScopeForOrigin, never the inbound chat). `list_name` is a resilience seam — one
+// (scope = addressingFor, never the inbound chat). `list_name` is a resilience seam — one
 // 'shopping' list today; a 'todo'/'guests' list later needs no migration. Auto-commit tier (like
 // reminders/capture): the LLM proposes items, deterministic code disposes; NOT confirm-gated.
 export const listItems = pgTable(

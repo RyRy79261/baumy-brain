@@ -83,7 +83,7 @@ export async function createSandbox(input: CreateSandboxInput): Promise<Sandbox>
   const tz = input.tz ?? 'Europe/Berlin'
   await ensureRegistered(input.db, houseChatId, null)
   // Point house_config at the sandbox group, so every code path that resolves a destination
-  // (sendToHouse, the digest, the surfacing scan) resolves to THIS house and not a real one.
+  // (postMessage, the digest, the surfacing scan) resolves to THIS house and not a real one.
   await input.db
     .insert(houseConfig)
     .values({ id: true, houseGroupChatId: houseChatId, houseTimezone: tz })

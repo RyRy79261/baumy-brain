@@ -6,7 +6,7 @@ import { asCategory, DEFAULT_SORT, isSortMode, type Category, type SortMode } fr
 
 // A house list is a first-class, group-scoped, stateful table (docs/spec/shopping-list.md) —
 // distinct from fuzzy fact-memory. Every read/write here is keyed on `groupId` (= the house
-// SCOPE from houseScopeForOrigin, never the inbound chat) so a member DM writes THROUGH to the
+// SCOPE from addressingFor, never the inbound chat) so a member DM writes THROUGH to the
 // shared house list. Quarantine + attribution are enforced by the CALLER (ingest), the same as
 // captureMemory: this layer trusts its inputs are already lane-gated.
 

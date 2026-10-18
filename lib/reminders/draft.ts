@@ -19,7 +19,7 @@ export const REMINDER_DRAFT = 'reminder.draft'
 const DRAFT_TTL_SEC = 6 * 3600
 
 export interface ReminderDraftKey {
-  /** The house scope (houseScopeForOrigin) — never the inbound chat. */
+  /** The house scope (addressingFor) — never the inbound chat. */
   groupId: string
   /** The chat the request was made in (the house group or the requester's DM). */
   chatId: string

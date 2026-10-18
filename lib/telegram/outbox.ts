@@ -13,7 +13,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 // real request's sends.
 
 export interface OutboundMessage {
-  kind: 'message' | 'confirm-card' | 'dm' | 'reaction' | 'edit' | 'delete' | 'callback-answer' | 'pin' | 'unpin'
+  kind: 'message' | 'confirm-card' | 'reaction' | 'edit' | 'delete' | 'callback-answer' | 'pin' | 'unpin'
   chatId: string
   text: string | null
   /** Set for reactions ('👀', '✍', null = cleared), for confirm cards (the action id), and for an edit or

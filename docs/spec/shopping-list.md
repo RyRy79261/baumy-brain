@@ -76,7 +76,7 @@ A fully-compromised model can at most return an op enum + item strings (and `fro
 ## Security invariants (must hold)
 
 - **I1 — Scope from the authenticated lane, never text.** Every read/write keys `group_id` on
-  `houseScopeForOrigin(origin, houseChatId)` — so a DM "buy milk" writes THROUGH to the shared house
+  `addressingFor(origin, house, roster, threadId).scope` — so a DM "buy milk" writes THROUGH to the shared house
   list, and a member of house A cannot name house B's list. Empty scope (ignore lane / bot not yet in
   a group) is a no-op.
 - **I2 — Attribution is authenticated.** `added_by` / `checked_by` / `removed_by` / `renamed_by` =

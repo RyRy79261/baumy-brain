@@ -14,10 +14,10 @@ import {
   editLiveList,
   pinMessage,
   unpinMessage,
-  sendToHouse,
   type LiveKeyboard,
   type LiveEditOutcome,
 } from '@/lib/telegram/client'
+import { send } from '@/lib/telegram/send'
 import { RetryAfterError } from 'inngest'
 import { houseTz } from '@/lib/env'
 import { now as clockNow } from '@/lib/core/clock'
@@ -354,7 +354,7 @@ async function renderOnce(step: TurnStep, db: () => Database, req: RenderRequest
     let pointer = false
     if (req.place && stored.threadId !== req.place.threadId) {
       const place = req.place
-      await step.run('live-pointer', () => sendToHouse(place.chatId, LIVE_ELSEWHERE(messageLink(stored.chatId, stored.messageId)), { threadId: place.threadId ?? undefined }))
+      await step.run('live-pointer', () => send({ to: 'chat', chatId: place.chatId, threadId: place.threadId }, LIVE_ELSEWHERE(messageLink(stored.chatId, stored.messageId))))
       pointer = true
     }
     return { status: first.status, messageId: stored.messageId, pinned, pointer }

@@ -75,8 +75,8 @@ describe('the send seam feeds the conversation window (chat-understanding-v2 §5
     } as never)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      const { sendToHouse } = await import('@/lib/telegram/client')
-      await expect(sendToHouse('-100h', 'hello house')).resolves.toBeUndefined()
+      const { postMessage } = await import('@/lib/telegram/client')
+      await expect(postMessage('-100h', 'hello house')).resolves.toBeUndefined()
       expect(sendMessage).toHaveBeenCalledTimes(1)
       expect(String(warn.mock.calls[0]?.[0])).toContain('conversation-window')
     } finally {

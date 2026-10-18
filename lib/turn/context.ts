@@ -171,7 +171,7 @@ export interface TurnContext {
   messageId: number
   /** The reply DESTINATION (the inbound chat) — the house group or the sender's own DM. */
   chatId: string
-  /** The memory SCOPE (houseScopeForOrigin) — distinct from the destination. */
+  /** The memory SCOPE (addressingFor) — distinct from the destination. */
   houseScope: string
   lane: 'house' | 'member_dm'
   sender: TurnSender

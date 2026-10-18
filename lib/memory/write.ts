@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm'
 import { createHttpDb, type Database } from '@/db/client'
-import { telegramChats, members, memoryItems, memoryEmbeddings, replies } from '@/db/schema'
+import { telegramChats, members, memoryItems, memoryEmbeddings } from '@/db/schema'
 import { embed, EMBED_MODEL } from '@/lib/ai/embed'
 import { currentEmbedding, firsthandNote } from '@/lib/memory/current'
 import { scanSensitivity } from '@/lib/core/sensitivity'
@@ -140,21 +140,4 @@ async function findDuplicate(db: Database, groupId: string, vector: number[], au
     LIMIT 1`)
   const rows: Record<string, unknown>[] = Array.isArray(res) ? res : ((res as { rows?: Record<string, unknown>[] }).rows ?? [])
   return rows.length && Number(rows[0].sim) >= DEDUP_THRESHOLD ? String(rows[0].id) : null
-}
-
-// Claim-before-send guard (D12): true only for the FIRST claim of an update_id.
-export async function claimReply(db: Database, updateId: number): Promise<boolean> {
-  const rows = await db
-    .insert(replies)
-    .values({ updateId })
-    .onConflictDoNothing()
-    .returning({ updateId: replies.updateId })
-  return rows.length > 0
-}
-
-// Release a claim so a transient failure can be retried. The claim autocommits (neon-http)
-// and the send is fallible with no sweeper backstop, so without this a single Telegram/LLM
-// hiccup permanently drops the reply. Best-effort delete of the claim row.
-export async function releaseReply(db: Database, updateId: number): Promise<void> {
-  await db.delete(replies).where(eq(replies.updateId, updateId))
 }

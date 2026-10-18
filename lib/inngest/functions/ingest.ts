@@ -1,19 +1,19 @@
 import { inngest, type TelegramMessageData } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { telegramUpdates } from '@/db/schema'
-import { resolveOriginParts, isRelayed } from '@/lib/core/origin'
+import { resolveOriginParts, addressingFor } from '@/lib/core/origin'
 import { decide, shouldCapture, listOpProposed, reminderFollowUpAllowed, olympicsOpProposed } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
 import { ensureRegistered } from '@/lib/memory/write'
 import { loadRoster, memberDisplayNames } from '@/lib/identity/roster'
-import { resolveHouseIds, houseScopeForOrigin } from '@/lib/identity/house'
+import { resolveHouseIds } from '@/lib/identity/house'
 import { houseTz } from '@/lib/env'
 import { now } from '@/lib/core/clock'
 import { loadResponsePolicy } from '@/lib/policy'
 import { directedness, repliesToBaumy, stripBotMention } from '@/lib/pipeline/directed'
 import { isSecretQuestion } from '@/lib/core/sensitivity'
-import { sendToHouse, getBotUsername, getBotId } from '@/lib/telegram/client'
+import { getBotUsername, getBotId } from '@/lib/telegram/client'
 import { buildTurnContext, type ReplyToContext } from '@/lib/turn/context'
 import { planResponse } from '@/lib/turn/plan'
 import { runCapture } from '@/lib/turn/capture'
@@ -95,19 +95,9 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // can reply (A12).
   if (origin.lane === 'ignore') return { updateId, decision: 'drop' as const, reason: 'out-of-scope' }
   const lane = origin.lane
-  // Who the words are attributed to: the authenticated sender — never for relayed content (a forwarded
-  // message is someone else's words; a bot post is nobody's), and never the shared GroupAnonymousBot
-  // identity behind an anonymous-admin post (I8).
-  const authorId = isRelayed(origin.memoryTrust) || origin.anonymous || fromId == null ? null : String(fromId)
-  // A member-FORWARDED message (D4): who relayed it — recorded beside the note, never as its author.
-  const forwarderId = origin.memoryTrust === 'forwarded' && !origin.anonymous && fromId != null ? String(fromId) : null
-  // The house whose SHARED memory this message reads/writes — the SCOPE, distinct from the reply
-  // DESTINATION (chatId). Derived from the authenticated lane, never text.
-  const houseScope = houseScopeForOrigin(origin, houseChatId)
-
-  // A worded house reply must echo the forum topic it was asked in; a DM has no topic.
-  const houseThreadId = lane === 'house' ? (messageThreadId ?? undefined) : undefined
-  const sayHouse = (body: string) => sendToHouse(chatId, body, { threadId: houseThreadId })
+  // Scope (whose shared memory), destination (where a reply may go — the two-target belt) and identity
+  // (author / forwarder), produced once from the authenticated origin (lib/core/origin.ts).
+  const { scope: houseScope, reply, authorId, forwarderId, windowable } = addressingFor(origin, { scopeId: houseChatId, acceptIds }, roster, messageThreadId)
 
   // Directedness (spec §1) from Telegram-authenticated fields + Baumy's REAL @username/id (getMe).
   // A reply counts only when the replied-to author IS Baumy (C8), never the topic-root service
@@ -132,23 +122,21 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
 
   // The 48h conversation window (spec §5): every in-scope message, BEFORE the noise filter (an "ok"
   // or "lol" is still part of the conversation) — but never another bot's post (quarantined bot
-  // content never grounds anything). A member-forwarded message is kept LABELLED as forwarded (the
-  // forwarder is recorded, never as the author of those words). Secret-redacted before it is stored.
-  // Best-effort: the window is context, so a failure here must not fail (and retry) the whole turn.
-  const botContent = isBot === true && !origin.anonymous
-  if (houseScope && !botContent) {
+  // content never grounds anything — `windowable`). A member-forwarded message is kept LABELLED as
+  // forwarded (the forwarder is recorded, never as the author of those words). Secret-redacted before
+  // it is stored. Best-effort: the window is context, so a failure here must not fail (and retry) the turn.
+  if (windowable) {
     await step.run('window-append', async () => {
       try {
-        const forwarded = isForwarded === true
         await appendInbound(createHttpDb(), {
           groupId: houseScope,
           chatId,
           messageId,
           authorKind: origin.anonymous ? 'anon' : 'member',
-          authorMemberId: forwarded ? (fromId != null ? String(fromId) : null) : authorId,
+          authorMemberId: forwarderId ?? authorId,
           authorName: origin.anonymous ? null : fromName,
           text,
-          trust: forwarded ? 'forwarded' : origin.memoryTrust,
+          trust: origin.memoryTrust,
           replyToMessageId: replyTo && !replyTo.isTopicRoot ? (replyTo.messageId ?? null) : null,
           threadId: lane === 'house' ? messageThreadId : null,
           sentAt: now(),
@@ -166,7 +154,9 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // once, on the message as first sent.
   if (isEdit && rawText.trim().startsWith('/')) return { updateId, decision: 'drop' as const, reason: 'edited-command' as const }
 
-  const cmd = await runCommands(step, { rawText, origin, roster, fromId, chatId, messageId, messageThreadId, houseScope, sayHouse, houseThreadId })
+  // Not on the reply belt (cannot happen for a resolved lane — defensive): nothing answers anything.
+  if (!reply) return { updateId, decision: 'drop' as const, reason: 'no-destination' as const }
+  const cmd = await runCommands(step, { rawText, origin, roster, fromId, chatId, messageId, messageThreadId, houseScope, reply })
   if (cmd === 'unknown-command') return { updateId, decision: 'drop' as const, reason: 'unknown-command' as const }
   if (cmd) return { updateId, decision: cmd }
 
@@ -250,14 +240,10 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // conversation window: only that something was asked to be forgotten. Keyed on the classifier's
   // INTENT, not the decision: a forget-looking message below the confidence bar (or in a lane that may
   // not propose one) is still "forget my number 0176…" and must not be quoted back for 48h.
-  if (verdict.intent === 'forget' && houseScope && !botContent) {
+  if (verdict.intent === 'forget' && windowable) {
     await step.run('window-withhold', () => withholdTurn(createHttpDb(), { chatId, messageId }, '[asked Baumy to forget something — withheld]'))
   }
 
-  // Destination belt: exactly two TRANSPORT-authenticated targets — the house group, or the
-  // authenticated DM sender's own chat. Never a free/LLM id (injection wall).
-  const canReply =
-    (lane === 'house' && acceptIds.includes(chatId)) || (lane === 'member_dm' && fromId != null && roster.isMember(fromId) && chatId === origin.chatId)
   // Pause silences the GROUP (reply AND the actions that would be acknowledged there); a DM still works.
   const canSpeak = lane === 'member_dm' || policy.global_enabled
 
@@ -276,7 +262,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // as a memory note (A11) — "we're out of milk" lives in the list table, where "got the milk" ticks it
   // off; as a note it stayed "we're out of milk" in memory forever. The list auto-commits
   // (capture tier); reminder / forget below.
-  if (houseScope && canReply && listOpProposed(origin, verdict.list, policy.global_enabled, verdict.intent)) {
+  if (houseScope && listOpProposed(origin, verdict.list, policy.global_enabled, verdict.intent)) {
     ctx.outcome.list = await runList(step, ctx)
   }
 
@@ -284,7 +270,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   // directed ask from an authenticated housemate only (olympicsOpProposed); reads answer straight away,
   // a write is only a confirm card until the asker taps it. Like a list op it is not also captured as
   // a memory note — the calendar / the chore log is where it lives. Not on an edit (it never speaks).
-  if (houseScope && canReply && !isEdit && !ctx.outcome.list && olympicsOpProposed(origin, verdict, directed.value, authorId, policy.global_enabled)) {
+  if (houseScope && !isEdit && !ctx.outcome.list && olympicsOpProposed(origin, verdict, directed.value, authorId, policy.global_enabled)) {
     ctx.outcome.olympics = await runOlympics(step, ctx)
   }
 
@@ -329,7 +315,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     // catches more ("wifi is hunter2 now" → wifi · has_password · hunter2 is secure, the sentence is
     // not). A secret the turn has detected is never persisted (spec §5): keep only its descriptor.
     const secure = ctx.outcome.captured.secure
-    if (secure && houseScope && !botContent) {
+    if (secure && windowable) {
       await step.run('window-withhold-secret', () => withholdTurn(createHttpDb(), { chatId, messageId }, `[a message containing ${secure} — withheld]`))
     }
   }
@@ -346,13 +332,13 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   }
 
   // Forget only PROPOSES (a confirm card) — pointless for an edit, which never speaks: re-ask instead.
-  if (decision === 'forget' && canSpeak && canReply && !isEdit) {
+  if (decision === 'forget' && canSpeak && !isEdit) {
     ctx.outcome.forget = await runForget(step, ctx)
   }
 
   // Cancelling a reminder only PROPOSES (a confirm card listing exactly what would go — the tap cancels,
   // functions/callback.ts). Like forget: not on an edit (it never speaks), not into a paused group.
-  if (decision === 'cancel_reminder' && houseScope && canSpeak && canReply && !isEdit) {
+  if (decision === 'cancel_reminder' && houseScope && canSpeak && !isEdit) {
     ctx.outcome.cancelReminder = await runCancelReminder(step, ctx)
   }
 
@@ -389,7 +375,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
 
   // ONE decision about Baumy's voice, from what the turn is and what actually happened (spec §3).
   const plan = planResponse(ctx, policy)
-  await executePlan(step, ctx, plan, { canReply })
+  await executePlan(step, ctx, plan, { reply })
 
   return {
     updateId,

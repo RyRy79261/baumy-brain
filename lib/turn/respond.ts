@@ -1,9 +1,10 @@
 import { createHttpDb } from '@/db/client'
-import { claimReply, releaseReply } from '@/lib/memory/write'
 import { answer } from '@/lib/ai/reply'
 import { webSearchAnswer } from '@/lib/ai/websearch'
 import { addAck, categorizeAck, checkoffAck, removeAck, renameAck, renderList } from '@/lib/lists/format'
-import { sendToHouse, sendConfirmCard, reactToMessage } from '@/lib/telegram/client'
+import { reactToMessage } from '@/lib/telegram/client'
+import { send, sendConfirm, claimReply, releaseReply } from '@/lib/telegram/send'
+import type { ChatDestination } from '@/lib/core/origin'
 import { gatherGrounding } from './grounding'
 import { forgetExplanation } from './actions'
 import type { Plan } from './plan'
@@ -20,8 +21,9 @@ import type { TurnStep } from './step'
 // backstop, so the release is what makes a failed send retry-safe.
 
 export interface RespondDeps {
-  /** The destination belt passed: the house group, or the authenticated sender's own DM. */
-  canReply: boolean
+  /** Where words may go (addressingFor's `reply`): the house group in its topic, or the authenticated
+   *  sender's own DM; null = the destination belt failed, so only a reaction is possible. */
+  reply: ChatDestination | null
 }
 
 export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, deps: RespondDeps): Promise<void> {
@@ -33,12 +35,13 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
   }
   // Destination allow-list: exactly two TRANSPORT-authenticated targets — the house group, or the
   // message sender's OWN private chat. Never a free/LLM-supplied id (injection wall).
-  if (!deps.canReply) return
+  const reply = deps.reply
+  if (!reply) return
 
-  // In a forum supergroup a worded reply must echo the topic it was asked in (else Telegram drops it
-  // into General); a DM has no topic. Words are sent as a Telegram REPLY to the message (C11).
-  const threadId = ctx.lane === 'house' ? (ctx.topic.threadId ?? undefined) : undefined
-  const say = (text: string, windowText?: string) => sendToHouse(ctx.chatId, text, { threadId, replyToMessageId: ctx.messageId, windowText })
+  // The reply destination echoes the forum topic it was asked in (else Telegram drops it into General);
+  // a DM has no topic. Words are sent as a Telegram REPLY to the message (C11).
+  const say = (text: string, windowText?: string) => send(reply, text, { replyTo: ctx.messageId, windowText })
+  const card = (text: string, pendingId: string, windowText?: string) => sendConfirm(reply, text, pendingId, { replyTo: ctx.messageId, windowText })
 
   const once = async (id: string, body: (db: ReturnType<typeof createHttpDb>) => Promise<void>, onError?: () => Promise<void>) =>
     step.run(id, async () => {
@@ -86,7 +89,7 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
     if (!f) return
     await once('forget-send', async () => {
       // The card names what would be forgotten — the conversation window keeps only that one was asked.
-      if (f.proposed) await sendConfirmCard(ctx.chatId, f.card, f.pendingId, threadId, ctx.messageId, FORGET_CARD_WINDOW_TEXT)
+      if (f.proposed) await card(f.card, f.pendingId, FORGET_CARD_WINDOW_TEXT)
       else if (f.reason !== 'not_forget') await say(forgetExplanation(f.reason))
     })
     return
@@ -99,7 +102,7 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
     // before"): one send per inbound, so what they did rides on the card / line, deterministically.
     const also = reminderLines(ctx.outcome, ctx.tz)
     await once('olympics-send', async () => {
-      if (ol.proposed) await sendConfirmCard(ctx.chatId, [ol.card, ...also].join('\n\n'), ol.pendingId, threadId, ctx.messageId)
+      if (ol.proposed) await card([ol.card, ...also].join('\n\n'), ol.pendingId)
       else await say([ol.text, ...also].join('\n\n'))
     })
     return
@@ -109,7 +112,7 @@ export async function executePlan(step: TurnStep, ctx: TurnContext, plan: Plan, 
     const c = ctx.outcome.cancelReminder
     if (!c?.proposed) return
     await once('cancel-reminder-send', async () => {
-      await sendConfirmCard(ctx.chatId, c.card, c.pendingId, threadId, ctx.messageId)
+      await card(c.card, c.pendingId)
     })
     return
   }
