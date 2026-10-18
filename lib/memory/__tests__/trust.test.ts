@@ -13,6 +13,8 @@ describe('trust gate', () => {
     expect(trustRank('untrusted')).toBeGreaterThan(trustRank('forwarded'))
     expect(trustRank('forwarded')).toBe(trustRank('quarantined'))
     expect(trustRank('nonsense')).toBeLessThan(trustRank('quarantined'))
+    for (const inherited of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) expect(trustRank(inherited), inherited).toBe(0)
+    expect(mayOverride(ch('trusted'), inc('constructor'))).toBe(true) // an inherited key is never an unbeatable rank
   })
 
   it.each([

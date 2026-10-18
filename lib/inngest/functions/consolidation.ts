@@ -58,8 +58,8 @@ export async function runConsolidationSweep(
 }
 
 // Nightly, ahead of the 08:00 surfacing scan so a same-night catch-up is already dated by morning.
-export async function runConsolidationJob(db: Database, at: Date, tz: string) {
-  const groupId = await getHouseChatId(db)
+export async function runConsolidationJob(db: Database, at: Date, tz: string, house?: string) {
+  const groupId = house ?? (await getHouseChatId(db))
   if (!groupId) return { skipped: 'no-house' as const }
   // Proactive output (it creates/cancels heads-ups) → honor /pause, like the surfacing scan.
   if (!(await loadResponsePolicy(db)).global_enabled) return { skipped: 'paused' as const }

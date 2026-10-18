@@ -370,7 +370,7 @@ export async function advanceTo(sb: Sandbox, to: Date): Promise<AdvanceResult> {
   for (const { at, id, job } of firingsBetween(from, to)) {
     await deliverExplicitUntil(at)
     await renderUntil(at)
-    const { sent } = await captureOutbound(async () => withSimulatedTime(at, () => job.run(sb.db, at, sb.tz)))
+    const { sent } = await captureOutbound(async () => withSimulatedTime(at, () => job.run(sb.db, at, sb.tz, sb.houseChatId)))
     const said = sent.map((m) => ({ ...m, cause: `cron:${id}` }))
     sb.transcript.push(...said)
     fired.push({ job: id, at, said })

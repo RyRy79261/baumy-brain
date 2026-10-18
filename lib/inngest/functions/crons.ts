@@ -12,15 +12,17 @@ import { runWindowPurgeJob } from '@/lib/inngest/functions/window'
 // The one-step scheduled JOBS: id (lib/inngest/schedule.ts) → the job, run at an instant. Each job owns
 // its own gates (no house yet, /pause, reminder_frequency) — so production and the sandbox, which both
 // call it from here, can never disagree about whether a paused house posts. `step` is the Inngest step
-// name (kept stable across this refactor).
+// name (kept stable across this refactor). `house` is the house scope: production omits it (each job
+// resolves it, getHouseChatId); the sandbox passes ITS house so a BAUMY_HOUSE_CHAT_ID pin on the host can
+// never point a sandbox job at the real house.
 export interface CronJob {
   step: string
-  run: (db: Database, at: Date, tz: string) => Promise<unknown>
+  run: (db: Database, at: Date, tz: string, house?: string) => Promise<unknown>
 }
 
 export const CRON_JOBS = {
   'conversation-window-purge': { step: 'purge', run: (db, at) => runWindowPurgeJob(db, at) },
-  'memory-hygiene': { step: 'hygiene', run: (db, at) => runHygieneJob(db, at) },
+  'memory-hygiene': { step: 'hygiene', run: (db, at, _tz, house) => runHygieneJob(db, at, house) },
   'end-of-day-consolidate': { step: 'consolidate', run: runConsolidationJob },
   'event-surfacing-scan': { step: 'scan', run: runSurfacingJob },
   'reminder-digest': { step: 'digest', run: runReminderDigest },

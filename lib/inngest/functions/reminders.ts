@@ -277,8 +277,9 @@ export async function runReminderDigest(
   db: ReturnType<typeof createHttpDb>,
   at: Date,
   tz: string,
+  house?: string,
 ): Promise<{ skipped: 'no-house' | 'paused' | 'once-morning-only' } | Awaited<ReturnType<typeof deliverDueReminders>>> {
-  if (!(await getHouseChatId(db))) return { skipped: 'no-house' }
+  if (!(house ?? (await getHouseChatId(db)))) return { skipped: 'no-house' }
   const policy = await loadResponsePolicy(db)
   if (!policy.global_enabled) return { skipped: 'paused' }
   // 'once' a day = the morning slot only; the 20:00 run no-ops.

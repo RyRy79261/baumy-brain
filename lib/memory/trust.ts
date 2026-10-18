@@ -16,7 +16,7 @@ import { isStructuralEdge } from '@/lib/memory/predicates'
 const TRUST_RANK: Record<string, number> = { system: 4, trusted: 3, untrusted: 2, forwarded: 1, quarantined: 1 }
 
 /** Rank of a trust level for the gate; an unknown level ranks below everything. */
-export const trustRank = (t: string): number => TRUST_RANK[t] ?? 0
+export const trustRank = (t: string): number => (Object.hasOwn(TRUST_RANK, t) ? TRUST_RANK[t] : 0)
 
 export interface GateIncumbent {
   predicate: string

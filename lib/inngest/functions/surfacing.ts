@@ -110,8 +110,8 @@ export async function headsUpAtDelivery(
 // (a week before, the evening before, the morning of — each a digest slot). It only CREATES the reminders; the proven
 // arm → claim → send → mark-sent machinery delivers them exactly-once. De-duped per (event,
 // stage), so a re-scan never double-schedules; secret facts are excluded; /pause silences it.
-export async function runSurfacingJob(db: Database, at: Date, tz: string) {
-  const houseChatId = await getHouseChatId(db)
+export async function runSurfacingJob(db: Database, at: Date, tz: string, house?: string) {
+  const houseChatId = house ?? (await getHouseChatId(db))
   if (!houseChatId) return { created: 0, reason: 'no-house' as const }
   // Pause silences PROACTIVE output — the same gate that stops the ingest reminder step creating
   // reminders while paused (and holds explicit ones at delivery — deliverReminderNow).
