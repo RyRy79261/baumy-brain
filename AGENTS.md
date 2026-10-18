@@ -113,8 +113,12 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
   new name drops an AUTOMATIC category and re-sorts (a pick is kept). A non-section for an item not on the list
   ("put the bins out") is silence, not a list op; for an item on the list it is answered only when directed. A new add path must call `requestCategorize` after its write.
 - **Two human-authorization walls (don't conflate them):** (1) the **confirm-tap wall** —
-  `callback_query` from a member's authenticated `from.id` (`lib/confirm/*`,
-  `functions/callback.ts`) gates the chat-initiated privileged actions: **memory deletion /
+  `callback_query` from a member's authenticated `from.id` gates the chat-initiated privileged actions.
+  Every tappable type is ONE entry in `lib/confirm/store.ts` `TAP_ACTIONS` + `TapPayloads` (its typed
+  payload, requester-only?, has a Confirm button?) and ONE handler in `lib/confirm/handlers.ts`
+  `TAP_HANDLERS` (a missing handler is a compile error); `functions/callback.ts` is the generic
+  dispatcher (member check → single-use resolve → handler; the stored-scope belt for `scopeChecked`).
+  The actions: **memory deletion /
   "forget"** and **reminder CANCELLATION** (`reminder.cancel`, `lib/reminders/cancel.ts`,
   `docs/spec/reminders.md` §Cancelling from chat). A "forget X" / "stop the bins reminder" request
   only *proposes* (LLM picks the target *description*; code resolves it to exact, group-scoped row

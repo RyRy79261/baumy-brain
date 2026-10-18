@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
-import { createPendingAction, resolvePendingAction, pendingForSomeoneElse, reopenPendingAction } from '@/lib/confirm/store'
+import { createPendingAction, resolvePendingAction, pendingForSomeoneElse, reopenPendingAction, pendingTapType, TAPPABLE_ACTIONS, REQUESTER_ONLY_ACTIONS, type TapPayloads } from '@/lib/confirm/store'
+import { TAP_HANDLERS } from '@/lib/confirm/handlers'
+
+// Typed payload fixtures (the store types each action's payload on both sides).
+const FORGET: TapPayloads['memory.forget'] = { mode: 'soft', factIds: [], scrubValues: ['take the bins out'], noteIds: [], aliasHits: [], summary: 'take the bins out' }
+const CANCEL: TapPayloads['reminder.cancel'] = { reminderIds: [], labels: [], target: '' }
+const OLYMPICS: TapPayloads['olympics.action'] = { op: 'calendar_add', name: 'create_event', input: {}, idempotencyKey: 'k1', summary: 'add an event' }
 
 describe('pending actions (human-confirm wall)', () => {
   it('confirms exactly once — the atomic single-use resolve', async () => {
@@ -8,12 +14,12 @@ describe('pending actions (human-confirm wall)', () => {
     const id = await createPendingAction(db, {
       groupId: '-100',
       actionType: 'memory.forget',
-      payload: { content: 'take the bins out' },
+      payload: FORGET,
       requestedBy: '100',
     })
     const first = await resolvePendingAction(db, id, 'confirmed')
     expect(first?.actionType).toBe('memory.forget')
-    expect((first?.payload as { content: string }).content).toBe('take the bins out')
+    expect(first?.actionType === 'memory.forget' && first.payload.summary).toBe('take the bins out')
     expect(first?.groupId).toBe('-100') // the stored scope the confirmed action executes in (A1)
     // a second confirm (double-tap / retry) is a no-op
     expect(await resolvePendingAction(db, id, 'confirmed')).toBeNull()
@@ -24,7 +30,7 @@ describe('pending actions (human-confirm wall)', () => {
     const id = await createPendingAction(db, {
       groupId: '-100',
       actionType: 'memory.forget',
-      payload: {},
+      payload: FORGET,
       requestedBy: '100',
       ttlSec: -1, // already expired
     })
@@ -36,7 +42,7 @@ describe('pending actions (human-confirm wall)', () => {
     const id = await createPendingAction(db, {
       groupId: '-100',
       actionType: 'memory.forget',
-      payload: {},
+      payload: FORGET,
       requestedBy: '100',
     })
     expect(await resolvePendingAction(db, id, 'cancelled')).not.toBeNull()
@@ -46,7 +52,7 @@ describe('pending actions (human-confirm wall)', () => {
 
 describe('requester-only actions (a Baumy Olympics write runs AS its asker)', () => {
   const olympics = (db: Awaited<ReturnType<typeof makeTestDb>>, ttlSec?: number) =>
-    createPendingAction(db, { groupId: '-100', actionType: 'olympics.action', payload: { name: 'create_event' }, requestedBy: '703', ttlSec })
+    createPendingAction(db, { groupId: '-100', actionType: 'olympics.action', payload: OLYMPICS, requestedBy: '703', ttlSec })
 
   it("only the asker's tap resolves it — another member's confirm or cancel does nothing", async () => {
     const db = await makeTestDb()
@@ -62,7 +68,7 @@ describe('requester-only actions (a Baumy Olympics write runs AS its asker)', ()
 
   it('other actions stay tappable by any member', async () => {
     const db = await makeTestDb()
-    const id = await createPendingAction(db, { groupId: '-100', actionType: 'reminder.cancel', payload: {}, requestedBy: '703' })
+    const id = await createPendingAction(db, { groupId: '-100', actionType: 'reminder.cancel', payload: CANCEL, requestedBy: '703' })
     expect((await resolvePendingAction(db, id, 'confirmed', '702'))?.actionType).toBe('reminder.cancel')
   })
 
@@ -73,15 +79,34 @@ describe('requester-only actions (a Baumy Olympics write runs AS its asker)', ()
     await resolvePendingAction(db, id, 'confirmed', '703')
     expect(await reopenPendingAction(db, id)).toBe(true)
     expect(await reopenPendingAction(db, id)).toBe(false)
-    expect((await resolvePendingAction(db, id, 'confirmed', '703'))?.payload).toEqual({ name: 'create_event' })
+    expect((await resolvePendingAction(db, id, 'confirmed', '703'))?.payload).toEqual(OLYMPICS)
     const old = await olympics(db, -1)
     expect(await reopenPendingAction(db, old)).toBe(false)
   })
 
   it('reopen never touches a card that acts on the house', async () => {
     const db = await makeTestDb()
-    const id = await createPendingAction(db, { groupId: '-100', actionType: 'memory.forget', payload: {}, requestedBy: '703' })
+    const id = await createPendingAction(db, { groupId: '-100', actionType: 'memory.forget', payload: FORGET, requestedBy: '703' })
     await resolvePendingAction(db, id, 'confirmed', '703')
     expect(await reopenPendingAction(db, id)).toBe(false)
+  })
+})
+
+describe('the tap registry', () => {
+  it('every tappable type has a handler, and every handler is a tappable type', () => {
+    expect(Object.keys(TAP_HANDLERS).sort()).toEqual([...TAPPABLE_ACTIONS].sort())
+  })
+  it('the requester-only types are the ones that act AS someone (Olympics)', () => {
+    expect([...REQUESTER_ONLY_ACTIONS].sort()).toEqual(['olympics.action', 'olympics.login'])
+  })
+  it('pendingTapType reads a pending card\'s kind without resolving it; never an expired or handled one', async () => {
+    const db = await makeTestDb()
+    const id = await createPendingAction(db, { groupId: '-100', actionType: 'reminder.cancel', payload: CANCEL, requestedBy: '1' })
+    expect(await pendingTapType(db, id)).toBe('reminder.cancel')
+    expect(await pendingTapType(db, id)).toBe('reminder.cancel') // still pending: it did not resolve it
+    await resolvePendingAction(db, id, 'confirmed', '1')
+    expect(await pendingTapType(db, id)).toBeNull()
+    const old = await createPendingAction(db, { groupId: '-100', actionType: 'memory.forget', payload: FORGET, requestedBy: '1', ttlSec: -1 })
+    expect(await pendingTapType(db, old)).toBeNull()
   })
 })

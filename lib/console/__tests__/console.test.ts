@@ -69,7 +69,7 @@ describe('pending view — what Baumy is about to do, at a given now', () => {
       createPendingAction(db, {
         groupId: GROUP,
         actionType: 'memory.forget',
-        payload: { mode: 'purge', scrubValues: ['the door code is 4471'] },
+        payload: { mode: 'purge', factIds: [], scrubValues: ['the door code is 4471'], noteIds: [], aliasHits: [], summary: 'the door code' },
         requestedBy: '900',
       }),
     )

@@ -81,7 +81,7 @@ export async function handleLoginApproval(req: Request): Promise<Response> {
     const actionId = await createPendingAction(db, {
       groupId: scope,
       actionType: LOGIN_ACTION_TYPE,
-      payload: payload as unknown as Record<string, unknown>,
+      payload,
       requestedBy: b.telegramUserId,
       ttlSec,
     })
