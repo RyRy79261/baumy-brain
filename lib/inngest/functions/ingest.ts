@@ -2,7 +2,6 @@ import { inngest, type TelegramMessageData } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { telegramUpdates } from '@/db/schema'
 import { resolveOriginParts, addressingFor } from '@/lib/core/origin'
-import { decide, shouldCapture, listOpProposed, reminderFollowUpAllowed, olympicsOpProposed } from '@/lib/core/decide'
 import { prefilter } from '@/lib/pipeline/prefilter'
 import { classify, type ClassifierVerdict } from '@/lib/ai/classify'
 import { ensureRegistered } from '@/lib/memory/write'
@@ -12,17 +11,12 @@ import { houseTz } from '@/lib/env'
 import { now } from '@/lib/core/clock'
 import { loadResponsePolicy } from '@/lib/policy'
 import { directedness, repliesToBaumy, stripBotMention } from '@/lib/pipeline/directed'
-import { isSecretQuestion } from '@/lib/core/sensitivity'
 import { getBotUsername, getBotId } from '@/lib/telegram/client'
 import { buildTurnContext, type ReplyToContext } from '@/lib/turn/context'
-import { planResponse } from '@/lib/turn/plan'
-import { runCapture } from '@/lib/turn/capture'
-import { runList, runReminder, runForget, runCancelReminder, runOlympics, primaryReminder } from '@/lib/turn/actions'
-import { takeReminderDraft } from '@/lib/reminders/draft'
-import { executePlan } from '@/lib/turn/respond'
+import { runTurn } from '@/lib/turn/run'
 import { runCommands } from '@/lib/turn/commands'
-import { appendInbound, recentTurns, linkProduced, withholdTurn } from '@/lib/turn/window'
-import { lookupEdit, withdrawForEdit, settleEditedFacts, type EditMap } from '@/lib/turn/edit'
+import { appendInbound, recentTurns } from '@/lib/turn/window'
+import { lookupEdit, type EditMap } from '@/lib/turn/edit'
 import { admitVerifiedMember } from '@/lib/identity/verify'
 import type { WindowTurn } from '@/lib/turn/context'
 import type { TurnStep } from '@/lib/turn/step'
@@ -33,9 +27,9 @@ type IngestStep = TurnStep
 //
 //   intake:  record-inbound → origin (real roster) → directedness → window-append → pre-filter
 //            → slash commands
-//   turn:    window-read → TurnContext (deterministic) → classify (in context) → write-gate
-//            → capture (evidence + facts) → actions (list / reminder / forget / cancel-reminder) → ctx.outcome
-//            → ONE planResponse(ctx) → execute (reaction | deterministic text | reply-model words)
+//   turn:    window-read → TurnContext (deterministic) → classify (in context) → runTurn
+//            (lib/turn/run.ts: the gates → actions → capture → ctx.outcome → ONE planResponse(ctx)
+//            → execute: reaction | deterministic text | reply-model words)
 //
 // The LLM proposes (triage verdict, extracted facts/items/times/targets, the words); deterministic
 // code disposes (lane, trust, the write-gate, the stores, the planner, the destination belt).
@@ -235,151 +229,13 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     }),
   )) as ClassifierVerdict
   ctx.verdict = verdict
-  const decision = decide(origin, verdict, directed.value)
-  // A forget request is never captured (storing "delete X" re-adds X) — nor kept verbatim in the
-  // conversation window: only that something was asked to be forgotten. Keyed on the classifier's
-  // INTENT, not the decision: a forget-looking message below the confidence bar (or in a lane that may
-  // not propose one) is still "forget my number 0176…" and must not be quoted back for 48h.
-  if (verdict.intent === 'forget' && windowable) {
-    await step.run('window-withhold', () => withholdTurn(createHttpDb(), { chatId, messageId }, '[asked Baumy to forget something — withheld]'))
-  }
 
-  // Pause silences the GROUP (reply AND the actions that would be acknowledged there); a DM still works.
-  const canSpeak = lane === 'member_dm' || policy.global_enabled
-
-  // An edit of a processed message: withdraw what the original produced BEFORE the edited text is
-  // re-read — its note (so consolidation cannot fold the edit back onto it) and its unsent reminders
-  // (the edit re-creates whatever it still asks for). Facts are settled after capture (lib/turn/edit.ts).
-  // While the house is PAUSED the edited text cannot re-create a reminder (reminders honour /pause in
-  // both lanes), so the original's are left alone — cancelling them would silently delete the reminder,
-  // and nobody is told (the planner is quiet for an edit and for a paused house).
-  const keepRemindersForEdit = !policy.global_enabled
-  if (editMap?.processed) {
-    await step.run('edit-withdraw', () => withdrawForEdit(createHttpDb(), houseScope, keepRemindersForEdit ? { ...editMap, reminderIds: [] } : editMap))
-  }
-
-  // Actions → ctx.outcome. The shopping list first: a message handled as a list op is NOT also captured
-  // as a memory note (A11) — "we're out of milk" lives in the list table, where "got the milk" ticks it
-  // off; as a note it stayed "we're out of milk" in memory forever. The list auto-commits
-  // (capture tier); reminder / forget below.
-  if (houseScope && listOpProposed(origin, verdict.list, policy.global_enabled, verdict.intent)) {
-    ctx.outcome.list = await runList(step, ctx)
-  }
-
-  // Baumy Olympics (docs/spec/olympics.md): the house calendar and the chore game, AS the sender. A
-  // directed ask from an authenticated housemate only (olympicsOpProposed); reads answer straight away,
-  // a write is only a confirm card until the asker taps it. Like a list op it is not also captured as
-  // a memory note — the calendar / the chore log is where it lives. Not on an edit (it never speaks).
-  if (houseScope && !isEdit && !ctx.outcome.list && olympicsOpProposed(origin, verdict, directed.value, authorId, policy.global_enabled)) {
-    ctx.outcome.olympics = await runOlympics(step, ctx)
-  }
-
-  // Reminders honour pause in BOTH lanes (they post to the house group) — unchanged from pre-v2 —
-  // but a paused one is an explicit outcome, so a DM ask hears WHY nothing was scheduled.
-  // A directed message may also complete an earlier reminder still waiting for its time (the answer
-  // to Baumy's clarifying question): the open draft is taken one-shot and handed to the extractor.
-  if (policy.global_enabled) {
-    const draft =
-      houseScope && authorId && reminderFollowUpAllowed(origin, verdict, directed.value, authorId)
-        ? ((await step.run('reminder-draft', () => takeReminderDraft(createHttpDb(), { groupId: houseScope, chatId, requestedBy: authorId }))) as {
-            content: string
-          } | null)
-        : null
-    if (decision === 'reminder' || draft) {
-      const all = await runReminder(step, ctx, houseChatId, draft)
-      if (all) {
-        ctx.outcome.reminders = all
-        ctx.outcome.reminder = primaryReminder(all)
-      }
-    }
-  } else if (decision === 'reminder') {
-    ctx.outcome.reminder = { status: 'paused' }
-  }
-  // A reminder asked for in a member's own DM is PRIVATE (D2): delivered to that DM, never listed in the
-  // group — so its words are not written into shared house memory either ("remind me before my doctor's
-  // appointment Fri 3pm" must not become a house fact, a /weekly event and a heads-up in the group). Only
-  // when the reminder step set one for the HOUSE is the message house business. (Reminders run first so
-  // this is known; while paused none is set, and a DM ask is personal by default — reminderIsPersonal.)
-  const privateDmReminder =
-    lane === 'member_dm' &&
-    (decision === 'reminder' || verdict.intent === 'reminder') &&
-    !(ctx.outcome.reminders ?? []).some((r) => r.status === 'set' && r.deliverTo === 'house')
-
-  // Capture (evidence + facts) — orthogonal to the action, so a reminder that also states a fact is
-  // still remembered. Never a question or chatter (I3), never a forget request (storing "delete X"
-  // re-adds X), never a question that mentions a secret (I9), never a list op (A11), never a private
-  // DM reminder (D2, above).
-  if (!ctx.outcome.list && !ctx.outcome.olympics && !privateDmReminder && shouldCapture(origin, verdict) && decision !== 'forget' && !isSecretQuestion(text, verdict.intent)) {
-    ctx.outcome.captured = await runCapture(step, ctx)
-    // The window-append redacted on the raw text; the fact layer scans the extracted TRIPLE, which
-    // catches more ("wifi is hunter2 now" → wifi · has_password · hunter2 is secure, the sentence is
-    // not). A secret the turn has detected is never persisted (spec §5): keep only its descriptor.
-    const secure = ctx.outcome.captured.secure
-    if (secure && windowable) {
-      await step.run('window-withhold-secret', () => withholdTurn(createHttpDb(), { chatId, messageId }, `[a message containing ${secure} — withheld]`))
-    }
-  }
-
-  if (editMap?.processed) {
-    const captured = ctx.outcome.captured
-    await step.run('edit-settle', () =>
-      settleEditedFacts(createHttpDb(), houseScope, editMap, {
-        produced: captured?.factIds ?? [],
-        kept: captured?.keptFactIds ?? [],
-        noteId: captured?.memoryItemId ?? null,
-      }),
-    )
-  }
-
-  // Forget only PROPOSES (a confirm card) — pointless for an edit, which never speaks: re-ask instead.
-  if (decision === 'forget' && canSpeak && !isEdit) {
-    ctx.outcome.forget = await runForget(step, ctx)
-  }
-
-  // Cancelling a reminder only PROPOSES (a confirm card listing exactly what would go — the tap cancels,
-  // functions/callback.ts). Like forget: not on an edit (it never speaks), not into a paused group.
-  if (decision === 'cancel_reminder' && houseScope && canSpeak && !isEdit) {
-    ctx.outcome.cancelReminder = await runCancelReminder(step, ctx)
-  }
-
-  // What this message produced, on its window row — the map an edit needs to supersede it (I1). An edit
-  // always rewrites it (what the original produced has just been withdrawn or settled).
-  const reminderIds = [
-    ...(ctx.outcome.reminders ?? []).flatMap((r) => (r.status === 'set' && r.id ? [r.id] : [])),
-    // A paused edit kept the original's reminders — they are still this message's (a later edit finds them).
-    ...(editMap?.processed && keepRemindersForEdit ? editMap.reminderIds : []),
-  ]
-  if (houseScope && (ctx.outcome.captured || reminderIds.length || isEdit)) {
-    await step.run('window-link', async () => {
-      try {
-        await linkProduced(
-          createHttpDb(),
-          { chatId, messageId },
-          {
-            memoryItemId: ctx.outcome.captured?.memoryItemId,
-            // An edit that restated the original's own facts still "produced" them — a second edit must
-            // find them. (Never another message's fact a turn merely repeated: editing that away must not
-            // retract what someone else said.)
-            factIds: [
-              ...(ctx.outcome.captured?.factIds ?? []),
-              ...(ctx.outcome.captured?.keptFactIds ?? []).filter((id) => editMap?.factIds.includes(id)),
-            ],
-            reminderIds,
-          },
-        )
-      } catch (err) {
-        console.warn('[baumy/ingest] conversation-window link failed:', err instanceof Error ? err.message : err)
-      }
-    })
-  }
-
-  // ONE decision about Baumy's voice, from what the turn is and what actually happened (spec §3).
-  const plan = planResponse(ctx, policy)
-  await executePlan(step, ctx, plan, { reply })
+  // The turn: actions → ctx.outcome → ONE plan → its execution (lib/turn/run.ts).
+  const { gates, plan } = await runTurn(step, ctx, { origin, policy, editMap, houseChatId, windowable, reply })
 
   return {
     updateId,
-    decision: ctx.outcome.list ? ('list' as const) : ctx.outcome.olympics ? ('olympics' as const) : decision,
+    decision: ctx.outcome.list ? ('list' as const) : ctx.outcome.olympics ? ('olympics' as const) : gates.decision,
     directed: directed.value,
     directedWhy: directed.why,
     plan: plan.kind === 'words' ? `words:${plan.mode}` : plan.kind,

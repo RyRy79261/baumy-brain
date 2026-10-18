@@ -280,12 +280,17 @@ The design contract is `docs/spec/chat-understanding-v2.md` (fully implemented; 
    vibe, tier (quick/deep), webSearch, list. It reads a verified CONTEXT header (lane, directed + why,
    FROM, FORWARDED, HOUSEMATES, REPLYING TO) + the last 6 window turns as quoted data. It **does not
    decide whether Baumy speaks.** Malformed object → `SAFE_VERDICT` (captures nothing, `degraded`).
-4. **Write-gate** (`lib/core/decide.ts`): `shouldCapture` = statements / info-carrying requests and
-   reminders only — **never a question, chatter or a forget request** (I3); a reminder needs a
-   **directed** ask and is not confidence-gated (A9, I6); relayed content (`isRelayed`) drives nothing.
-5. **Actions, then capture** (`actions.ts`, `capture.ts`), each result into `ctx.outcome`: the list op
-   first (a list op is **not** captured, A11) → reminders (+ a pending clarify draft, below) → capture
-   (skipped for a private DM reminder, D2) → edit settle → forget proposal. Capture returns `{memoryItemId,
+4. **Gates** (`lib/turn/gates.ts` `turnGates`, pure, table-tested — built on the write-gate
+   `lib/core/decide.ts`): which actions may run, ALL the precedence in one place. `shouldCapture` =
+   statements / info-carrying requests and reminders only — **never a question, chatter or a forget
+   request** (I3); a reminder needs a **directed** ask and is not confidence-gated (A9, I6); relayed
+   content (`isRelayed`) drives nothing; a reminder ask beats a list op, a calendar add runs WITH a
+   reminder; pause silences the group, never a DM. **Add a precedence rule there, nowhere else.**
+5. **The turn runner** (`lib/turn/run.ts` `runTurn` — `ingest.ts` hands it the classified context):
+   actions, then capture (`actions.ts`, `capture.ts`), each result into `ctx.outcome`: the list op
+   first (a list op is **not** captured, A11) → Olympics → reminders (+ a pending clarify draft, below) → capture
+   (skipped for a private DM reminder, D2) → edit settle → forget / cancel proposals → window link →
+   plan → execute. Capture returns `{memoryItemId,
    factIds, learned, rejected, conflicts, secure}`; every action returns what actually happened.
 6. **`planResponse(ctx, policy)`** (`plan.ts`, pure, table-driven, exhaustively tested — spec §3)
    picks none / a reaction / the deterministic list, forget or forward-ack text / words in a **MODE**
