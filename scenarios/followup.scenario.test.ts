@@ -98,6 +98,25 @@ describe('scenario: a follow-up ask right after Baumy answered', () => {
     ],
   })
 
+  scenario('remembered is not on the calendar: Baumy never says a noted event is "on the list" or "added"', {
+    people: HOUSE,
+    startAt: start,
+    olympics: house,
+    fixtures: {
+      ...fixtures,
+      triage: (t: string) => (/butcher/i.test(t) && !/\?/.test(t) ? chatter() : /calendar\?/i.test(t) ? request({ asksBaumy: true }) : fixtures.triage(t)),
+      reply: () => "I've got the butcher delivery noted for the 11th or 12th, but it's not on the calendar yet — want me to add it?",
+    },
+    steps: [
+      say('Ryan', BUTCHER),
+      say('Ryan', '@baumy_bot is the butcher delivery on the calendar?'),
+      expectPrompt('reply', (c) => c.system.includes('MEMORY IS NOT THE CALENDAR OR THE LIST'), 'the reply model is told memory is not the calendar'),
+      expectWords({
+        judge: 'Says the butcher delivery is NOT on the house calendar (nothing was added). Must NOT say it is "on the list", "already added" or on the calendar. May say it is noted or offer to add it.',
+      }),
+    ],
+  })
+
   scenario('a calendar add with no event to find → Baumy asks which event, never "I cannot"', {
     people: HOUSE,
     startAt: start,
@@ -122,6 +141,15 @@ describe('scenario: a follow-up ask right after Baumy answered', () => {
       expectReminder({ count: 0 }),
       check('no second card', (r, e) => e(r.turns.at(-1)!.entries.filter((x) => x.kind === 'confirm-card')).toHaveLength(0)),
     ],
+  })
+
+  scenario('a housemate sent only a sticker in between (never windowed) → still not a follow-up', {
+    people: HOUSE,
+    startAt: start,
+    olympics: house,
+    fixtures,
+    // Real time moves between messages (the sandbox clock does not, unless told).
+    steps: [...opening, advance({ seconds: 30 }), say('Marco', '', { media: 'sticker' }), advance({ seconds: 30 }), say('Ryan', BUTCHER), expectReminder({ count: 0 })],
   })
 
   scenario('more than 10 minutes later → not a follow-up', {

@@ -73,7 +73,7 @@ text, and whether it is the forum topic-root service message — a topic root ne
 "hey baumy"), not merely mentioned mid-sentence ("Baumy's reminders are annoying" is not directed).
 `follow_up` (2026-10-19) = the sender's next message right after Baumy answered THEM: the latest window
 row in the same chat + topic is Baumy's, sent ≤ 10 min earlier (`FOLLOW_UP_MS`) as a Telegram reply to
-a message this member wrote, nobody else in between, and the message is not a reply to a housemate
+a message this member wrote, nothing else arrived in the chat since (the update ledger is checked too, so a sticker or voice note counts), and the message is not a reply to a housemate
 (`lib/turn/window.ts` `followsBaumyAnswer`). It is only a CANDIDATE: triage is told so, and the turn
 keeps it directed only when the verdict says `asksBaumy` — otherwise it is plain group text again. So
 "could you also add the butcher delivery, remind us the day before" needs no second @mention, while a

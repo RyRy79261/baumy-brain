@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, inArray, lte, ne, lt, notInArray, or, sql } from 'drizzle-orm'
 import { DateTime } from 'luxon'
 import { type Database } from '@/db/client'
-import { members, messages } from '@/db/schema'
+import { members, messages, telegramUpdates } from '@/db/schema'
 import { resolveHouseIds } from '@/lib/identity/house'
 import { scanSensitivity } from '@/lib/core/sensitivity'
 import { now } from '@/lib/core/clock'
@@ -187,13 +187,14 @@ export const FOLLOW_UP_MS = 10 * 60_000
 /**
  * Is this message a FOLLOW-UP to Baumy's answer (spec §1, `follow_up`)? True only when the latest
  * window row before it in the same chat + topic is Baumy's, sent within FOLLOW_UP_MS, as a Telegram
- * reply to a message THIS member wrote — nobody else spoke in between. Transport facts only (the window
+ * reply to a message THIS member wrote — nobody else spoke in between, not even with a sticker or a
+ * voice note (those never reach the window, so the update ledger is checked too). Transport facts only (the window
  * rows, their authenticated authors and reply ids), never the text. It only makes the message a
  * CANDIDATE: the turn keeps it directed only when triage says it asks Baumy (ingest.ts).
  */
 export async function followsBaumyAnswer(
   db: Database,
-  q: { groupId: string; chatId: string; threadId: number | null; at: Date; messageId: number; memberId: string },
+  q: { groupId: string; chatId: string; threadId: number | null; at: Date; messageId: number; updateId: number; memberId: string },
 ): Promise<boolean> {
   const [last] = await db
     .select({ kind: messages.authorKind, at: messages.sentAt, replyTo: messages.replyToMessageId })
@@ -216,7 +217,15 @@ export async function followsBaumyAnswer(
     .from(messages)
     .where(and(eq(messages.chatId, q.chatId), eq(messages.messageId, last.replyTo), eq(messages.authorMemberId, q.memberId)))
     .limit(1)
-  return !!answered
+  if (!answered) return false
+  // Anything else that arrived in this chat since Baumy answered — media the window never holds, a
+  // message in another topic — means this is not a clean follow-up. Conservative on purpose.
+  const [since] = await db
+    .select({ id: telegramUpdates.updateId })
+    .from(telegramUpdates)
+    .where(and(eq(telegramUpdates.chatId, q.chatId), gt(telegramUpdates.receivedAt, new Date(last.at)), ne(telegramUpdates.updateId, q.updateId)))
+    .limit(1)
+  return !since
 }
 
 /** Record what an inbound message produced (the edit map for phase 5, I1). */

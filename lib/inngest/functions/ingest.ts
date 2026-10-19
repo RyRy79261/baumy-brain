@@ -57,7 +57,8 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     const db = createHttpDb()
     // Idempotency record ONLY — the ledger never holds the message body. (The text lives only in the
     // 48h conversation window, secret-redacted — window-append below, spec §5.)
-    await db.insert(telegramUpdates).values({ updateId, chatId }).onConflictDoNothing()
+    // received_at on the clock seam: the follow-up check compares it with the window's sent_at.
+    await db.insert(telegramUpdates).values({ updateId, chatId, receivedAt: now() }).onConflictDoNothing()
     // Register under the stable SCOPE id (not the inbound chat). A BOT sender (GroupAnonymousBot for
     // an anonymous admin, a poll bot) is never registered as a housemate (I8).
     if (acceptIds.includes(chatId)) await ensureRegistered(db, houseChatId, isBot ? null : fromId, isBot ? null : fromName)
@@ -109,7 +110,7 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     lane === 'house' && !!authorId && !!houseScope && !replyToBaumy && !repliesToHuman && !isEdit
       ? ((await step.run('follow-up-check', async () => {
           try {
-            return await followsBaumyAnswer(createHttpDb(), { groupId: houseScope, chatId, threadId: messageThreadId, at: now(), messageId, memberId: authorId })
+            return await followsBaumyAnswer(createHttpDb(), { groupId: houseScope, chatId, threadId: messageThreadId, at: now(), messageId, updateId, memberId: authorId })
           } catch (err) {
             console.warn('[baumy/ingest] follow-up check failed:', err instanceof Error ? err.message : err)
             return false
