@@ -181,6 +181,44 @@ export async function recentTurns(
   }))
 }
 
+/** How long after Baumy answered a housemate their next message may still be a follow-up to it. */
+export const FOLLOW_UP_MS = 10 * 60_000
+
+/**
+ * Is this message a FOLLOW-UP to Baumy's answer (spec §1, `follow_up`)? True only when the latest
+ * window row before it in the same chat + topic is Baumy's, sent within FOLLOW_UP_MS, as a Telegram
+ * reply to a message THIS member wrote — nobody else spoke in between. Transport facts only (the window
+ * rows, their authenticated authors and reply ids), never the text. It only makes the message a
+ * CANDIDATE: the turn keeps it directed only when triage says it asks Baumy (ingest.ts).
+ */
+export async function followsBaumyAnswer(
+  db: Database,
+  q: { groupId: string; chatId: string; threadId: number | null; at: Date; messageId: number; memberId: string },
+): Promise<boolean> {
+  const [last] = await db
+    .select({ kind: messages.authorKind, at: messages.sentAt, replyTo: messages.replyToMessageId })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.groupId, q.groupId),
+        eq(messages.chatId, q.chatId),
+        sql`${messages.threadId} IS NOT DISTINCT FROM ${q.threadId}`,
+        lte(messages.sentAt, q.at),
+        ne(messages.messageId, String(q.messageId)),
+      ),
+    )
+    .orderBy(desc(messages.sentAt), desc(messages.seq))
+    .limit(1)
+  if (!last || last.kind !== 'baumy' || !last.replyTo) return false
+  if (q.at.getTime() - new Date(last.at).getTime() > FOLLOW_UP_MS) return false
+  const [answered] = await db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(and(eq(messages.chatId, q.chatId), eq(messages.messageId, last.replyTo), eq(messages.authorMemberId, q.memberId)))
+    .limit(1)
+  return !!answered
+}
+
 /** Record what an inbound message produced (the edit map for phase 5, I1). */
 export async function linkProduced(
   db: Database,

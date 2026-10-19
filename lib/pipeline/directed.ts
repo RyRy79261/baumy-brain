@@ -1,7 +1,9 @@
 // Is a group message DIRECTED at Baumy (product.md #82, chat-understanding-v2 §1)? `botUsername`
 // is Baumy's actual Telegram username (from getMe), so it knows its own name instead of guessing.
 // Directedness changes VERBOSITY only (the planner answers instead of reacting) — never trust.
-export type DirectedWhy = 'mention' | 'reply_to_baumy' | 'console_topic' | 'dm' | 'name'
+// 'follow_up' = the sender's next message right after Baumy answered them (no one else in between) —
+// only a candidate: it stays directed only when triage says it asks Baumy (ingest.ts).
+export type DirectedWhy = 'mention' | 'reply_to_baumy' | 'console_topic' | 'dm' | 'name' | 'follow_up'
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -51,6 +53,8 @@ export interface DirectednessInput {
   inConsoleTopic: boolean
   /** The message is a reply to ANOTHER housemate's message (not Baumy, not the topic root). */
   repliesToHuman: boolean
+  /** The latest message here is Baumy's answer to THIS sender, a moment ago (window.ts followsBaumyAnswer). */
+  followsBaumy?: boolean
 }
 
 // Why (if at all) this message is for Baumy — spec §1. A DM is always directed. In the ask-Baumy
@@ -62,6 +66,7 @@ export function directedness(i: DirectednessInput): { value: boolean; why: Direc
   if (mentionsBot(i.text, i.botUsername)) return { value: true, why: 'mention' }
   if (addressesByName(i.text, i.botUsername)) return { value: true, why: 'name' }
   if (i.inConsoleTopic && !i.repliesToHuman) return { value: true, why: 'console_topic' }
+  if (i.followsBaumy && !i.repliesToHuman) return { value: true, why: 'follow_up' }
   return { value: false, why: null }
 }
 

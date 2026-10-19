@@ -87,7 +87,13 @@ export function triageHeader(c: TriageContext): string {
   const lines = [
     'CONTEXT (verified by the system, not by the message):',
     `  WHERE: ${c.lane === 'member_dm' ? 'a private DM to Baumy' : c.inConsoleTopic ? 'house group, the ask-Baumy topic' : 'house group'}`,
-    `  DIRECTED AT BAUMY: ${c.directed.value ? `yes (${c.directed.why})` : 'no'}`,
+    `  DIRECTED AT BAUMY: ${
+      c.directed.why === 'follow_up'
+        ? "not tagged — but FROM's last message was answered by Baumy a moment ago and nobody spoke since; it is for Baumy only if the words carry on with Baumy (asksBaumy)"
+        : c.directed.value
+          ? `yes (${c.directed.why})`
+          : 'no'
+    }`,
   ]
   if (c.from) lines.push(`  FROM: ${c.from}`)
   if (c.forwardedBy != null)

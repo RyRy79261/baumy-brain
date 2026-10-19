@@ -56,6 +56,11 @@ describe('directedness — why a message is for Baumy (spec §1)', () => {
     expect(directedness({ ...base, inConsoleTopic: true })).toEqual({ value: true, why: 'console_topic' })
     expect(directedness({ ...base, inConsoleTopic: true, repliesToHuman: true })).toEqual({ value: false, why: null })
   })
+  it('right after Baumy answered the sender: a follow_up candidate — never over a reply to a housemate, and a real reason wins', () => {
+    expect(directedness({ ...base, followsBaumy: true })).toEqual({ value: true, why: 'follow_up' })
+    expect(directedness({ ...base, followsBaumy: true, repliesToHuman: true })).toEqual({ value: false, why: null })
+    expect(directedness({ ...base, followsBaumy: true, text: 'hey @baumy_bot' })).toEqual({ value: true, why: 'mention' })
+  })
   it('plain group text is not directed', () => {
     expect(directedness(base)).toEqual({ value: false, why: null })
     expect(directedness({ ...base, text: "Baumy's reminders are annoying lol" })).toEqual({ value: false, why: null })
