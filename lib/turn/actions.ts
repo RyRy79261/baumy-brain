@@ -42,6 +42,12 @@ import { createPendingAction } from '@/lib/confirm/store'
 import { memberDisplayNames } from '@/lib/identity/roster'
 import type { CancelReminderOutcome, ForgetOutcome, ListOutcome, OlympicsOutcome, ReminderOutcome, TurnContext } from './context'
 import type { TurnStep } from './step'
+import { renderRecentChat } from './window'
+
+// The last few turns, as quoted data, for an extractor that must resolve "add IT to the calendar" or
+// "remind us the day before" against what was just said. The MESSAGE itself must still make the ask.
+const EXTRACTOR_TURNS = 6
+const extractorChat = (ctx: TurnContext): string[] => renderRecentChat(ctx.recent, { tz: ctx.tz, now: ctx.sentAt, max: EXTRACTOR_TURNS })
 
 // The turn's ACTIONS (docs/spec/chat-understanding-v2.md §1 TurnOutcome). Each one is the LLM
 // proposing (an extractor names the items / time / target) and deterministic code disposing (the
@@ -196,7 +202,7 @@ export async function runReminder(
     const db = createHttpDb()
     const speaker = ctx.authorId ? ((await memberDisplayNames(db)).get(ctx.authorId) ?? ctx.sender.name) : null
     const baumyAsked = ctx.replyTo?.author === 'baumy' ? ctx.replyTo.text : null
-    const ex = await extractReminder(ctx.text, speaker, draft ? { pending: draft.content, baumyAsked } : null, { at: ctx.sentAt, tz: ctx.tz })
+    const ex = await extractReminder(ctx.text, speaker, draft ? { pending: draft.content, baumyAsked } : null, { at: ctx.sentAt, tz: ctx.tz, recent: extractorChat(ctx) })
     const out: OneReminder[] = []
     let draftSaved = false
     for (const r of ex.reminders) {
@@ -376,7 +382,7 @@ export async function runOlympics(step: TurnStep, ctx: TurnContext): Promise<Oly
     if (!actor) return null // gated upstream (olympicsOpProposed); a belt, not a path
     const db = createHttpDb()
     const speaker = (await memberDisplayNames(db)).get(actor) ?? ctx.sender.name
-    const ex = await extractOlympicsOp(ctx.text, speaker, { at: ctx.sentAt, tz: ctx.tz })
+    const ex = await extractOlympicsOp(ctx.text, speaker, { at: ctx.sentAt, tz: ctx.tz, recent: extractorChat(ctx) })
     const call = <T>(name: string, input: Record<string, unknown>) => callOlympicsAction<T>(name, input, { actor })
     const propose = async (op: OlympicsPending['op'], input: Record<string, unknown>, summary: string, card: string): Promise<OlympicsOutcome> => {
       const pending: OlympicsPending = { op, name: OLYMPICS_WRITE_ACTIONS[op], input, idempotencyKey: `brain-${randomUUID()}`, summary }
@@ -391,7 +397,11 @@ export async function runOlympics(step: TurnStep, ctx: TurnContext): Promise<Oly
 
     switch (ex.op) {
       case 'none':
-        return null
+        // Triage asked for a calendar add but no event could be read (not even from RECENT CHAT): ask,
+        // never fall through to a reply that guesses what Baumy can or cannot do.
+        return ctx.verdict?.olympics === 'calendar_add'
+          ? { op: 'calendar_add', proposed: false, text: 'Which event should I put on the calendar, and on what day?' }
+          : null
       case 'calendar_list': {
         const r = await call<ListEventsData>('list_events', listRange({ from: ex.from, to: ex.to }, ctx.sentAt, ctx.tz))
         return { op: ex.op, proposed: false, text: r.ok ? renderEvents(r.data, ctx.tz) : failureLine(r) }

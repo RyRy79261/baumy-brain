@@ -48,10 +48,12 @@ export async function extractReminder(
   text: string,
   speaker?: string | null,
   followUp?: ReminderFollowUp | null,
-  time: { at?: Date; tz?: string } = {},
+  time: { at?: Date; tz?: string; recent?: string[] } = {},
   model: LanguageModel = resolveModel('assess'),
 ): Promise<ReminderExtraction> {
   const context = [
+    // RECENT CHAT (quoted data): what "the day before" / "it" refers to. The MESSAGE must still ask.
+    ...(time.recent ?? []),
     followUp?.pending ? `PENDING REMINDER (still needs a time; data): ${quote(followUp.pending)}` : '',
     followUp?.baumyAsked ? `BAUMY ASKED (data): ${quote(followUp.baumyAsked)}` : '',
   ]

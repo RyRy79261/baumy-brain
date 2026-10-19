@@ -82,7 +82,10 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
   changes verbosity, never trust: a DM; a reply to Baumy (`reply_to_message.from.id === Baumy's bot
   id` — never `is_bot` alone, never the forum topic-root service message); the exact `@username`; the
   short name as a **vocative** only ("Baumy, …", "…, baumy?" — not "Baumy's reminders are annoying");
-  or the ask-Baumy topic (except a reply to another housemate there).
+  or the ask-Baumy topic (except a reply to another housemate there); or a **follow-up** — the sender's
+  next message within 10 min of Baumy answering THEM, nobody in between (`followsBaumyAnswer`), kept
+  directed only when triage says `asksBaumy`. The calendar and reminder extractors also get the last
+  turns as quoted RECENT CHAT, only to resolve "add IT" / "the day before" — the MESSAGE must still ask.
 - **DM queries (`member_dm` lane, `docs/spec/dm-queries-and-house-scoping.md`):** a member can
   DM Baumy to **read** house memory (answered privately) and **write** facts through to shared
   house memory at `trusted`. Scope, destination and identity are produced ONCE by

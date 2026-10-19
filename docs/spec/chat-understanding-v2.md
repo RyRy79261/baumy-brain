@@ -44,7 +44,7 @@ interface TurnContext {
   trust: Trust                                                 // from origin
   sentAt: Date; tz: string                                     // message time (now() at ingest)
   topic: { threadId: number | null; isConsole: boolean }
-  directed: { value: boolean; why: 'mention' | 'reply_to_baumy' | 'console_topic' | 'dm' | 'name' | null }
+  directed: { value: boolean; why: 'mention' | 'reply_to_baumy' | 'console_topic' | 'dm' | 'name' | 'follow_up' | null }
   replyTo: { author: 'baumy' | string /*name*/ ; text: string | null } | null
   text: string                                                 // normalised: @botname stripped (C12), caption folded in (I4)
   recent: WindowTurn[]                                         // phase 2: last N turns of this chat
@@ -71,6 +71,13 @@ reminder set in a member DM (D2, phase 5); `forwardedBy` and `edit` are phase-5 
 text, and whether it is the forum topic-root service message — a topic root never counts). `mention`
 = exact `@username`. `name` = the short name used as a vocative/at the start ("Baumy, …",
 "hey baumy"), not merely mentioned mid-sentence ("Baumy's reminders are annoying" is not directed).
+`follow_up` (2026-10-19) = the sender's next message right after Baumy answered THEM: the latest window
+row in the same chat + topic is Baumy's, sent ≤ 10 min earlier (`FOLLOW_UP_MS`) as a Telegram reply to
+a message this member wrote, nothing else arrived in the chat since (the update ledger is checked too, so a sticker or voice note counts), and the message is not a reply to a housemate
+(`lib/turn/window.ts` `followsBaumyAnswer`). It is only a CANDIDATE: triage is told so, and the turn
+keeps it directed only when the verdict says `asksBaumy` — otherwise it is plain group text again. So
+"could you also add the butcher delivery, remind us the day before" needs no second @mention, while a
+word to a housemate right after Baumy spoke still cannot set a reminder (A9).
 
 ## 2. Triage (`lib/ai/classify.ts`)
 

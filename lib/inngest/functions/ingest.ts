@@ -15,7 +15,7 @@ import { getBotUsername, getBotId } from '@/lib/telegram/client'
 import { buildTurnContext, type ReplyToContext } from '@/lib/turn/context'
 import { runTurn } from '@/lib/turn/run'
 import { runCommands } from '@/lib/turn/commands'
-import { appendInbound, recentTurns } from '@/lib/turn/window'
+import { appendInbound, followsBaumyAnswer, recentTurns } from '@/lib/turn/window'
 import { lookupEdit, type EditMap } from '@/lib/turn/edit'
 import { admitVerifiedMember } from '@/lib/identity/verify'
 import type { WindowTurn } from '@/lib/turn/context'
@@ -57,7 +57,8 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     const db = createHttpDb()
     // Idempotency record ONLY — the ledger never holds the message body. (The text lives only in the
     // 48h conversation window, secret-redacted — window-append below, spec §5.)
-    await db.insert(telegramUpdates).values({ updateId, chatId }).onConflictDoNothing()
+    // received_at on the clock seam: the follow-up check compares it with the window's sent_at.
+    await db.insert(telegramUpdates).values({ updateId, chatId, receivedAt: now() }).onConflictDoNothing()
     // Register under the stable SCOPE id (not the inbound chat). A BOT sender (GroupAnonymousBot for
     // an anonymous admin, a poll bot) is never registered as a housemate (I8).
     if (acceptIds.includes(chatId)) await ensureRegistered(db, houseChatId, isBot ? null : fromId, isBot ? null : fromName)
@@ -103,7 +104,20 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
   const replyToBaumy = repliesToBaumy(replyTo, needsBotId ? await getBotId() : null, replyToBot === true)
   const inConsoleTopic = lane === 'house' && consoleThreadId != null && messageThreadId === consoleThreadId
   const repliesToHuman = !!replyTo && !replyTo.isTopicRoot && !replyTo.isBot && !replyToBaumy
-  const directed = directedness({ lane, text: rawText, botUsername, replyToBaumy, inConsoleTopic, repliesToHuman })
+  // A FOLLOW-UP (spec §1): Baumy's latest message here answered THIS sender a moment ago and nobody
+  // spoke since — "could you also add…" needs no second @mention. Only a candidate: triage decides.
+  const followsBaumy =
+    lane === 'house' && !!authorId && !!houseScope && !replyToBaumy && !repliesToHuman && !isEdit
+      ? ((await step.run('follow-up-check', async () => {
+          try {
+            return await followsBaumyAnswer(createHttpDb(), { groupId: houseScope, chatId, threadId: messageThreadId, at: now(), messageId, updateId, memberId: authorId })
+          } catch (err) {
+            console.warn('[baumy/ingest] follow-up check failed:', err instanceof Error ? err.message : err)
+            return false
+          }
+        })) as boolean)
+      : false
+  let directed = directedness({ lane, text: rawText, botUsername, replyToBaumy, inConsoleTopic, repliesToHuman, followsBaumy })
   // What Baumy reasons over: the @mention stripped (C12) — directedness above already used it.
   const text = stripBotMention(rawText, botUsername)
 
@@ -229,6 +243,11 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
     }),
   )) as ClassifierVerdict
   ctx.verdict = verdict
+  // A follow-up stays directed only when it really asks Baumy ("thanks!" or a word to a housemate does not).
+  if (directed.why === 'follow_up' && !verdict.asksBaumy) {
+    directed = { value: false, why: null }
+    ctx.directed = directed
+  }
 
   // The turn: actions → ctx.outcome → ONE plan → its execution (lib/turn/run.ts).
   const { gates, plan } = await runTurn(step, ctx, { origin, policy, editMap, houseChatId, windowable, reply })
