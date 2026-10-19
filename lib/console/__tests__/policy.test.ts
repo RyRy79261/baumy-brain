@@ -74,7 +74,7 @@ describe('the four classes hold the line', () => {
   it('keeps live authorization out of the editable surface', () => {
     expect(classOf('members', 'canAccessDashboard')).toBe('provenance')
     expect(classOf('members', 'role')).toBe('provenance')
-    // The fixed send destination is config, not a text box — the whole point of sendToHouse is
+    // The fixed send destination is config, not a text box — the whole point of postMessage is
     // that the recipient is code-resolved.
     expect(classOf('houseConfig', 'houseGroupChatId')).toBe('provenance')
     expect(editableColumns('houseConfig')).not.toContain('houseGroupChatId')

@@ -69,7 +69,7 @@ const IGNORE: Origin = {
 // env override when a caller omits it (e.g. unit tests).
 // `acceptHouseIds` is the alias set (docs/spec/telegram.md D9): every chat id that counts as the
 // house — the stable scope id AND the current live transport id after a supergroup migration. A
-// message from ANY of them is the house lane; scope is still derived via houseScopeForOrigin from
+// message from ANY of them is the house lane; scope is still derived via addressingFor from
 // the stable scope id (passed as `houseChatId`), never from the inbound chat. Omitted (tests / the
 // pre-migration case) → just the single `houseChatId`. All ids come from Telegram-authenticated
 // transport fields / stored config, never message text, so the injection wall holds.
@@ -138,4 +138,69 @@ export function resolveOrigin(update: TelegramUpdate, roster: Roster, houseChatI
     houseChatId,
     acceptHouseIds,
   )
+}
+
+// ── Addressing: scope, destination and identity, produced ONCE from the origin ──────────────────────
+//
+// Three things a message has, kept distinct (docs/spec/dm-queries-and-house-scoping.md):
+//   • SCOPE — the house whose shared memory it reads/writes. Derived ONLY from the authenticated lane,
+//     never from message text or the inbound chat (injection wall I1): a member cannot name another
+//     house's scope. house / member_dm → the house's stable scope id; anything else → '' (nothing).
+//   • DESTINATION — where a reply may go: the chat it came from (the house group, echoing its forum
+//     topic; or the authenticated sender's own DM). Exactly two transport-authenticated targets, never
+//     a free or LLM-chosen id. null = the destination belt failed: Baumy says nothing.
+//   • IDENTITY — who the words are attributed to (the authenticated sender — never for relayed content,
+//     never the shared GroupAnonymousBot behind an anonymous-admin post, I8) and, for a member-forwarded
+//     message (D4), who relayed it (recorded beside the note, never as its author).
+// In the house group scope and destination collapse into one chat; a member DM is exactly where they
+// diverge — scope is the house, the destination is the private chat.
+//
+// MULTI-HOUSE SEAM: today the members PK is global (one house per human), so the scope is the single
+// house. When the baumy_house_members join table lands, scope becomes a per-member lookup
+// (resolveHousesForMember → HouseRef[]); the widening happens HERE, not at every call site.
+
+/** A reply into the chat a message came from — the turn's only worded destination. */
+export interface ChatDestination {
+  to: 'chat'
+  chatId: string
+  /** The forum topic to echo (house group only); null = General / a DM. */
+  threadId: number | null
+}
+
+export interface Addressing {
+  /** The house whose shared memory this message reads/writes; '' = none. */
+  scope: string
+  /** Where a reply may go; null = nowhere (the destination belt failed). */
+  reply: ChatDestination | null
+  /** The housemate the words are attributed to; null for relayed / anonymous / sender-less content. */
+  authorId: string | null
+  /** Who forwarded it (a member-forwarded message, D4); never its author. */
+  forwarderId: string | null
+  /** May the 48h conversation window store this message? Never another bot's post (it grounds nothing). */
+  windowable: boolean
+}
+
+export interface HouseAddress {
+  /** The stable memory scope id (house_group_chat_id / the env pin). */
+  scopeId: string
+  /** Every chat id that counts as the house (the scope id + the live id after a migration). */
+  acceptIds: string[]
+}
+
+export function addressingFor(origin: Origin, house: HouseAddress, roster: Roster, messageThreadId: number | null): Addressing {
+  const inScope = origin.lane === 'house' || origin.lane === 'member_dm'
+  const relayed = isRelayed(origin.memoryTrust)
+  const sender = origin.fromId != null && !origin.anonymous ? String(origin.fromId) : null
+  // The belt re-checks the transport facts the lane was resolved from: the house group's own ids, or a
+  // roster member's own private chat. Cheap, and a regression in lane resolution cannot open a target.
+  const replyOk =
+    (origin.lane === 'house' && house.acceptIds.includes(origin.chatId)) ||
+    (origin.lane === 'member_dm' && origin.fromId != null && roster.isMember(origin.fromId) && origin.chatId === String(origin.fromId))
+  return {
+    scope: inScope ? house.scopeId : '',
+    reply: replyOk ? { to: 'chat', chatId: origin.chatId, threadId: origin.lane === 'house' ? messageThreadId : null } : null,
+    authorId: relayed ? null : sender,
+    forwarderId: origin.memoryTrust === 'forwarded' ? sender : null,
+    windowable: inScope && origin.memoryTrust !== 'quarantined',
+  }
 }

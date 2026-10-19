@@ -2,7 +2,7 @@
 //
 // When a Telegram group is upgraded to a supergroup its chat_id changes to the -100… form and the
 // OLD id stops working — so Baumy goes deaf (inbound ignored) and reminders silently fail. The
-// running bot self-heals on the NEXT proactive send (sendToHouseResilient catches the stale-id 400),
+// running bot self-heals on the NEXT proactive send (send({ to: 'house' }) in lib/telegram/send.ts catches the stale-id 400),
 // but if nothing is due it can stay stuck. This script captures the new id immediately and writes it
 // to house_config.live_chat_id — WITHOUT touching house_group_chat_id (the memory scope), so no
 // history is orphaned. Deploy these changes FIRST (the live_chat_id column ships in migration 0012).

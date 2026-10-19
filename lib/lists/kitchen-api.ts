@@ -82,7 +82,7 @@ async function parseBody<T>(req: Request, schema: z.ZodType<T, z.ZodTypeDef, unk
 const parseWrite = (req: Request) => parseBody<WriteBody>(req, WriteBody)
 const BAD_WRITE = { ok: false, error: 'bad_request', message: 'Expected { items: string[1..30], telegramUserId? }.' }
 
-// v1 is one house (the members PK is global — see houseScopeForOrigin's MULTI-HOUSE SEAM), so a
+// v1 is one house (the members PK is global — see addressingFor's MULTI-HOUSE SEAM), so a
 // mapped member is simply an ACTIVE roster row, the same rule loadRoster applies. Anything else → null.
 export async function mapMember(db: Database, telegramUserId: string | number | undefined): Promise<string | null> {
   if (telegramUserId === undefined) return null

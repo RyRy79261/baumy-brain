@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { resolveOriginParts, type Roster } from '@/lib/core/origin'
-import { houseScopeForOrigin, resolveHouseIds, parseNotifyCommand, parseShoppingCommand, setShoppingThread } from '@/lib/identity/house'
+import { resolveOriginParts, addressingFor, type Roster } from '@/lib/core/origin'
+import { resolveHouseIds, parseNotifyCommand, parseShoppingCommand, setShoppingThread } from '@/lib/identity/house'
 import { makeTestDb } from '@/lib/memory/__tests__/pglite'
 import { houseConfig } from '@/db/schema'
 
@@ -10,11 +10,14 @@ import { houseConfig } from '@/db/schema'
 const HOUSE = '-1001234567890'
 const roster: Roster = { isOwner: (id) => id === 100, isMember: (id) => id === 100 || id === 200 }
 
-describe('houseScopeForOrigin', () => {
+const ADDR = { scopeId: HOUSE, acceptIds: [HOUSE] }
+const scopeOf = (o: ReturnType<typeof resolveOriginParts>) => addressingFor(o, ADDR, roster, null).scope
+
+describe('addressingFor — the scope', () => {
   it('house-group message scopes to the house', () => {
     const o = resolveOriginParts({ chatId: HOUSE, fromId: 100, text: 'x', isPrivate: false }, roster, HOUSE)
     expect(o.lane).toBe('house')
-    expect(houseScopeForOrigin(o, HOUSE)).toBe(HOUSE)
+    expect(scopeOf(o)).toBe(HOUSE)
   })
 
   it('member DM scopes to the HOUSE, not the private chat (reads/writes shared memory)', () => {
@@ -22,14 +25,14 @@ describe('houseScopeForOrigin', () => {
     expect(o.lane).toBe('member_dm')
     expect(o.chatId).toBe('200') // the DM chat — where a reply is SENT
     // ...but the SCOPE is the house, never the DM chat id. This decoupling is the feature.
-    expect(houseScopeForOrigin(o, HOUSE)).toBe(HOUSE)
-    expect(houseScopeForOrigin(o, HOUSE)).not.toBe(o.chatId)
+    expect(scopeOf(o)).toBe(HOUSE)
+    expect(scopeOf(o)).not.toBe(o.chatId)
   })
 
   it('an out-of-scope origin (unknown DM sender) has NO house scope — reads/writes nothing', () => {
     const o = resolveOriginParts({ chatId: '999', fromId: 999, text: 'x', isPrivate: true }, roster, HOUSE)
     expect(o.lane).toBe('ignore')
-    expect(houseScopeForOrigin(o, HOUSE)).toBe('')
+    expect(scopeOf(o)).toBe('')
   })
 })
 

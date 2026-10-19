@@ -122,7 +122,7 @@ are inside the 06:00–02:00 waking window, so the digest never sends at 3am.
   (chat-understanding-v2 D2, `deliver_chat_id = created_by`) — that creator's own DM, only while they are
   an active member (`reminderDestination`; otherwise the row is cancelled, never re-routed). The house
   path: Post-supergroup-migration this is resolved at send time by
-  `sendToHouseResilient` to the CURRENT live house id (`house_config.live_chat_id ?? house_group_chat_id`),
+  `send({ to: 'house' })` (`lib/telegram/send.ts`) to the CURRENT live house id (`house_config.live_chat_id ?? house_group_chat_id`),
   which also self-heals a stale id on a 400 — so a row's frozen `deliverChatId` can't misdeliver
   (docs/spec/telegram.md D9).
 - **Notification channel (forum topic).** If the house set one (`house_config.reminder_thread_id`, via

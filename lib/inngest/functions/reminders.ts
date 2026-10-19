@@ -20,8 +20,7 @@ import {
   staleBefore,
 } from '@/lib/reminders/store'
 import { headsUpAtDelivery } from '@/lib/inngest/functions/surfacing'
-import { sendToHouseResilient } from '@/lib/telegram/house-send'
-import { sendToHouse } from '@/lib/telegram/client'
+import { send } from '@/lib/telegram/send'
 import { getHouseChatId } from '@/lib/identity/house'
 import { loadResponsePolicy } from '@/lib/policy'
 import { houseTz } from '@/lib/env'
@@ -43,8 +42,7 @@ const reminderBody = (anchorKind: string | undefined, content: string): string =
 // supergroup migration, lands in the /notifyhere topic); a personal reminder set in a member DM (D2)
 // goes to that creator's own DM and nowhere else — never through the house path.
 async function sendReminder(db: ReturnType<typeof createHttpDb>, dest: ReminderDestination, text: string): Promise<void> {
-  if (dest.kind === 'house') await sendToHouseResilient(db, text)
-  else await sendToHouse(dest.chatId, text)
+  await send(dest.kind === 'house' ? { to: 'house' } : { to: 'member', memberId: dest.chatId }, text, {}, db)
 }
 
 // Daily arm (task-graph R2): emit an arm.due event for each scheduled reminder
@@ -190,7 +188,7 @@ export async function deliverDueReminders(
 
   let sent = 0
   let messages = 0
-  // A house batch resolves its destination at send time to the CURRENT live id (sendToHouseResilient) —
+  // A house batch resolves its destination at send time to the CURRENT live id (send → house) —
   // so a supergroup migration self-heals even if a row's frozen deliver_chat_id predates it. A DM batch
   // goes to that creator's own DM; a row whose destination is not allowed is retired, never re-routed.
   for (const rows of byDest.values()) {

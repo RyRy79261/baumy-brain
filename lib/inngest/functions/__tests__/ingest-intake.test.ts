@@ -15,7 +15,7 @@ const dbh: { db: any } = { db: null }
 const classifyMock = vi.fn<(t: string) => Promise<ClassifierVerdict>>()
 const extractFactsMock = vi.fn(async (..._a: unknown[]) => ({ facts: [] as unknown[] }))
 const extractListMock = vi.fn<(t: string) => Promise<{ op: string; items: string[] }>>()
-const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
+const postMessage = vi.fn(async (..._a: unknown[]) => {})
 const reactToMessage = vi.fn(async (..._a: unknown[]) => {})
 const answerMock = vi.fn(async (..._a: unknown[]) => ({ text: 'sure 🐈', answered: true }))
 const retrieveMock = vi.fn(async (..._a: unknown[]) => [])
@@ -42,11 +42,11 @@ vi.mock('@/lib/reports/reports', async (o) => ({ ...(await o<typeof import('@/li
 // The live shopping list's triggers are Inngest's — never sent from a unit test (offline).
 vi.mock('@/lib/lists/board', async (o) => ({ ...(await o<typeof import('@/lib/lists/board')>()), noteShoppingChange: async () => {}, requestShoppingRender: async () => true }))
 vi.mock('@/lib/telegram/client', () => ({
-  sendToHouse: (...a: unknown[]) => sendToHouse(...a),
+  postMessage: (...a: unknown[]) => postMessage(...a),
   reactToMessage: (...a: unknown[]) => reactToMessage(...a),
   getBotUsername: async () => 'baumy_bot',
   getBotId: async () => BOT_ID,
-  sendConfirmCard: async () => {},
+  postConfirmCard: async () => {},
 }))
 
 const { runIngest } = await import('@/lib/inngest/functions/ingest')
@@ -98,7 +98,7 @@ beforeEach(async () => {
   dbh.db = await makeTestDb()
   await ensureRegistered(dbh.db, HOUSE, null)
   await upsertMember(dbh.db, HOUSE, String(CHLOE), 'Chloe', 'member')
-  for (const m of [classifyMock, extractFactsMock, extractListMock, sendToHouse, reactToMessage, answerMock, retrieveMock, factsQueryMock, weeklyMock]) m.mockClear()
+  for (const m of [classifyMock, extractFactsMock, extractListMock, postMessage, reactToMessage, answerMock, retrieveMock, factsQueryMock, weeklyMock]) m.mockClear()
   classifyMock.mockResolvedValue(V())
   extractFactsMock.mockResolvedValue({ facts: [] })
 })
@@ -182,7 +182,7 @@ describe('K4 — group list reactions reflect the store outcome', () => {
     expect(reactions().at(-1)).toBe('✍')
     await runIngest(ev({ text: 'we need milk' }), step)
     expect(reactions().at(-1)).toBe('👀')
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
   })
   it('a check-off that matched → 👍', async () => {
     await addListItems(dbh.db, { groupId: HOUSE, items: ['milk'], addedBy: null })
@@ -197,7 +197,7 @@ describe('K4 — group list reactions reflect the store outcome', () => {
     extractListMock.mockResolvedValue({ op: 'checkoff', items: ['bin bags'] })
     await runIngest(ev({ text: 'got the bin bags' }), step)
     expect(reactions()).not.toContain('👍')
-    expect(String(sendToHouse.mock.calls[0]?.[1])).toContain(`Couldn't find "bin bags"`)
+    expect(String(postMessage.mock.calls[0]?.[1])).toContain(`Couldn't find "bin bags"`)
     const [milk] = await dbh.db.select().from(listItems).where(and(eq(listItems.groupId, HOUSE)))
     expect(milk.checkedAt).toBeNull()
   })
@@ -209,7 +209,7 @@ describe('I7 — unknown slash commands in the house group are ignored', () => {
     expect(res).toMatchObject({ decision: 'drop', reason: 'unknown-command' })
     expect(classifyMock).not.toHaveBeenCalled()
     expect(await notes()).toHaveLength(0)
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
   })
   it('"/help@baumy_bot" is ignored too; a known report still runs', async () => {
     expect((await runIngest(ev({ text: '/help@baumy_bot' }), step)).decision).toBe('drop')
@@ -222,13 +222,13 @@ describe('A12 — report commands only run in the house lane or a member DM', ()
     const res = await runIngest(ev({ chatId: '-100football', text: '/weekly' }), step)
     expect(res).toMatchObject({ decision: 'drop', reason: 'out-of-scope' })
     expect(weeklyMock).not.toHaveBeenCalled()
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
   })
   it('/weekly in a member DM reads the HOUSE scope and replies privately', async () => {
     const res = await runIngest(ev({ chatId: String(CHLOE), chatType: 'private', text: '/weekly' }), step)
     expect(res.decision).toBe('report-view')
     expect(weeklyMock.mock.calls[0][1]).toBe(HOUSE)
-    expect(sendToHouse.mock.calls[0][0]).toBe(String(CHLOE))
+    expect(postMessage.mock.calls[0][0]).toBe(String(CHLOE))
   })
 })
 

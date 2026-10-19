@@ -28,8 +28,8 @@ Today the code conflates three values because in the house lane they are numeric
 
 | Concept | Question | v1 source | Key used for |
 | --- | --- | --- | --- |
-| **Scope** | *whose data?* | `houseScopeForOrigin(origin, houseChatId)` | the `group_id` on every read/write (retrieve, facts, capture, reminder) |
-| **Destination** | *where does the reply go?* | `origin.chatId` | `sendToHouse` / `reactToMessage` target |
+| **Scope** | *whose data?* | `addressingFor(origin, house, roster, threadId).scope` | the `group_id` on every read/write (retrieve, facts, capture, reminder) |
+| **Destination** | *where does the reply go?* | `addressingFor(…).reply` (= `origin.chatId`, or null off the belt) | `send` (`lib/telegram/send.ts`) / `reactToMessage` target |
 | **Identity** | *who is speaking?* | `origin.fromId` (vs roster) | attribution, membership, authz |
 
 A member DM is exactly where they diverge: **scope = the house**, **destination = the private
@@ -39,7 +39,7 @@ This feature makes the split a named seam instead of an ad-hoc `||`.
 
 ## The seam (v1 code)
 
-`houseScopeForOrigin(origin, houseChatId): string` (`lib/identity/house.ts`) — the *scope*
+`addressingFor(origin, house, roster, threadId).scope` (`lib/core/origin.ts`) — the *scope*
 resolver. Derived from the **authenticated lane** (never from message text — injection wall):
 
 - `house` or `member_dm` → `houseChatId` (v1 has one house; the `member_dm` lane already
@@ -54,7 +54,7 @@ is byte-for-byte identical; in a DM they correctly diverge.
 ## Security invariants (must hold)
 
 - **I1 — Scope is from authenticated membership, never text/LLM.** A member of house A must be
-  structurally incapable of naming house B's scope. `houseScopeForOrigin` keys off the lane,
+  structurally incapable of naming house B's scope. `addressingFor` keys off the lane,
   which is transport-derived.
 - **I2 — DM reply destination is exactly `origin.chatId`.** The reply/ack goes only to the
   authenticated sender's own private chat — never `houseChatId`, never an LLM-supplied id. The

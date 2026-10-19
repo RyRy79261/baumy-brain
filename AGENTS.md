@@ -85,9 +85,10 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
   or the ask-Baumy topic (except a reply to another housemate there).
 - **DM queries (`member_dm` lane, `docs/spec/dm-queries-and-house-scoping.md`):** a member can
   DM Baumy to **read** house memory (answered privately) and **write** facts through to shared
-  house memory at `trusted`. The **scope** a message reads/writes is `houseScopeForOrigin(origin,
-  houseChatId)` — derived from the authenticated lane, NEVER the inbound `chatId` — while the
-  reply **destination** stays `origin.chatId`. Keep scope/destination/identity distinct. DM
+  house memory at `trusted`. Scope, destination and identity are produced ONCE by
+  `addressingFor` (`lib/core/origin.ts`): the **scope** a message reads/writes (derived from the
+  authenticated lane, NEVER the inbound `chatId`), the reply **destination** (`reply` — the inbound
+  chat, or null when the two-target belt fails) and the author / forwarder. Keep them distinct. DM
   answers **bypass `/pause`** (lane-scoped: house + reminders still honor it).
 - **Shopping list (`docs/spec/shopping-list.md`, `lib/lists/*`, `baumy_list_items`):** rides the
   same scope seam — a member DMs "buy milk" / "got the milk" / "what's on the list?" and it writes
@@ -112,8 +113,12 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
   new name drops an AUTOMATIC category and re-sorts (a pick is kept). A non-section for an item not on the list
   ("put the bins out") is silence, not a list op; for an item on the list it is answered only when directed. A new add path must call `requestCategorize` after its write.
 - **Two human-authorization walls (don't conflate them):** (1) the **confirm-tap wall** —
-  `callback_query` from a member's authenticated `from.id` (`lib/confirm/*`,
-  `functions/callback.ts`) gates the chat-initiated privileged actions: **memory deletion /
+  `callback_query` from a member's authenticated `from.id` gates the chat-initiated privileged actions.
+  Every tappable type is ONE entry in `lib/confirm/store.ts` `TAP_ACTIONS` + `TapPayloads` (its typed
+  payload, requester-only?, has a Confirm button?) and ONE handler in `lib/confirm/handlers.ts`
+  `TAP_HANDLERS` (a missing handler is a compile error); `functions/callback.ts` is the generic
+  dispatcher (member check → single-use resolve → handler; the stored-scope belt for `scopeChecked`).
+  The actions: **memory deletion /
   "forget"** and **reminder CANCELLATION** (`reminder.cancel`, `lib/reminders/cancel.ts`,
   `docs/spec/reminders.md` §Cancelling from chat). A "forget X" / "stop the bins reminder" request
   only *proposes* (LLM picks the target *description*; code resolves it to exact, group-scoped row
@@ -144,25 +149,29 @@ node --experimental-strip-types scripts/set-commands.ts  # set the "/" command m
 - **LLM errors (I2):** only a *malformed object* degrades to a safe default
   (`lib/ai/errors.ts` `isMalformedObjectError`); a transient provider error (429/529/timeout)
   **rethrows** so the Inngest step retries — never swallow it into a memoized degraded value.
-- **Fixed send destination:** `sendToHouse` targets a **code-resolved** chat id only. Replies
+- **Fixed send destination:** every worded send goes through ONE door, `lib/telegram/send.ts`
+  `send(dest, …)` / `sendConfirm`, with a **code-resolved** destination: `chat` (addressingFor's
+  `reply`), `house` (proactive) or `member` (one ACTIVE housemate's own DM — anyone else is refused).
+  `postMessage` in `client.ts` is the transport exit (sandbox capture + window append) — never call it
+  from feature code. Replies
   are a **two-target allow-list** — the house group, or the authenticated DM sender's own chat
   (`origin.chatId`). Reminders are the same two targets (spec D2, phase 5): a **house** reminder
-  (`deliver_chat_id = group_id`) → the current live house id via `sendToHouseResilient`; a
+  (`deliver_chat_id = group_id`) → the current live house id via `send({ to: 'house' })`; a
   **personal reminder set in a member DM** (`forWhom` speaker, or a literal "remind me" / a DM ask
   with no `forWhom`) → `deliver_chat_id = created_by` = that authenticated DM chat, delivered with a
-  plain `sendToHouse` to it — never through the house path, retired (never re-routed) if its creator
+  `send({ to: 'member' })` to it — never through the house path, retired (never re-routed) if its creator
   has left (`lib/reminders/store.ts` `reminderDestination`). Personal reminders never appear in the
   group's `/reminders` or `/weekly` (`visibleReminders`), and a reminder request asked in a DM that set
   no HOUSE reminder is **not captured** into shared house memory either (no note, no facts — so no
-  `/weekly` event, recall or heads-up in the group; `privateDmReminder` in `ingest.ts`, which runs the
-  reminder step before capture). Digests / heads-ups → the house group only.
+  `/weekly` event, recall or heads-up in the group; `privateDmReminder` in `lib/turn/run.ts` `runTurn`,
+  which runs the reminder step before capture). Digests / heads-ups → the house group only.
   Both lanes' reminders still honour `/pause`. The LLM never picks a recipient.
 - **Supergroup migration (alias seam, `docs/spec/telegram.md` D9):** the house `chat_id` changes on a
   group→supergroup upgrade, but `house_group_chat_id` is ALSO the memory `group_id` — so it is the
   stable **scope** and is NEVER rewritten. `house_config.live_chat_id` holds the current transport id;
   `resolveHouseIds` → `{scopeId, sendId, acceptIds}` (lane accepts the alias set, sends use `sendId`,
   memory stays on `scopeId`). It self-heals inbound (`convergeMigration`, bound to a known-house id —
-  no hijack) + outbound (`sendToHouseResilient` 400-retry); `scripts/heal-house.ts` is the manual kick.
+  no hijack) + outbound (`send({ to: 'house' })` 400-retry); `scripts/heal-house.ts` is the manual kick.
 - **Reminder topic ("notification channel"):** `house_config.reminder_thread_id` routes reminders into
   a forum topic via `message_thread_id`; set by the owner's `/notifyhere` (capture-tier auto-commit,
   house lane, audited — value from the authenticated `message_thread_id`, never text). Read receipts are
@@ -275,12 +284,17 @@ The design contract is `docs/spec/chat-understanding-v2.md` (fully implemented; 
    vibe, tier (quick/deep), webSearch, list. It reads a verified CONTEXT header (lane, directed + why,
    FROM, FORWARDED, HOUSEMATES, REPLYING TO) + the last 6 window turns as quoted data. It **does not
    decide whether Baumy speaks.** Malformed object → `SAFE_VERDICT` (captures nothing, `degraded`).
-4. **Write-gate** (`lib/core/decide.ts`): `shouldCapture` = statements / info-carrying requests and
-   reminders only — **never a question, chatter or a forget request** (I3); a reminder needs a
-   **directed** ask and is not confidence-gated (A9, I6); relayed content (`isRelayed`) drives nothing.
-5. **Actions, then capture** (`actions.ts`, `capture.ts`), each result into `ctx.outcome`: the list op
-   first (a list op is **not** captured, A11) → reminders (+ a pending clarify draft, below) → capture
-   (skipped for a private DM reminder, D2) → edit settle → forget proposal. Capture returns `{memoryItemId,
+4. **Gates** (`lib/turn/gates.ts` `turnGates`, pure, table-tested — built on the write-gate
+   `lib/core/decide.ts`): which actions may run, ALL the precedence in one place. `shouldCapture` =
+   statements / info-carrying requests and reminders only — **never a question, chatter or a forget
+   request** (I3); a reminder needs a **directed** ask and is not confidence-gated (A9, I6); relayed
+   content (`isRelayed`) drives nothing; a reminder ask beats a list op, a calendar add runs WITH a
+   reminder; pause silences the group, never a DM. **Add a precedence rule there, nowhere else.**
+5. **The turn runner** (`lib/turn/run.ts` `runTurn` — `ingest.ts` hands it the classified context):
+   actions, then capture (`actions.ts`, `capture.ts`), each result into `ctx.outcome`: the list op
+   first (a list op is **not** captured, A11) → Olympics → reminders (+ a pending clarify draft, below) → capture
+   (skipped for a private DM reminder, D2) → edit settle → forget / cancel proposals → window link →
+   plan → execute. Capture returns `{memoryItemId,
    factIds, learned, rejected, conflicts, secure}`; every action returns what actually happened.
 6. **`planResponse(ctx, policy)`** (`plan.ts`, pure, table-driven, exhaustively tested — spec §3)
    picks none / a reaction / the deterministic list, forget or forward-ack text / words in a **MODE**
@@ -296,7 +310,7 @@ The design contract is `docs/spec/chat-understanding-v2.md` (fully implemented; 
    MODE → `MESSAGE from <name>`. Grounding (`grounding.ts`) **excludes this turn's own note and facts**
    (C1). The model never third-persons the sender and never claims an action THIS TURN doesn't report
    (A3). Words go out as a Telegram **reply** to the triggering message (C11), through the `claimReply`
-   / `releaseReply` exactly-once belt; Sonnet→Opus self-escalation and the malformed-object text
+   / `releaseReply` exactly-once belt (`lib/telegram/send.ts`); Sonnet→Opus self-escalation and the malformed-object text
    fallback are kept.
 
 - **Clarify is answerable:** a reminder with no / unreadable / past time stores a short-lived draft

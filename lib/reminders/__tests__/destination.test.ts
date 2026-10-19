@@ -11,8 +11,8 @@ import { upcomingRemindersReport } from '@/lib/reports/reports'
 // to the house group, a personal reminder set in a member DM goes to THAT member's DM — never mixed into
 // the house digest, never re-routed to the group, retired if its creator has left.
 
-const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
-vi.mock('@/lib/telegram/client', () => ({ sendToHouse: (...a: unknown[]) => sendToHouse(...a) }))
+const postMessage = vi.fn(async (..._a: unknown[]) => {})
+vi.mock('@/lib/telegram/client', () => ({ postMessage: (...a: unknown[]) => postMessage(...a) }))
 const { deliverDueReminders, deliverReminderNow } = await import('@/lib/inngest/functions/reminders')
 
 const GROUP = '-100dest'
@@ -30,7 +30,7 @@ async function house() {
 }
 
 describe('reminder destinations (D2)', () => {
-  beforeEach(() => sendToHouse.mockClear())
+  beforeEach(() => postMessage.mockClear())
 
   it('the digest sends the house batch to the house and a personal reminder to its creator’s DM — separately', async () => {
     const db = await house()
@@ -38,7 +38,7 @@ describe('reminder destinations (D2)', () => {
     await createReminder(db, { groupId: GROUP, deliverChatId: CHLOE, content: 'Chloe: take my antibiotics', fireAt: ago(10), createdBy: CHLOE })
     const res = await deliverDueReminders(db, now, TZ)
     expect(res).toMatchObject({ sent: 2, messages: 2 })
-    expect(sendToHouse.mock.calls.map((c) => [c[0], c[1]]).sort()).toEqual([
+    expect(postMessage.mock.calls.map((c) => [c[0], c[1]]).sort()).toEqual([
       [GROUP, '⏰ bins out'],
       [CHLOE, '⏰ Chloe: take my antibiotics'],
     ])
@@ -48,7 +48,7 @@ describe('reminder destinations (D2)', () => {
     const db = await house()
     const id = await createReminder(db, { groupId: GROUP, deliverChatId: CHLOE, content: 'Chloe: call mum', fireAt: ago(1), createdBy: CHLOE })
     expect(await deliverReminderNow(db, id, now, TZ)).toMatchObject({ status: 'sent' })
-    expect(sendToHouse.mock.calls.map((c) => c[0])).toEqual([CHLOE])
+    expect(postMessage.mock.calls.map((c) => c[0])).toEqual([CHLOE])
   })
 
   it('a personal reminder of a member who has LEFT is retired — never re-routed to the group', async () => {
@@ -62,7 +62,7 @@ describe('reminder destinations (D2)', () => {
     await createReminder(db, { groupId: GROUP, deliverChatId: CHLOE, content: 'Chloe: other', fireAt: ago(1), createdBy: CHLOE })
     await deliverDueReminders(db, now, TZ)
     warn.mockRestore()
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
   })
 
   it('/reminders in the group never lists a personal DM reminder; the creator’s own DM does', async () => {

@@ -43,7 +43,7 @@ export function redactForWindow(text: string): string {
 }
 
 export interface InboundWindowRow {
-  /** The house scope (houseScopeForOrigin) — never the inbound chat id. */
+  /** The house scope (addressingFor) — never the inbound chat id. */
   groupId: string
   chatId: string
   messageId: number

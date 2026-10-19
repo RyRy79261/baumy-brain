@@ -383,7 +383,7 @@ export async function runOlympics(step: TurnStep, ctx: TurnContext): Promise<Oly
       const pendingId = await createPendingAction(db, {
         groupId: ctx.houseScope,
         actionType: 'olympics.action',
-        payload: pending as unknown as Record<string, unknown>,
+        payload: pending,
         requestedBy: actor, // only this person's tap sends it (resolvePendingAction)
       })
       return { op, proposed: true, pendingId, card }

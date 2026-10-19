@@ -18,7 +18,7 @@ const pinMessage = vi.fn(async (..._a: unknown[]) => true)
 const unpinMessage = vi.fn(async (..._a: unknown[]) => true)
 const deleteMessage = vi.fn(async (..._a: unknown[]) => true)
 const editShoppingBoard = vi.fn(async (..._a: unknown[]) => true)
-const sendToHouse = vi.fn(async (..._a: unknown[]) => {})
+const postMessage = vi.fn(async (..._a: unknown[]) => {})
 vi.mock('@/lib/telegram/client', () => ({
   sendLiveList: (...a: unknown[]) => sendLiveList(...a),
   editLiveList: (...a: unknown[]) => editLiveList(...a),
@@ -26,7 +26,7 @@ vi.mock('@/lib/telegram/client', () => ({
   unpinMessage: (...a: unknown[]) => unpinMessage(...a),
   deleteMessage: (...a: unknown[]) => deleteMessage(...a),
   editShoppingBoard: (...a: unknown[]) => editShoppingBoard(...a),
-  sendToHouse: (...a: unknown[]) => sendToHouse(...a),
+  postMessage: (...a: unknown[]) => postMessage(...a),
   sendShoppingBoard: async () => 0,
 }))
 vi.mock('@/lib/inngest/client', () => ({ inngest: { send: async () => ({ ids: [] }) } }))
@@ -54,7 +54,7 @@ beforeEach(async () => {
   await ensureRegistered(db, HOUSE, null)
   await db.insert(houseConfig).values({ id: true, houseGroupChatId: HOUSE })
   await upsertMember(db, HOUSE, '501', 'Ryan', 'owner')
-  for (const f of [sendLiveList, editLiveList, pinMessage, unpinMessage, deleteMessage, editShoppingBoard, sendToHouse]) f.mockClear()
+  for (const f of [sendLiveList, editLiveList, pinMessage, unpinMessage, deleteMessage, editShoppingBoard, postMessage]) f.mockClear()
   sendLiveList.mockResolvedValue(7001)
   editLiveList.mockResolvedValue('edited')
   pinMessage.mockResolvedValue(true)
@@ -250,14 +250,14 @@ describe('/list and /shoppinghere (a place)', () => {
     expect(await list(TOPIC)).toEqual({ status: 'edited', messageId: 6000, pinned: true, pointer: false })
     expect(sendLiveList).not.toHaveBeenCalled()
     expect(pinMessage).toHaveBeenCalledWith(HOUSE, 6000)
-    expect(sendToHouse).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
   })
 
   it('/list somewhere else: the list stays where it is (re-rendered) and Baumy says where it is pinned', async () => {
     await setStored(6000, TOPIC)
     expect(await list(null)).toEqual({ status: 'edited', messageId: 6000, pinned: true, pointer: true })
     expect(sendLiveList).not.toHaveBeenCalled()
-    expect(sendToHouse).toHaveBeenCalledWith(HOUSE, LIVE_ELSEWHERE(messageLink(HOUSE, 6000)), { threadId: undefined })
+    expect(postMessage).toHaveBeenCalledWith(HOUSE, LIVE_ELSEWHERE(messageLink(HOUSE, 6000)), { threadId: undefined })
     // a supergroup message gets a link; a basic group (or this test's made-up id) has none
     expect(LIVE_ELSEWHERE(messageLink('-1001234567890', 6000))).toBe('🛒 The live shopping list is pinned here: https://t.me/c/1234567890/6000')
     expect(messageLink('-123456', 6000)).toBeNull()

@@ -200,7 +200,7 @@ to `sendId`, memory stays scoped to `scopeId`. Both channels converge onto `live
 - **Inbound** — the webhook detects `migrate_to_chat_id`/`migrate_from_chat_id` → `telegram/chat_migrated`
   → `convergeMigration` (`lib/inngest/functions/migration.ts`), which moves `live_chat_id` ONLY when
   the migrating chat is one we already know as the house (scope or current live) — no hijack.
-- **Outbound** — `sendToHouseResilient` (`lib/telegram/house-send.ts`) catches the stale-id 400,
+- **Outbound** — `send({ to: 'house' })` (`lib/telegram/send.ts`) catches the stale-id 400,
   persists `live_chat_id`, and retries once. Repairs an already-migrated house on the next reminder.
 - **Manual** — `scripts/heal-house.ts` probes `getChat` and sets `live_chat_id` immediately (for a
   house that migrated while no reminder was pending, so no outbound send had triggered the heal).
@@ -224,7 +224,7 @@ A topics/forum supergroup has multiple topics; a bot posts into one via `message
 creating the topic, from a `ForumTopicCreated` service message, or off an inbound message's
 `message_thread_id`. So the owner **points** at one: `/notifyhere` run INSIDE the target topic captures
 that message's `message_thread_id` into `house_config.reminder_thread_id` (migration 0013);
-`sendToHouseResilient` reads it so all reminders/heads-ups post there. `/notifyoff` resets to General.
+`send({ to: 'house' })` reads it so all reminders/heads-ups post there. `/notifyoff` resets to General.
 Owner-only, house lane, capture-tier auto-commit (it only routes low-privilege reminder posts within
 the fixed house group), audited; the value is an authenticated `message_thread_id`, never text.
 
