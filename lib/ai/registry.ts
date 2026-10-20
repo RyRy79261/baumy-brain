@@ -6,7 +6,12 @@ import { MODELS, type Role } from './models'
 // (lib/ai/embed.ts), so there is NO OpenAI/second-vendor dependency.
 // Exported so provider-native server tools (e.g. Anthropic web search) can be built
 // from the SAME configured instance — still Anthropic-only, no new vendor.
-export const anthropicProvider = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+// The SDK reads ANTHROPIC_BASE_URL (the e2e stack's fake Claude, e2e/README.md); production pins the
+// real API, so a stray value there can never send the house's words anywhere else.
+export const anthropicProvider = createAnthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+  ...(process.env.VERCEL_ENV === 'production' ? { baseURL: 'https://api.anthropic.com/v1' } : {}),
+})
 
 export const registry = createProviderRegistry({ anthropic: anthropicProvider })
 

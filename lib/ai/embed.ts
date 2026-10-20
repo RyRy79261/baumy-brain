@@ -28,7 +28,7 @@ export async function embedMany(values: string[]): Promise<number[][]> {
   if (embedOverride) return embedOverride(values)
   const key = process.env.VOYAGE_API_KEY
   if (!key) throw new Error('[baumy/embed] VOYAGE_API_KEY not set')
-  const res = await fetch('https://api.voyageai.com/v1/embeddings', {
+  const res = await fetch(`${voyageApiRoot()}/embeddings`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
     body: JSON.stringify({ input: values, model: EMBED_MODEL, output_dimension: EMBED_DIM }),
@@ -40,6 +40,15 @@ export async function embedMany(values: string[]): Promise<number[][]> {
   // Voyage tags each item with its request `index`; sort by it rather than trusting
   // array order, so a returned vector is never paired with the wrong input.
   return [...json.data].sort((a, b) => a.index - b.index).map((d) => d.embedding)
+}
+
+// The Voyage API root. VOYAGE_BASE_URL points it at the e2e stack's fake (e2e/README.md); refused in
+// production, where it could only ever be a misconfiguration.
+export function voyageApiRoot(env: Record<string, string | undefined> = process.env): string {
+  const root = env.VOYAGE_BASE_URL?.trim()
+  if (root && env.VERCEL_ENV !== 'production') return root.replace(/\/+$/, '')
+  if (root) console.warn('[baumy/embed] VOYAGE_BASE_URL is ignored in production')
+  return 'https://api.voyageai.com/v1'
 }
 
 // ── Deterministic lexical embedder (TESTS + no-vendor fallback) ──

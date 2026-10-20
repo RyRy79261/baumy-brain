@@ -2,6 +2,10 @@ import { drizzle as drizzleHttp } from 'drizzle-orm/neon-http'
 import { drizzle as drizzlePool } from 'drizzle-orm/neon-serverless'
 import { neon, Pool } from '@neondatabase/serverless'
 import * as schema from './schema'
+import { configureLocalProxy } from './local-proxy'
+
+// Off unless NEON_LOCAL_PROXY=1 (the local e2e stack); never in production.
+configureLocalProxy()
 
 // Lets `next build` collect page data without real DB secrets present.
 const BUILD_PLACEHOLDER_URL = 'postgres://build:build@localhost:5432/build'

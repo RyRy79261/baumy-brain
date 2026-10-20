@@ -80,6 +80,11 @@ suite('E2E — real pgvector Postgres, real migrations, real SQL', () => {
     expect(cols.rows.map((r: { column_name: string }) => r.column_name).sort()).toEqual(['about_entity_id', 'content_tsv', 'member_id'])
   })
 
+  it("a fresh database carries no house's transport ids (migration 0014 is for an existing house only)", async () => {
+    const cfg = await h.pool.query('SELECT live_chat_id, reminder_thread_id, migrated_from_chat_id FROM baumy_house_config WHERE id = true')
+    expect(cfg.rows[0]).toEqual({ live_chat_id: null, reminder_thread_id: null, migrated_from_chat_id: null })
+  })
+
   it('memory capture → recall (real embeddings + real pgvector cosine)', async () => {
     await captureMemory(
       { groupId: GROUP, content: 'rent is due friday', memoryType: 'fact', authoredBy: null, trustLevel: 'untrusted' },

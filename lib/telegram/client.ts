@@ -15,8 +15,22 @@ function api(): Api {
   if (_api) return _api
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) throw new Error('[baumy/telegram] TELEGRAM_BOT_TOKEN not set')
-  _api = new Api(token)
+  const apiRoot = telegramApiRoot()
+  _api = apiRoot ? new Api(token, { apiRoot }) : new Api(token)
   return _api
+}
+
+// The end-to-end stack (e2e/README.md) points the Bot API at a fake Telegram with TELEGRAM_API_ROOT.
+// Refused in production, so a stray variable can never send the real bot's traffic somewhere else
+// (the e2e deploy is a Vercel preview with a fake bot token, so real Telegram would reject it anyway).
+export function telegramApiRoot(env: Record<string, string | undefined> = process.env): string | null {
+  const root = env.TELEGRAM_API_ROOT?.trim()
+  if (!root) return null
+  if (env.VERCEL_ENV === 'production') {
+    console.warn('[baumy/telegram] TELEGRAM_API_ROOT is ignored in production')
+    return null
+  }
+  return root.replace(/\/+$/, '')
 }
 
 const NO_PREVIEW = { link_preview_options: { is_disabled: true } }

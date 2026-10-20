@@ -68,6 +68,9 @@ export const telegramUpdates = pgTable('baumy_telegram_updates', {
   chatId: text('chat_id'),
   status: text('status').notNull().default('received'), // 'received'|'processed'|'dead_letter'
   raw: jsonb('raw'), // intentionally left NULL — the message body is NOT persisted here (privacy: it can contain a secret and nothing reads it); this row exists only for update_id dedup
+  // How the ingest run ended (status 'processed'): its summary — decision, plan, directedness — never
+  // text. Read by ops and by the end-to-end stack (e2e/README.md). NULL until then, and on dead_letter.
+  outcome: jsonb('outcome'),
 
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
 })

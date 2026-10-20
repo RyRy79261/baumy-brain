@@ -1,0 +1,33 @@
+name: E2E
+
+# The whole stack on the runner (e2e/README.md): a production build, Postgres 17 + pgvector and the
+# Inngest dev server in Docker; fake Telegram, Olympics, Claude and Voyage. No secrets, no API cost.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest # Docker is available
+    timeout-minutes: 30
+    env:
+      E2E_APP_LOG: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:e2e

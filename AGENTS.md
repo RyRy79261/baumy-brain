@@ -39,6 +39,7 @@ pnpm test:scenarios # just the multi-turn house scenarios (scenarios/, offline)
 pnpm test:scenarios:live  # same scenarios vs real models + LLM judge (needs ANTHROPIC_API_KEY + VOYAGE_API_KEY)
 SCENARIOS_SHOW_GAPS=1 pnpm test:scenarios   # run knownGap scenarios as ordinary tests (see where each fails)
 pnpm test:time-shift      # the suite with Date moved forward (TIME_SHIFT_TO=<iso> optional)
+pnpm test:e2e       # the whole stack in Docker: prod build + Postgres + Inngest dev, fake Telegram/Claude (e2e/README.md)
 pnpm build          # next build
 pnpm db:generate    # drizzle-kit generate (migrations)
 pnpm db:migrate     # apply migrations (needs DATABASE_URL_UNPOOLED)
@@ -485,6 +486,14 @@ crown jewels. The pipeline:
   Behaviour the code doesn't have yet is a `knownGap` (`it.fails`, names the finding + phase + `failsAt`)
   — when your change flips one, drop its `knownGap`. Fixtures use the spec's shapes through ONE adapter
   (`scenarios/shapes.ts`); a schema change edits that file, not the scenarios.
+- **The stack e2e** (`e2e/`, `e2e/README.md`, `pnpm test:e2e`, CI `.github/workflows/e2e.yml`): a
+  production build + Postgres 17/pgvector behind the two Neon proxies (`db/local-proxy.ts`) + the Inngest
+  dev server, all in Docker; Telegram, Olympics, Claude and Voyage are fakes on one local server (Claude
+  answers from `e2e/script.ts`, the scenarios' scripted fixtures). It tests the PLUMBING, never the model:
+  checks are Bot API calls, rows, and the ledger outcome (`baumy_telegram_updates.status`/`outcome`). The
+  three test-only switches (`TELEGRAM_API_ROOT`, `VOYAGE_BASE_URL`, `NEON_LOCAL_PROXY`; `ANTHROPIC_BASE_URL`
+  is the SDK's own) are refused in production. Add an e2e case for anything that crosses a process or a
+  network hop (webhook → Inngest → send, retries, scheduled sends).
 - **`audit-repro/`** held characterisation tests asserting the 2026-09-26 audit's bugs; every finding is
   now fixed and no repro test remains (`audit-repro/README.md` maps each finding to the test/scenario that
   proves it; `findings.json` is the record). A future audit's repros go there the same way: assert the
