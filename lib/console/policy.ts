@@ -66,6 +66,7 @@ export const POLICY: Record<string, TablePolicy> = {
     updateId: prov('idempotency key — the exactly-once guard for inbound webhooks'),
     chatId: prov('idempotency key'),
     status: prov('processing state'),
+    outcome: prov("what the run decided (lane, directedness, plan row) — decisions only, never the message text"),
     raw: prov('deliberately never written — storing message bodies here would keep secrets in plaintext at rest'),
     receivedAt: prov('insert stamp'),
   },

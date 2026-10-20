@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm'
 import { inngest, type TelegramMessageData } from '@/lib/inngest/client'
 import { createHttpDb } from '@/db/client'
 import { telegramUpdates } from '@/db/schema'
@@ -268,8 +269,25 @@ export async function runIngest(event: { data: TelegramMessageData }, step: Inge
 // "sorry, Saturday" seconds later are reconciled in the order they were said — without it, whichever
 // run finished last won, and a correction could be superseded by the message it corrected. Keyed on the
 // inbound chat (the house group, or one member's DM); different chats still run in parallel.
+//
+// The ledger row then says how the message ended: 'processed' + the run's summary (decisions only,
+// never text), or 'dead_letter' when every retry failed — so a stuck or dropped message is visible,
+// and the end-to-end stack (e2e/README.md) knows when Baumy is done with a message.
 export const handleTelegramMessage = inngest.createFunction(
-  { id: 'handle-telegram-message', retries: 3, concurrency: [{ key: 'event.data.chatId', limit: 1 }] },
+  {
+    id: 'handle-telegram-message',
+    retries: 3,
+    concurrency: [{ key: 'event.data.chatId', limit: 1 }],
+    onFailure: async ({ event }) => markUpdate((event.data.event.data as { updateId: number }).updateId, 'dead_letter', null),
+  },
   { event: 'telegram/message.received' },
-  ({ event, step }) => runIngest(event, step as unknown as IngestStep),
+  async ({ event, step }) => {
+    const out = await runIngest(event, step as unknown as IngestStep)
+    await step.run('mark-processed', () => markUpdate(event.data.updateId, 'processed', out))
+    return out
+  },
 )
+
+async function markUpdate(updateId: number, status: 'processed' | 'dead_letter', outcome: unknown): Promise<void> {
+  await createHttpDb().update(telegramUpdates).set({ status, outcome: outcome ?? null }).where(eq(telegramUpdates.updateId, updateId))
+}

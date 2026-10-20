@@ -1,0 +1,1 @@
+ALTER TABLE "baumy_telegram_updates" ADD COLUMN "outcome" jsonb;

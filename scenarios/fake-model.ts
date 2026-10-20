@@ -295,6 +295,14 @@ function answerFor(call: ModelCall, fx: Fixtures): string {
   }
 }
 
+/** One scripted answer outside the in-process seam — the e2e fake Claude (e2e/fake-anthropic.ts)
+ *  serves the SAME fixtures over HTTP. Throws FakeModelError for an unregistered prompt. */
+export function scriptedAnswer(system: string, prompt: string, tier: Role, fixtures: Fixtures): { role: CallRole; text: string; message: string } {
+  const role = roleOf(system)
+  const call: ModelCall = { role, tier, system, prompt, text: textOf(role, prompt), output: '' }
+  return { role, text: answerFor(call, fixtures), message: call.text }
+}
+
 // ── Recording + install ──────────────────────────────────────────────────────────────────────────
 
 type CallParams = Parameters<NonNullable<LanguageModelMiddleware['wrapGenerate']>>[0]['params']

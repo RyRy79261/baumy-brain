@@ -173,3 +173,23 @@ describe('the live shopping list transport (issue #25)', () => {
     warn.mockRestore()
   })
 })
+
+// The e2e stack's fake-Telegram switch (e2e/README.md) must never move the real bot's traffic.
+describe('telegramApiRoot', () => {
+  it('is off unless TELEGRAM_API_ROOT is set', async () => {
+    const { telegramApiRoot } = await import('@/lib/telegram/client')
+    expect(telegramApiRoot({})).toBeNull()
+    expect(telegramApiRoot({ TELEGRAM_API_ROOT: '  ' })).toBeNull()
+  })
+  it('points a preview at the fake (trailing slash dropped)', async () => {
+    const { telegramApiRoot } = await import('@/lib/telegram/client')
+    expect(telegramApiRoot({ TELEGRAM_API_ROOT: 'https://fake.example/tg/', VERCEL_ENV: 'preview' })).toBe('https://fake.example/tg')
+  })
+  it('is refused in production', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { telegramApiRoot } = await import('@/lib/telegram/client')
+    expect(telegramApiRoot({ TELEGRAM_API_ROOT: 'https://fake.example/tg', VERCEL_ENV: 'production' })).toBeNull()
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+})

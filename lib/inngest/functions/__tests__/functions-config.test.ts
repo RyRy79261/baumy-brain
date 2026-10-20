@@ -11,6 +11,9 @@ describe('inngest function config', () => {
   it('ingest runs one message at a time PER CHAT (F16: a correction is never superseded by the message it corrected)', () => {
     expect(handleTelegramMessage.opts.concurrency).toEqual([{ key: 'event.data.chatId', limit: 1 }])
   })
+  it('ingest marks a message that failed every retry dead_letter (the ledger never says "received" forever)', () => {
+    expect(handleTelegramMessage.opts.onFailure).toBeTypeOf('function')
+  })
   it('every schedule entry is registered exactly once, with the table\'s cron and retries (incl. the F12 hygiene sweep)', () => {
     for (const e of SCHEDULE) {
       const fns = functions.filter((f) => f.opts.id === e.id)

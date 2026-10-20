@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { embed, embedMany, embedSync, EMBED_DIM, EMBED_MODEL } from '@/lib/ai/embed'
+import { embed, embedMany, embedSync, voyageApiRoot, EMBED_DIM, EMBED_MODEL } from '@/lib/ai/embed'
 
 const cos = (a: number[], b: number[]) => a.reduce((s, x, i) => s + x * b[i], 0)
 
@@ -49,5 +49,17 @@ describe('embed — Voyage 3.5-lite via fetch', () => {
     vi.stubGlobal('fetch', f)
     expect(await embedMany([])).toEqual([])
     expect(f).not.toHaveBeenCalled()
+  })
+})
+
+describe('voyageApiRoot — the e2e fake Voyage switch', () => {
+  it('is the real API by default', () => {
+    expect(voyageApiRoot({})).toBe('https://api.voyageai.com/v1')
+  })
+  it('takes VOYAGE_BASE_URL outside production, without a trailing slash', () => {
+    expect(voyageApiRoot({ VOYAGE_BASE_URL: 'http://127.0.0.1:9/voyage/v1/' })).toBe('http://127.0.0.1:9/voyage/v1')
+  })
+  it('is refused in production', () => {
+    expect(voyageApiRoot({ VOYAGE_BASE_URL: 'http://evil.test', VERCEL_ENV: 'production' })).toBe('https://api.voyageai.com/v1')
   })
 })
