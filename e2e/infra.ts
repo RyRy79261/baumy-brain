@@ -16,6 +16,15 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 const PG = { user: 'postgres', password: 'postgres', db: 'baumy' }
 
+// Pinned by digest: an upstream push never changes a run. Upgrade on purpose (pull, run, re-pin).
+const IMAGES = {
+  postgres: 'pgvector/pgvector:pg17@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d',
+  wsproxy: 'ghcr.io/neondatabase/wsproxy:latest@sha256:7f2e2149aa6a57ba382a140102fba44f5053f3e44389ccc18adcecf896054efb',
+  httpproxy: 'ghcr.io/timowilhelm/local-neon-http-proxy:main@sha256:cd2ae14edf2feafbc3330492de5c80506f77274c3bd013154cdef697bdeb768a',
+  // Inngest dev server 1.46.0
+  inngest: 'inngest/inngest:latest@sha256:9c4a2413bdbfa31a94ff54c32ae2dcc6613dbee84bc76db6cf6644d19e357e3e',
+}
+
 export interface Database {
   /** Direct URL from this machine (migrations, test reads). */
   direct: string
@@ -28,19 +37,19 @@ export interface Database {
 
 export async function startDatabase(): Promise<Database> {
   const network: StartedNetwork = await new Network().start()
-  const pg = await new GenericContainer('pgvector/pgvector:pg17')
+  const pg = await new GenericContainer(IMAGES.postgres)
     .withNetwork(network)
     .withNetworkAliases('postgres')
     .withEnvironment({ POSTGRES_USER: PG.user, POSTGRES_PASSWORD: PG.password, POSTGRES_DB: PG.db })
     .withExposedPorts(5432)
     .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/, 2))
     .start()
-  const ws = await new GenericContainer('ghcr.io/neondatabase/wsproxy:latest')
+  const ws = await new GenericContainer(IMAGES.wsproxy)
     .withNetwork(network)
     .withEnvironment({ APPEND_PORT: 'postgres:5432', ALLOW_ADDR_REGEX: '.*', LOG_TRAFFIC: 'false' })
     .withExposedPorts(80)
     .start()
-  const http = await new GenericContainer('ghcr.io/timowilhelm/local-neon-http-proxy:main')
+  const http = await new GenericContainer(IMAGES.httpproxy)
     .withNetwork(network)
     .withEnvironment({ PG_CONNECTION_STRING: `postgres://${PG.user}:${PG.password}@postgres:5432/${PG.db}` })
     .withExposedPorts(4444)
@@ -113,7 +122,7 @@ export interface InngestDev { url: string; stop(): Promise<void> }
 
 /** The Inngest dev server, pointed at the app on the host. */
 export async function startInngest(appPort: number): Promise<InngestDev> {
-  const c = await new GenericContainer('inngest/inngest:latest')
+  const c = await new GenericContainer(IMAGES.inngest)
     .withCommand(['inngest', 'dev', '--no-discovery', '-u', `http://host.docker.internal:${appPort}/api/inngest`])
     .withExtraHosts([{ host: 'host.docker.internal', ipAddress: 'host-gateway' }])
     .withExposedPorts(8288)

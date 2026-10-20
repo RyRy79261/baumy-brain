@@ -70,11 +70,12 @@ export class FakeAnthropic {
     const { role, text: answer, message } = scripted
 
     const fault = this.faults.find((f) => (f.times ?? 0) > 0 && (f.role == null || f.role === role))
+    // Spent now, before the wait: two calls in flight never both take the last one.
+    if (fault) fault.times = (fault.times ?? 1) - 1
     const [lo, hi] = this.latency
     await new Promise((r) => setTimeout(r, (fault?.delayMs ?? 0) + lo + Math.random() * (hi - lo)))
     const seq = ++this.seq
     if (fault) {
-      fault.times = (fault.times ?? 1) - 1
       this.calls.push({ seq, role, model: body.model, message, status: fault.status })
       return [fault.status, { type: 'error', error: { type: ERROR_TYPE[fault.status], message: 'e2e fault' } }]
     }
